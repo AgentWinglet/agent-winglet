@@ -43,7 +43,7 @@ jq --arg cmd "$HOOK_PATH" '
   def has_cmd: any(.hooks[]?; .command == $cmd);
   .hooks //= {} |
   .hooks.PostToolUse //= [] |
-  .hooks.PostToolUse |= (if any(.[]; .matcher == "Bash" and has_cmd) then . else . + [{"matcher": "Bash", "hooks": [{"type": "command", "command": $cmd}]}] end) |
+  .hooks.PostToolUse |= (if any(.[]; has_cmd) then . else . + [{"hooks": [{"type": "command", "command": $cmd}]}] end) |
   .hooks.SessionStart //= [] |
   .hooks.SessionStart |= (if any(.[]; has_cmd) then . else . + [{"hooks": [{"type": "command", "command": $cmd}]}] end) |
   .hooks.PostCompact //= [] |

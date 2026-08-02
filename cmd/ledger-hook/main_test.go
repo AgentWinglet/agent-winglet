@@ -273,6 +273,137 @@ func TestHandleRepeatCheckTakesPrecedenceOverBudgeting(t *testing.T) {
 	}
 }
 
+func toolCallInput(sessionID, dir, toolName string) hookInput {
+	return hookInput{
+		SessionID:     sessionID,
+		Cwd:           dir,
+		HookEventName: "PostToolUse",
+		ToolName:      toolName,
+		ToolInput:     json.RawMessage(`{}`),
+		ToolResponse:  json.RawMessage(`{}`),
+	}
+}
+
+func TestHandlePhaseBoundaryFiresOnFirstImplementAfterInvestigate(t *testing.T) {
+	dir := t.TempDir()
+
+	if out, err := handle(toolCallInput("sess1", dir, "Read")); err != nil || out != nil {
+		t.Fatalf("investigate call should pass through untouched, got out=%+v err=%v", out, err)
+	}
+
+	out, err := handle(toolCallInput("sess1", dir, "Edit"))
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("first Edit after a Read should fire the boundary suggestion, got nil")
+	}
+	if out.SystemMessage == "" {
+		t.Fatalf("expected a systemMessage, got %+v", out)
+	}
+	if out.HookSpecificOutput.AdditionalContext == "" {
+		t.Fatalf("expected additionalContext, got %+v", out)
+	}
+}
+
+func TestHandlePhaseBoundaryDoesNotFireWithoutPriorInvestigate(t *testing.T) {
+	dir := t.TempDir()
+
+	out, err := handle(toolCallInput("sess1", dir, "Edit"))
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("Edit with no prior investigate call should not fire, got %+v", out)
+	}
+}
+
+func TestHandlePhaseBoundaryFiresOnlyOnce(t *testing.T) {
+	dir := t.TempDir()
+
+	if _, err := handle(toolCallInput("sess1", dir, "Grep")); err != nil {
+		t.Fatalf("seeding investigate call errored: %v", err)
+	}
+	first, err := handle(toolCallInput("sess1", dir, "Write"))
+	if err != nil {
+		t.Fatalf("first Write errored: %v", err)
+	}
+	if first == nil {
+		t.Fatalf("first Write after Grep should fire, got nil")
+	}
+
+	second, err := handle(toolCallInput("sess1", dir, "Edit"))
+	if err != nil {
+		t.Fatalf("second implement call errored: %v", err)
+	}
+	if second != nil {
+		t.Fatalf("boundary suggestion should fire at most once per session, got %+v", second)
+	}
+}
+
+func TestHandlePhaseBoundaryIgnoresUnclassifiedTools(t *testing.T) {
+	dir := t.TempDir()
+	// Bash is deliberately unclassified: it should neither count as
+	// investigate nor as the implement call that crosses the boundary.
+	if out, err := handle(toolCallInput("sess1", dir, "Bash")); err != nil || out != nil {
+		t.Fatalf("unclassified tool should pass through untouched, got out=%+v err=%v", out, err)
+	}
+	if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
+		t.Fatalf("seeding investigate call errored: %v", err)
+	}
+	out, err := handle(toolCallInput("sess1", dir, "Bash"))
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("Bash should never itself cross the boundary, got %+v", out)
+	}
+}
+
+func TestHandlePhaseBoundaryResetsOnSessionStart(t *testing.T) {
+	dir := t.TempDir()
+
+	if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
+		t.Fatalf("seeding investigate call errored: %v", err)
+	}
+	if _, err := handle(hookInput{SessionID: "sess1", Cwd: dir, HookEventName: "SessionStart"}); err != nil {
+		t.Fatalf("SessionStart handling errored: %v", err)
+	}
+
+	out, err := handle(toolCallInput("sess1", dir, "Edit"))
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("Edit after SessionStart should not fire — prior investigate call should be forgotten, got %+v", out)
+	}
+}
+
+func TestHandlePhaseBoundaryResetsOnPostCompact(t *testing.T) {
+	dir := t.TempDir()
+
+	if _, err := handle(toolCallInput("sess1", dir, "Grep")); err != nil {
+		t.Fatalf("seeding investigate call errored: %v", err)
+	}
+	if _, err := handle(toolCallInput("sess1", dir, "Edit")); err != nil {
+		t.Fatalf("first crossing errored: %v", err)
+	}
+	if _, err := handle(hookInput{SessionID: "sess1", Cwd: dir, HookEventName: "PostCompact"}); err != nil {
+		t.Fatalf("PostCompact handling errored: %v", err)
+	}
+
+	if _, err := handle(toolCallInput("sess1", dir, "WebSearch")); err != nil {
+		t.Fatalf("post-compact investigate call errored: %v", err)
+	}
+	out, err := handle(toolCallInput("sess1", dir, "NotebookEdit"))
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("boundary suggestion should be able to fire again after PostCompact, got nil")
+	}
+}
+
 func TestHandleDifferentSessionsAreIsolated(t *testing.T) {
 	dir := t.TempDir()
 	sess1 := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})

@@ -82,20 +82,63 @@ controls which schemas enter context in the first place. Unlike the Read
 case (unnecessary to build), this one is inaccessible to a hooks-only
 architecture, period. Retired from v1 scope, not just deferred.
 
-Two of the four §4.2 levers are still not started:
+**Compact at investigate→implement boundary — prototyped (2026-08-03).**
+`internal/phase` gives the codebase its first concrete, detectable "phase
+boundary" signal: `phase.State.Observe` classifies each `PostToolUse`
+tool_name as investigate (`Read`/`Grep`/`Glob`/`WebFetch`/`WebSearch`/`Task`)
+or implement (`Edit`/`Write`/`NotebookEdit`) — `Bash` is deliberately left
+unclassified, since tool_name alone can't tell a read-only command from a
+mutating one and a wrong guess either direction is worse than staying
+neutral — and reports a crossing on the first implement call after at least
+one investigate call this session. `cmd/ledger-hook/main.go`'s
+`handlePhaseBoundary` wires this into the same binary and hook events the
+Ledger already uses, latched to fire at most once per session (mirroring
+`ledger.State`'s same-session-only lifetime, including reset on
+`SessionStart`/`PostCompact` — verified: `TestHandlePhaseBoundaryResetsOn*`
+in `cmd/ledger-hook/main_test.go`).
+
+**Scope-narrowing finding made while building this:** confirmed against the
+hooks reference (code.claude.com/docs/en/hooks, 2026-08-03) that no hook
+event can *trigger* compaction programmatically — `PreCompact` only observes
+or can block a compaction already under way; there is no hook-callable
+"compact now." So this lever, in a hooks-only architecture, can only ever
+*suggest*, never trigger, regardless of implementation effort. The hook does
+so on both channels available: `systemMessage` (shown directly to the user)
+and `hookSpecificOutput.additionalContext` (fed to the model, in case it
+should act on the suggestion itself, e.g. by proposing `/compact` in its
+next reply).
+
+Required broadening the `PostToolUse` hook registration from `matcher:
+"Bash"` to all tools (`.claude/settings.json`, `install.sh`'s jq merge) since
+the investigate-classified tools are non-Bash. The dedup check in
+`install.sh` no longer keys on `matcher == "Bash"`; a project that already
+ran the old install.sh has a stale Bash-only entry that won't be upgraded by
+re-running it — acceptable for now since nothing outside this repo's own dev
+fixture has installed the hook yet (`add-v1-smth` isn't merged to `main`).
+
+Covered by `go test ./...`: crossing fires only after a real investigate
+call, never fires on an implement-first session, fires at most once, Bash
+never counts either direction, and both `SessionStart`/`PostCompact` let it
+fire again. Also smoke-tested by hand (`echo ... | ledger-hook`, matching
+the pattern used to validate the Ledger): Read → silent, first Edit →
+`systemMessage` + `additionalContext` both populated, second Edit → silent.
+**Not yet verified against a real `claude -p` session** — same caveat as
+the rest of §1/§2.1: mechanically works as designed, not yet observed
+firing inside an actual Claude Code run.
+
+One of the four §4.2 levers is still not started:
 
 - **Retire used-up context at phase boundaries.** No mechanism yet to
-  detect a phase boundary (e.g. "investigation done, implementation
-  starting") or to replace a stale file-read/test-log with a compact
-  receipt once it's served its purpose. Distinct from the Ledger's
-  exact-repeat case — this is for content read once, used, and now stale.
-- **Compact at investigate→implement boundary.** No hook exists yet that
-  triggers or suggests compaction at a natural phase transition rather
-  than at the context-window cliff.
-
-Both still need their own design pass — a concrete signal for "phase
-boundary" doesn't exist yet in the codebase, and neither was scoped or
-prototyped alongside the Ledger.
+  replace a stale file-read/test-log with a compact receipt once it's
+  served its purpose. Distinct from the Ledger's exact-repeat case — this
+  is for content read once, used, and now stale relative to the task's
+  current phase. Unlike when this was originally scoped, it no longer needs
+  its own phase-boundary detector from scratch: `phase.Observe`'s crossing
+  signal (above) is a candidate trigger point ("investigation phase just
+  ended" is exactly when accumulated investigation content becomes
+  retirable) — but retiring content is a materially different mechanism
+  (rewriting/removing prior transcript content, not emitting a message) and
+  still needs its own design pass on top of that signal.
 
 ### 2.2 Measurement gate (spec §5) — deferred, set aside for now
 
