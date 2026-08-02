@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
@@ -401,6 +402,175 @@ func TestHandlePhaseBoundaryResetsOnPostCompact(t *testing.T) {
 	}
 	if out == nil {
 		t.Fatalf("boundary suggestion should be able to fire again after PostCompact, got nil")
+	}
+}
+
+func investigateInput(sessionID, dir, toolName string, toolInput, toolResponse json.RawMessage) hookInput {
+	return hookInput{
+		SessionID:     sessionID,
+		Cwd:           dir,
+		HookEventName: "PostToolUse",
+		ToolName:      toolName,
+		ToolInput:     toolInput,
+		ToolResponse:  toolResponse,
+	}
+}
+
+func TestHandleDoesNotRetireInvestigateBeforeBoundaryCrossed(t *testing.T) {
+	dir := t.TempDir()
+	in := investigateInput("sess1", dir, "Grep",
+		json.RawMessage(`{"pattern":"TODO"}`), json.RawMessage(`{"matches":["a.go:1"]}`))
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("investigate call before any crossing should pass through untouched, got %+v", out)
+	}
+}
+
+func TestHandleRetiresInvestigateAfterBoundaryCrossed(t *testing.T) {
+	dir := t.TempDir()
+
+	// Seed: one investigate call, then the implement call that crosses the
+	// boundary (fires the compact suggestion, consumed here).
+	if _, err := handle(investigateInput("sess1", dir, "Read",
+		json.RawMessage(`{"file_path":"/tmp/a.go"}`), json.RawMessage(`{"type":"text","file":{"content":"package a"}}`))); err != nil {
+		t.Fatalf("seeding investigate call errored: %v", err)
+	}
+	if _, err := handle(toolCallInput("sess1", dir, "Edit")); err != nil {
+		t.Fatalf("crossing call errored: %v", err)
+	}
+
+	response := json.RawMessage(`{"matches":["b.go:1: TODO fix this"]}`)
+	in := investigateInput("sess1", dir, "Grep", json.RawMessage(`{"pattern":"TODO"}`), response)
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("investigate call after the boundary has crossed should be retired, got nil")
+	}
+	receipt, ok := out.HookSpecificOutput.UpdatedToolOutput.(string)
+	if !ok {
+		t.Fatalf("updatedToolOutput is not a string receipt: %#v", out.HookSpecificOutput.UpdatedToolOutput)
+	}
+	if !strings.Contains(receipt, "TODO") {
+		t.Fatalf("receipt missing the extracted key, got %q", receipt)
+	}
+	if !strings.Contains(receipt, "retired post-boundary") {
+		t.Fatalf("receipt missing the expected marker, got %q", receipt)
+	}
+
+	// The full content must still be recoverable from the path in the receipt.
+	idx := strings.LastIndex(receipt, "full content at ")
+	if idx == -1 {
+		t.Fatalf("receipt missing a content path, got %q", receipt)
+	}
+	path := receipt[idx+len("full content at "):]
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading retired content at %q errored: %v", path, err)
+	}
+	if string(stored) != string(response) {
+		t.Fatalf("retired content = %q, want %q", stored, response)
+	}
+}
+
+func TestHandleRetireIsNotBashOnly(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := handle(toolCallInput("sess1", dir, "Glob")); err != nil {
+		t.Fatalf("seeding investigate call errored: %v", err)
+	}
+	if _, err := handle(toolCallInput("sess1", dir, "Write")); err != nil {
+		t.Fatalf("crossing call errored: %v", err)
+	}
+
+	for _, tool := range []string{"WebFetch", "WebSearch", "Task"} {
+		out, err := handle(toolCallInput("sess1", dir, tool))
+		if err != nil {
+			t.Fatalf("%s errored: %v", tool, err)
+		}
+		if out == nil {
+			t.Fatalf("%s after the boundary crossed should be retired, got nil", tool)
+		}
+		if _, ok := out.HookSpecificOutput.UpdatedToolOutput.(string); !ok {
+			t.Fatalf("%s: updatedToolOutput is not a string receipt: %#v", tool, out.HookSpecificOutput.UpdatedToolOutput)
+		}
+	}
+}
+
+func TestHandleNeverRetiresImplementOrBashCalls(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
+		t.Fatalf("seeding investigate call errored: %v", err)
+	}
+	if _, err := handle(toolCallInput("sess1", dir, "Edit")); err != nil {
+		t.Fatalf("crossing call errored: %v", err)
+	}
+
+	// A second implement call, post-boundary, should never be treated as
+	// retirable — retirement only ever applies to investigate-classified
+	// tools.
+	out, err := handle(toolCallInput("sess1", dir, "Write"))
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("implement call should never be retired, got %+v", out)
+	}
+
+	// Bash is unclassified and must stay on its own repeat-check/budgeting
+	// path, never the retire path, even post-boundary.
+	bashIn := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
+	out, err = handle(bashIn)
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("first-time Bash call post-boundary should still pass through untouched, got %+v", out)
+	}
+}
+
+func TestHandleSessionStartInvalidatesRetiredContent(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
+		t.Fatalf("seeding investigate call errored: %v", err)
+	}
+	if _, err := handle(toolCallInput("sess1", dir, "Edit")); err != nil {
+		t.Fatalf("crossing call errored: %v", err)
+	}
+	response := json.RawMessage(`{"matches":["x"]}`)
+	in := investigateInput("sess1", dir, "Grep", json.RawMessage(`{"pattern":"x"}`), response)
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("retiring call errored: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("expected the Grep call to be retired, got nil")
+	}
+
+	if _, err := handle(hookInput{SessionID: "sess1", Cwd: dir, HookEventName: "SessionStart"}); err != nil {
+		t.Fatalf("SessionStart handling errored: %v", err)
+	}
+
+	receipt := out.HookSpecificOutput.UpdatedToolOutput.(string)
+	idx := strings.LastIndex(receipt, "full content at ")
+	path := receipt[idx+len("full content at "):]
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("retired content survived SessionStart: err=%v", err)
+	}
+
+	// And the boundary itself must be forgotten too: the same Grep call,
+	// right after SessionStart, should no longer be retired.
+	out, err = handle(in)
+	if err != nil {
+		t.Fatalf("post-invalidation call errored: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("investigate call after SessionStart should not be retired (boundary forgotten), got %+v", out)
 	}
 }
 

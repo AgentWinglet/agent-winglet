@@ -40,7 +40,7 @@ Bash is handled.
 
 ## 2. Not started
 
-### 2.1 Context lifecycle hooks (spec §4.2) — resolved (2 built, 2 out of hooks-only scope)
+### 2.1 Context lifecycle hooks (spec §4.2) — resolved (3 built, 1 out of hooks-only scope)
 
 **Budget output by outcome — done.** `cmd/ledger-hook/main.go`'s
 `budgetStdout` now collapses a first-time (non-repeat), successful Bash
@@ -126,38 +126,67 @@ the pattern used to validate the Ledger): Read → silent, first Edit →
 the rest of §1/§2.1: mechanically works as designed, not yet observed
 firing inside an actual Claude Code run.
 
-**Retire used-up context at phase boundaries — resolved, out of v1 scope
-(2026-08-03).** Third scope correction, same pattern as the Read finding in
-§1 and the tool-schema finding above. Investigated whether `phase.Observe`'s
+**Retire used-up context at phase boundaries — built, narrower than
+originally specified (2026-08-03).** Investigated whether `phase.Observe`'s
 crossing signal (above) could drive this lever as literally specified: on
 the investigate→implement crossing, replace the investigate-phase tool
 outputs *already sent earlier in the transcript* with a compact receipt.
 
 Confirmed against the hooks reference (code.claude.com/docs/en/hooks,
-2026-08-03): a `PostToolUse` hook's `hookSpecificOutput.updatedToolOutput`
-only replaces the result of the tool call *that invocation is currently
-processing* — it has no way to reach back and rewrite the output of an
-earlier tool call already sitting in the transcript. No other hook event or
-output field can do this either: `MessageDisplay`'s `displayContent` is
-explicitly display-only ("the transcript and what Claude sees keep the
-original"), and `PreCompact` only observes or blocks a compaction already
-under way (same finding the boundary-suggestion lever above relies on).
-There is no hook-callable "rewrite turn N."
-
-Same underlying cause as the tool-schema-trimming finding: this lever
+2026-08-03) that the literal version is not possible: a `PostToolUse`
+hook's `hookSpecificOutput.updatedToolOutput` only replaces the result of
+the tool call *that invocation is currently processing* — it has no way to
+reach back and rewrite the output of an earlier tool call already sitting
+in the transcript. No other hook event or field can do this either:
+`MessageDisplay`'s `displayContent` is explicitly display-only ("the
+transcript and what Claude sees keep the original"); `PreCompact` only
+observes or blocks a compaction already under way (same finding the
+boundary-suggestion lever above relies on); and `transcript_path` (the
+on-disk conversation JSONL a hook can read) is confirmed to be an
+asynchronous, lagging write-behind log that Claude Code does not re-read
+into the live in-memory conversation on later turns — the docs explicitly
+warn against relying on it for exactly this reason. Editing it from a hook
+would be building on undocumented, unverifiable behavior, not a real
+mechanism. Same underlying cause as the tool-schema-trimming finding: this
 assumes a capability — retroactively touching context already sent — that
-sits upstream of every hook Claude Code exposes. `phase.Observe` correctly
-identifies *when* investigate content becomes retirable, but no hook
-mechanism can act on that signal against anything but the tool call
-currently in flight. A hooks-only architecture can compact content at the
-moment it's first produced (the output-budgeting lever, already built) but
-not retroactively, once the model has already seen it in full.
+sits upstream of every hook Claude Code exposes.
 
-Retired from v1 scope, not just deferred — same status as tool-schema
-trimming. All four §4.2 levers are now resolved: two built (output
-budgeting; investigate→implement compact suggestion), two confirmed
-unbuildable in a hooks-only architecture (tool/schema trimming; retiring
-used-up context).
+What *is* buildable with the same trigger, and is what got built: once
+`phase.State.Suggested` is already true (the boundary has already been
+crossed this session, checked via `handlePhaseBoundary`'s new `pastBoundary`
+return value), any further investigate-classified tool call
+(`Read`/`Grep`/`Glob`/`WebFetch`/`WebSearch`/`Task`) has *its own* output —
+the one thing a `PostToolUse` hook can still legitimately rewrite —
+archived to disk via the new `internal/retire` package
+(content-addressed under
+`.claude/agent-winglet/<session_id>.retired/<hash>.txt`, mirroring
+`ledger`/`phase`'s per-session file layout) and replaced with a compact
+receipt via `handleRetireInvestigate` in `cmd/ledger-hook/main.go` (e.g.
+`[agent-winglet] investigate output retired post-boundary (Grep TODO, 32
+bytes) — full content at .../smoke1.retired/f5f5...txt`). This is forward-
+looking, not retroactive: it only ever applies to investigate calls made
+*after* the crossing, never to ones already replayed before it. Non-lossy
+(full content preserved on disk, path given in the receipt) and
+same-session-only (`retire.Invalidate` wired into the same
+`SessionStart`/`PostCompact` branch as `ledger.Invalidate` and
+`phase.Invalidate`).
+
+Covered by `go test ./...`: investigate calls before any crossing pass
+through untouched; investigate calls after the crossing get a receipt with
+the extracted key (`file_path`/`pattern`/`url`/`query`/`description`, via
+`investigateKey`) and recoverable on-disk content; all five
+investigate-classified tools are covered, not just one; implement calls and
+Bash are never retired even post-boundary; `SessionStart` clears both the
+retired content and the boundary-crossed state itself (a second identical
+call right after `SessionStart` is no longer retired). Also smoke-tested by
+hand (`echo ... | ledger-hook`): Read → silent, Edit → crossing suggestion,
+Grep → retired with a working on-disk path. **Not yet verified against a
+real `claude -p` session** — same caveat as the rest of §1/§2.1.
+
+All four §4.2 levers are now resolved: three built (output budgeting;
+investigate→implement compact suggestion; post-boundary investigate
+retirement), one confirmed unbuildable in a hooks-only architecture
+(tool/schema trimming, superseded by a stronger native harness behavior).
 
 ### 2.2 Measurement gate (spec §5) — deferred, set aside for now
 
@@ -249,11 +278,10 @@ is parked, not built out further, for now.
    Done except for the items in §2.3.1 blocked on merging `add-v1-smth` to
    `main`.
 2. Context lifecycle hooks (§2.1) — done. All four §4.2 levers resolved:
-   output budgeting and the investigate→implement compact suggestion are
-   built; tool/schema trimming and retiring used-up context are both
-   confirmed unbuildable in a hooks-only architecture (native harness
-   behavior in the first case, no hook can rewrite transcript history in
-   the second).
+   output budgeting, the investigate→implement compact suggestion, and
+   post-boundary investigate-output retirement are built; tool/schema
+   trimming is confirmed unbuildable in a hooks-only architecture (already
+   handled natively by the harness).
 3. Measurement gate (§2.2) — next up. The harness code is parked in git
    history (commit `afa445a`), not gone; reviving it is cheaper than the
    original build was.

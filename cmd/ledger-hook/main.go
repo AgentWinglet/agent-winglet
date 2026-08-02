@@ -10,11 +10,17 @@
 //     NotebookEdit) after at least one investigate-classified call
 //     (Read/Grep/Glob/WebFetch/WebSearch/Task) this session, emits a
 //     one-time suggestion to compact (the investigate→implement boundary
-//     lever — see handlePhaseBoundary). Anything else passes through
-//     untouched.
-//   - SessionStart / PostCompact: deletes the session's ledger and phase
-//     state so neither a substitution nor a boundary suggestion survives a
-//     restart or compaction (a hard constraint).
+//     lever — see handlePhaseBoundary). Once that boundary has already been
+//     crossed, any further investigate-classified call has its own output
+//     archived to disk and replaced with a compact receipt (see
+//     handleRetireInvestigate — the "retire used-up context" lever, scoped
+//     to what's actually buildable: see its doc comment for why it can only
+//     ever apply going forward, never to output already sent). Anything
+//     else passes through untouched.
+//   - SessionStart / PostCompact: deletes the session's ledger, phase state,
+//     and retired-content directory so no substitution, boundary
+//     suggestion, or retired receipt survives a restart or compaction (a
+//     hard constraint).
 //
 // Read is intentionally not handled by the Ledger (repeat-detection) path:
 // Claude Code already detects an unchanged file natively and returns
@@ -22,7 +28,7 @@
 // inspecting real PostToolUse payloads. Adding ledger logic for Read would
 // duplicate a capability the harness already provides for free. Read is
 // still used, separately, as an investigate-classified signal for the phase
-// boundary.
+// boundary and for post-boundary retirement.
 package main
 
 import (
@@ -34,6 +40,7 @@ import (
 
 	"github.com/umitkaanusta/agent-winglet/internal/ledger"
 	"github.com/umitkaanusta/agent-winglet/internal/phase"
+	"github.com/umitkaanusta/agent-winglet/internal/retire"
 )
 
 // Output budgeting by outcome: a first-time (non-repeat) command that
@@ -139,7 +146,10 @@ func handle(in hookInput) (*hookOutput, error) {
 		if err := ledger.Invalidate(in.Cwd, in.SessionID); err != nil {
 			return nil, err
 		}
-		return nil, phase.Invalidate(in.Cwd, in.SessionID)
+		if err := phase.Invalidate(in.Cwd, in.SessionID); err != nil {
+			return nil, err
+		}
+		return nil, retire.Invalidate(in.Cwd, in.SessionID)
 	case "PostToolUse":
 		return handlePostToolUse(in)
 	}
@@ -179,23 +189,31 @@ var implementTools = map[string]bool{
 // should act on it, e.g. by proposing /compact itself). Fires at most once
 // per session (phase.State.Observe's latch), so it never nags on every
 // subsequent edit.
-func handlePhaseBoundary(in hookInput) (*hookOutput, error) {
+//
+// It also reports pastBoundary: whether the session has already crossed the
+// boundary as of this call (crossed just now, or earlier). handlePostToolUse
+// uses this to decide whether to retire a later investigate call's output
+// (see handleRetireInvestigate) — the only direction "retire used-up
+// context" is actually buildable in, since a PostToolUse hook can only ever
+// rewrite the tool call it's currently processing, never an earlier one.
+func handlePhaseBoundary(in hookInput) (out *hookOutput, pastBoundary bool, err error) {
 	isInvestigate := investigateTools[in.ToolName]
 	isImplement := implementTools[in.ToolName]
 	if !isInvestigate && !isImplement {
-		return nil, nil
+		return nil, false, nil
 	}
 
 	st, err := phase.Load(in.Cwd, in.SessionID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	crossed := st.Observe(isInvestigate, isImplement)
 	if err := phase.Save(in.Cwd, in.SessionID, st); err != nil {
-		return nil, err
+		return nil, false, err
 	}
+	pastBoundary = st.Suggested
 	if !crossed {
-		return nil, nil
+		return nil, pastBoundary, nil
 	}
 
 	const msg = "[agent-winglet] investigation looks done and implementation is " +
@@ -208,12 +226,77 @@ func handlePhaseBoundary(in hookInput) (*hookOutput, error) {
 			HookEventName:     "PostToolUse",
 			AdditionalContext: msg,
 		},
-	}, nil
+	}, pastBoundary, nil
+}
+
+// investigateKeyFields covers the tool_input field names, across
+// investigateTools, that identify what a call was for. Unrecognized/missing
+// fields just leave the corresponding string empty — investigateKey falls
+// back to the raw tool_input in that case.
+type investigateKeyFields struct {
+	FilePath    string `json:"file_path"`
+	Pattern     string `json:"pattern"`
+	URL         string `json:"url"`
+	Query       string `json:"query"`
+	Description string `json:"description"`
+}
+
+// investigateKey extracts a short human-readable identifier (file path,
+// grep/glob pattern, URL, search query, or subagent task description) from
+// an investigate-classified tool call's input, for use in a retire receipt.
+func investigateKey(toolInput json.RawMessage) string {
+	var f investigateKeyFields
+	_ = json.Unmarshal(toolInput, &f)
+	switch {
+	case f.FilePath != "":
+		return f.FilePath
+	case f.Pattern != "":
+		return f.Pattern
+	case f.URL != "":
+		return f.URL
+	case f.Query != "":
+		return f.Query
+	case f.Description != "":
+		return f.Description
+	default:
+		return string(toolInput)
+	}
+}
+
+// handleRetireInvestigate is the achievable half of "retire used-up context
+// at phase boundaries" (see handlePhaseBoundary's doc comment and
+// agent-winglet-v1-remaining.md §2.1): once the session has already crossed
+// the investigate→implement boundary, any further investigate-classified
+// call's own output — the one thing a PostToolUse hook can still rewrite —
+// is archived to disk and replaced with a compact receipt, instead of
+// replaying it in full. Called only when in.ToolName is investigate-
+// classified and the boundary has already been crossed.
+func handleRetireInvestigate(in hookInput) (*hookOutput, error) {
+	path, err := retire.Store(in.Cwd, in.SessionID, in.ToolResponse)
+	if err != nil {
+		return nil, err
+	}
+	key := investigateKey(in.ToolInput)
+	receipt := fmt.Sprintf(
+		"[agent-winglet] investigate output retired post-boundary (%s %s, %d bytes) — full content at %s",
+		in.ToolName, key, len(in.ToolResponse), path,
+	)
+	return &hookOutput{HookSpecificOutput: hookSpecificOutput{
+		HookEventName:     "PostToolUse",
+		UpdatedToolOutput: receipt,
+	}}, nil
 }
 
 func handlePostToolUse(in hookInput) (*hookOutput, error) {
-	if out, err := handlePhaseBoundary(in); out != nil || err != nil {
-		return out, err
+	out, pastBoundary, err := handlePhaseBoundary(in)
+	if err != nil {
+		return nil, err
+	}
+	if out != nil {
+		return out, nil
+	}
+	if investigateTools[in.ToolName] && pastBoundary {
+		return handleRetireInvestigate(in)
 	}
 
 	if in.ToolName != "Bash" {
@@ -266,12 +349,12 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 
 	receipt := fmt.Sprintf("[agent-winglet] unchanged since turn %d (%s)", repeatOfTurn, key)
 
-	out := &hookOutput{HookSpecificOutput: hookSpecificOutput{
+	repeatOut := &hookOutput{HookSpecificOutput: hookSpecificOutput{
 		HookEventName:     "PostToolUse",
 		UpdatedToolOutput: bashOutput{Stdout: receipt},
 	}}
 	if err := ledger.Save(in.Cwd, in.SessionID, st); err != nil {
 		return nil, err
 	}
-	return out, nil
+	return repeatOut, nil
 }
