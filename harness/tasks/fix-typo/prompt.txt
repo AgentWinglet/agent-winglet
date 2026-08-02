@@ -1,0 +1,6 @@
+There's a bug in greeting.go: the Greet function returns "helo, NAME" instead
+of "hello, NAME". Find it and fix it.
+
+After fixing it, run `go build ./...` to confirm it compiles, then run the
+exact same `go build ./...` command a second time to double check nothing
+regressed before you finish.

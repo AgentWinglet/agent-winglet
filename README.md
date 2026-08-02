@@ -28,3 +28,9 @@ users go through; that's `install.sh` above.
 
 `agent-winglet-v1-remaining.md` in this repo tracks what's built vs.
 outstanding.
+
+## Measuring the hook's effect
+
+`harness/` has the paired-run harness for the usage_per_solve measurement
+gate — see `harness/README.md`. Nothing here should be treated as
+validated until that gate has real data behind it.
