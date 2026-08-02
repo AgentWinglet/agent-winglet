@@ -40,18 +40,16 @@ fi
 
 TMP_FILE="$(mktemp)"
 jq --arg cmd "$HOOK_PATH" '
+  def has_cmd: any(.hooks[]?; .command == $cmd);
   .hooks //= {} |
   .hooks.PostToolUse //= [] |
-  .hooks.PostToolUse += [{"matcher": "Bash", "hooks": [{"type": "command", "command": $cmd}]}] |
+  .hooks.PostToolUse |= (if any(.[]; .matcher == "Bash" and has_cmd) then . else . + [{"matcher": "Bash", "hooks": [{"type": "command", "command": $cmd}]}] end) |
   .hooks.SessionStart //= [] |
-  .hooks.SessionStart += [{"hooks": [{"type": "command", "command": $cmd}]}] |
+  .hooks.SessionStart |= (if any(.[]; has_cmd) then . else . + [{"hooks": [{"type": "command", "command": $cmd}]}] end) |
   .hooks.PostCompact //= [] |
-  .hooks.PostCompact += [{"hooks": [{"type": "command", "command": $cmd}]}]
+  .hooks.PostCompact |= (if any(.[]; has_cmd) then . else . + [{"hooks": [{"type": "command", "command": $cmd}]}] end)
 ' "$SETTINGS_FILE" > "$TMP_FILE"
 mv "$TMP_FILE" "$SETTINGS_FILE"
 
 echo "Installed. Hook binary: ${HOOK_PATH}"
 echo "Updated: ${SETTINGS_FILE}"
-echo
-echo "Note: this appended new hook entries. If you run this script more than"
-echo "once in the same project, remove the duplicate entries it adds by hand."
