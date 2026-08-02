@@ -9,14 +9,11 @@
 //     outcome). On the first implement-classified call (Edit/Write/
 //     NotebookEdit) after at least one investigate-classified call
 //     (Read/Grep/Glob/WebFetch/WebSearch/Task) this session, emits a
-//     one-time suggestion to compact (the investigate→implement boundary
-//     lever — see handlePhaseBoundary). Once that boundary has already been
-//     crossed, any further investigate-classified call has its own output
-//     archived to disk and replaced with a compact receipt (see
-//     handleRetireInvestigate — the "retire used-up context" lever, scoped
-//     to what's actually buildable: see its doc comment for why it can only
-//     ever apply going forward, never to output already sent). Anything
-//     else passes through untouched.
+//     one-time suggestion to compact (see handlePhaseBoundary). Once that
+//     boundary has already been crossed, any further investigate-classified
+//     call has its own output archived to disk and replaced with a compact
+//     receipt (see handleRetireInvestigate). Anything else passes through
+//     untouched.
 //   - SessionStart / PostCompact: deletes the session's ledger, phase state,
 //     and retired-content directory so no substitution, boundary
 //     suggestion, or retired receipt survives a restart or compaction (a
@@ -178,8 +175,8 @@ var implementTools = map[string]bool{
 	"NotebookEdit": true,
 }
 
-// handlePhaseBoundary is the investigate→implement lever from
-// agent-winglet-v1-remaining.md §2.1. Claude Code has no hook mechanism to
+// handlePhaseBoundary suggests running /compact once the session has moved
+// from investigating to implementing. Claude Code has no hook mechanism to
 // trigger compaction programmatically (confirmed against the hooks
 // reference: PreCompact can only observe or block a compaction already under
 // way), so on the first implement-classified call after at least one
@@ -193,9 +190,11 @@ var implementTools = map[string]bool{
 // It also reports pastBoundary: whether the session has already crossed the
 // boundary as of this call (crossed just now, or earlier). handlePostToolUse
 // uses this to decide whether to retire a later investigate call's output
-// (see handleRetireInvestigate) — the only direction "retire used-up
-// context" is actually buildable in, since a PostToolUse hook can only ever
-// rewrite the tool call it's currently processing, never an earlier one.
+// (see handleRetireInvestigate). That's the only direction retirement can
+// go: a PostToolUse hook can only ever rewrite the tool call it's currently
+// processing, never an earlier one, so already-replayed investigate output
+// can't be rewritten after the fact — only investigate calls made after the
+// boundary crossing can be.
 func handlePhaseBoundary(in hookInput) (out *hookOutput, pastBoundary bool, err error) {
 	isInvestigate := investigateTools[in.ToolName]
 	isImplement := implementTools[in.ToolName]
@@ -263,12 +262,11 @@ func investigateKey(toolInput json.RawMessage) string {
 	}
 }
 
-// handleRetireInvestigate is the achievable half of "retire used-up context
-// at phase boundaries" (see handlePhaseBoundary's doc comment and
-// agent-winglet-v1-remaining.md §2.1): once the session has already crossed
-// the investigate→implement boundary, any further investigate-classified
-// call's own output — the one thing a PostToolUse hook can still rewrite —
-// is archived to disk and replaced with a compact receipt, instead of
+// handleRetireInvestigate retires used-up investigate output: once the
+// session has already crossed the investigate→implement boundary (see
+// handlePhaseBoundary), any further investigate-classified call's own
+// output — the one thing a PostToolUse hook can still rewrite — is
+// archived to disk and replaced with a compact receipt, instead of
 // replaying it in full. Called only when in.ToolName is investigate-
 // classified and the boundary has already been crossed.
 func handleRetireInvestigate(in hookInput) (*hookOutput, error) {

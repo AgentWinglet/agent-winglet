@@ -1,8 +1,7 @@
 // Package phase tracks, per Claude Code session, whether the session has
-// crossed the investigate→implement boundary (agent-winglet-v1-remaining.md
-// §2.1 / full spec §4.2's "compact at the investigate→implement boundary"
-// lever): at least one investigate-classified tool call, followed by the
-// first implement-classified call.
+// crossed the investigate→implement boundary: at least one
+// investigate-classified tool call, followed by the first
+// implement-classified call.
 //
 // Claude Code exposes no hook mechanism to trigger compaction
 // programmatically (PreCompact can only observe or block an already-pending

@@ -1,14 +1,12 @@
-// Package retire implements the achievable half of "retire used-up context
-// at phase boundaries" (agent-winglet-v1-remaining.md §2.1, spec §4.2).
+// Package retire retires used-up investigate-phase tool output once a
+// session has moved into implementation.
 //
-// The lever as originally specified — retroactively replacing
-// investigate-phase tool output already sent earlier in the transcript with
-// a compact receipt, the moment phase.Observe reports the investigate→
-// implement crossing — is confirmed unbuildable in a hooks-only
-// architecture: a PostToolUse hook's updatedToolOutput can only replace the
+// Retroactively replacing investigate-phase tool output already sent
+// earlier in the transcript, the moment phase.Observe reports the
+// investigate→implement crossing, is not possible in Claude Code's hook
+// system: a PostToolUse hook's updatedToolOutput can only replace the
 // result of the tool call it is currently processing, never an earlier
-// one, and no other hook event can touch transcript content already sent
-// (see agent-winglet-v1-remaining.md §2.1 for the full finding).
+// one, and no other hook event can touch transcript content already sent.
 //
 // What is achievable, using the same phase.Observe signal: once a session
 // has already crossed the investigate→implement boundary, any further
