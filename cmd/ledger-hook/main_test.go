@@ -2,8 +2,17 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
+
+func linesOfStdout(n int) string {
+	lines := make([]string, n)
+	for i := range lines {
+		lines[i] = "line"
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
 
 func bashInput(t *testing.T, dir, sessionID, command string, response bashOutput) hookInput {
 	t.Helper()
@@ -158,6 +167,109 @@ func TestHandlePostCompactInvalidatesLedger(t *testing.T) {
 	}
 	if out != nil {
 		t.Fatalf("ledger entry survived PostCompact, got substitution %+v", out)
+	}
+}
+
+func TestBudgetStdoutThresholdBoundary(t *testing.T) {
+	cases := []struct {
+		name       string
+		lineCount  int
+		wantBudget bool
+	}{
+		{"just under threshold", budgetLineThreshold - 1, false},
+		{"at threshold", budgetLineThreshold, false},
+		{"just over threshold", budgetLineThreshold + 1, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, ok := budgetStdout(linesOfStdout(c.lineCount))
+			if ok != c.wantBudget {
+				t.Fatalf("%d lines: budgetStdout ok = %v, want %v", c.lineCount, ok, c.wantBudget)
+			}
+		})
+	}
+}
+
+func TestHandleBudgetsLongFirstTimeOutput(t *testing.T) {
+	dir := t.TempDir()
+	longOutput := linesOfStdout(budgetLineThreshold + 1)
+	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle returned error: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("long first-time output should be budgeted, got nil")
+	}
+	updated, ok := out.HookSpecificOutput.UpdatedToolOutput.(bashOutput)
+	if !ok {
+		t.Fatalf("updatedToolOutput is not a bashOutput: %#v", out.HookSpecificOutput.UpdatedToolOutput)
+	}
+	if updated.Stdout == longOutput {
+		t.Fatalf("budgeting did not replace the original stdout")
+	}
+	if !strings.Contains(updated.Stdout, "lines omitted") {
+		t.Fatalf("budgeted output missing omission marker: %q", updated.Stdout)
+	}
+}
+
+func TestHandleDoesNotBudgetShortFirstTimeOutput(t *testing.T) {
+	dir := t.TempDir()
+	in := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: linesOfStdout(budgetLineThreshold)})
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle returned error: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("output at/under threshold should pass through untouched, got %+v", out)
+	}
+}
+
+func TestHandleDoesNotBudgetFailedInterruptedOrImageOutput(t *testing.T) {
+	dir := t.TempDir()
+	longOutput := linesOfStdout(budgetLineThreshold + 1)
+	cases := []bashOutput{
+		{Stdout: longOutput, Stderr: "build failed"},
+		{Stdout: longOutput, Interrupted: true},
+		{Stdout: longOutput, IsImage: true},
+	}
+	for _, c := range cases {
+		in := bashInput(t, dir, "sess1", "go build ./...", c)
+		out, err := handle(in)
+		if err != nil {
+			t.Fatalf("handle errored for %+v: %v", c, err)
+		}
+		if out != nil {
+			t.Fatalf("case %+v should never be budgeted, got %+v", c, out)
+		}
+	}
+}
+
+func TestHandleRepeatCheckTakesPrecedenceOverBudgeting(t *testing.T) {
+	dir := t.TempDir()
+	longOutput := linesOfStdout(budgetLineThreshold + 1)
+	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
+
+	first, err := handle(in)
+	if err != nil {
+		t.Fatalf("first call errored: %v", err)
+	}
+	if first == nil || !strings.Contains(first.HookSpecificOutput.UpdatedToolOutput.(bashOutput).Stdout, "lines omitted") {
+		t.Fatalf("first call should be budgeted, got %+v", first)
+	}
+
+	second, err := handle(in)
+	if err != nil {
+		t.Fatalf("second call errored: %v", err)
+	}
+	if second == nil {
+		t.Fatalf("repeat of a budgeted command should still be substituted, got nil")
+	}
+	updated := second.HookSpecificOutput.UpdatedToolOutput.(bashOutput)
+	if !strings.HasPrefix(updated.Stdout, "[agent-winglet] unchanged since turn") {
+		t.Fatalf("repeat should use the 'unchanged since turn N' message, not a budget receipt, got %q", updated.Stdout)
 	}
 }
 

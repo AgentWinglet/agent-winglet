@@ -42,7 +42,23 @@ Bash is handled.
 
 ### 2.1 Context lifecycle hooks (spec §4.2)
 
-None of the four levers are built yet:
+**Budget output by outcome — done.** `cmd/ledger-hook/main.go`'s
+`budgetStdout` now collapses a first-time (non-repeat), successful Bash
+command's stdout to its first 15 + last 15 lines once it exceeds 60 lines,
+with an `[agent-winglet] N lines omitted, exit 0 (...)` marker in between.
+"Successful" uses the same proxy the repeat-check already relies on (empty
+stderr, not interrupted, not an image) since the Bash `tool_response`
+schema has no exit-code field exposed to hooks. The repeat-check still
+runs first and takes precedence: an exact repeat gets the `unchanged since
+turn N` message even if it would also qualify for budgeting. The ledger
+hashes the full, un-budgeted stdout, so a later exact repeat of a budgeted
+command is still detected correctly. Covered by `go test ./...`: threshold
+boundary (just under/at/just over), stderr/interrupted/image skip cases,
+and repeat-check precedence. Not yet verified against a real `claude -p`
+session (same caveat as the rest of §1 — mechanically works as designed,
+not yet validated live).
+
+Three of the four levers are still not started:
 
 - **Retire used-up context at phase boundaries.** No mechanism yet to
   detect a phase boundary (e.g. "investigation done, implementation
@@ -51,11 +67,6 @@ None of the four levers are built yet:
   exact-repeat case — this is for content read once, used, and now stale.
 - **Trim tool/schema definitions to task phase.** No mechanism to defer
   tool schemas the current phase won't call.
-- **Budget output by outcome.** No logic to shrink a passing command's
-  output vs. keeping a failing command's full trace. Current Bash handling
-  in the Ledger already refuses to touch stderr/interrupted/image cases,
-  but doesn't yet do anything active for the success case beyond the
-  exact-repeat check.
 - **Compact at investigate→implement boundary.** No hook exists yet that
   triggers or suggests compaction at a natural phase transition rather
   than at the context-window cliff.

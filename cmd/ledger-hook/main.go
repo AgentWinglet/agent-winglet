@@ -3,8 +3,9 @@
 //
 //   - PostToolUse (matcher: Bash): on an exact-repeat of a previously seen
 //     command's output, replaces the output with a compact "unchanged since
-//     turn N" reference via updatedToolOutput. First-time output passes
-//     through untouched.
+//     turn N" reference via updatedToolOutput. On a first-time, successful
+//     command whose stdout is long, replaces it with a head/tail receipt
+//     (output budgeting by outcome). Anything else passes through untouched.
 //   - SessionStart / PostCompact: deletes the session's ledger file so no
 //     substitution ever survives a restart or compaction (a hard constraint).
 //
@@ -20,9 +21,49 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/umitkaanusta/agent-winglet/internal/ledger"
 )
+
+// Output budgeting by outcome: a first-time (non-repeat) command that
+// succeeded but produced a long stdout gets collapsed to its head and tail.
+// The Bash tool_response schema (confirmed via the docs' PostToolUse section)
+// exposes stdout/stderr/interrupted/isImage but no exit code, so "succeeded"
+// uses the same proxy the repeat-check already relies on: empty stderr, not
+// interrupted, not an image.
+const (
+	budgetLineThreshold = 60
+	budgetHeadLines     = 15
+	budgetTailLines     = 15
+)
+
+// budgetStdout collapses stdout to its first budgetHeadLines and last
+// budgetTailLines lines if it has more than budgetLineThreshold lines. It
+// reports ok == false when stdout is short enough to leave untouched.
+func budgetStdout(stdout string) (budgeted string, ok bool) {
+	lines := strings.Split(stdout, "\n")
+	trailingNewline := len(lines) > 0 && lines[len(lines)-1] == ""
+	if trailingNewline {
+		lines = lines[:len(lines)-1]
+	}
+	n := len(lines)
+	if n <= budgetLineThreshold {
+		return "", false
+	}
+
+	var b strings.Builder
+	b.WriteString(strings.Join(lines[:budgetHeadLines], "\n"))
+	b.WriteString("\n")
+	omitted := n - budgetHeadLines - budgetTailLines
+	fmt.Fprintf(&b, "[agent-winglet] %d lines omitted, exit 0 (showing first %d/last %d)\n",
+		omitted, budgetHeadLines, budgetTailLines)
+	b.WriteString(strings.Join(lines[n-budgetTailLines:], "\n"))
+	if trailingNewline {
+		b.WriteString("\n")
+	}
+	return b.String(), true
+}
 
 type hookInput struct {
 	SessionID     string          `json:"session_id"`
@@ -126,7 +167,17 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 
 	repeatOfTurn, isRepeat := st.Check(key, response.Stdout)
 	if !isRepeat {
-		return nil, ledger.Save(in.Cwd, in.SessionID, st)
+		if err := ledger.Save(in.Cwd, in.SessionID, st); err != nil {
+			return nil, err
+		}
+		budgeted, ok := budgetStdout(response.Stdout)
+		if !ok {
+			return nil, nil
+		}
+		return &hookOutput{HookSpecificOutput: hookSpecificOutput{
+			HookEventName:     "PostToolUse",
+			UpdatedToolOutput: bashOutput{Stdout: budgeted},
+		}}, nil
 	}
 
 	receipt := fmt.Sprintf("[agent-winglet] unchanged since turn %d (%s)", repeatOfTurn, key)
