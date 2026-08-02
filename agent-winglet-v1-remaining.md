@@ -58,20 +58,43 @@ and repeat-check precedence. Not yet verified against a real `claude -p`
 session (same caveat as the rest of §1 — mechanically works as designed,
 not yet validated live).
 
-Three of the four levers are still not started:
+**Trim tool/schema definitions to task phase — resolved, out of v1 scope
+(2026-08-03).** Second scope correction, same pattern as the Read finding
+in §1. As of Claude Code v2.1.69, built-in tool schemas are deferred by
+default behind `ToolSearch` — confirmed live in this session (the deferred-
+tools list at session start, and the `tengu_deferred_stub_tool: true` flag
+in `~/.claude.json`) and corroborated publicly
+(github.com/anthropics/claude-code/issues/31002; platform.claude.com/docs
+tool-search-tool page). Mechanism: `defer_loading: true` on tool
+definitions sent to the Messages API — the model calls `ToolSearch` to pull
+in a schema on demand, so tools never invoked in a session never cost
+context. This is demand-driven, not phase-classified, so it's a stronger
+version of what the spec's lever asked for (no heuristic needed to guess
+the task phase).
+
+More importantly, it's **not something a hooks-only project layer could
+improve on even if it wanted to**: `defer_loading` is a Messages API
+parameter set by the harness itself, invisible to and unconfigurable from
+`.claude/settings.json`. `PreToolUse` — the only hook with any tool-call
+visibility — fires after the model has already decided to call a tool
+whose schema is already loaded; there's no hook event upstream of that
+controls which schemas enter context in the first place. Unlike the Read
+case (unnecessary to build), this one is inaccessible to a hooks-only
+architecture, period. Retired from v1 scope, not just deferred.
+
+Two of the four §4.2 levers are still not started:
 
 - **Retire used-up context at phase boundaries.** No mechanism yet to
   detect a phase boundary (e.g. "investigation done, implementation
   starting") or to replace a stale file-read/test-log with a compact
   receipt once it's served its purpose. Distinct from the Ledger's
   exact-repeat case — this is for content read once, used, and now stale.
-- **Trim tool/schema definitions to task phase.** No mechanism to defer
-  tool schemas the current phase won't call.
 - **Compact at investigate→implement boundary.** No hook exists yet that
   triggers or suggests compaction at a natural phase transition rather
   than at the context-window cliff.
 
-Each of these needs its own design pass — they weren't scoped or
+Both still need their own design pass — a concrete signal for "phase
+boundary" doesn't exist yet in the codebase, and neither was scoped or
 prototyped alongside the Ledger.
 
 ### 2.2 Measurement gate (spec §5) — deferred, set aside for now
