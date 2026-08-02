@@ -30,3 +30,7 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# agent-winglet build output and per-session ledger state
+/bin/
+.claude/agent-winglet/
