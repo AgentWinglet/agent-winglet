@@ -63,59 +63,53 @@ None of the four levers are built yet:
 Each of these needs its own design pass — they weren't scoped or
 prototyped alongside the Ledger.
 
-### 2.2 Measurement gate (spec §5) — do not skip
+### 2.2 Measurement gate (spec §5) — deferred, set aside for now
 
 This is the actual gate before the tool is anything more than a personal
-toy, per the full spec's Phase 2 rule.
+toy, per the full spec's Phase 2 rule. Not skipped — deliberately set
+aside until there's a bigger footprint worth measuring. See
+`~/agent-winglet-v1-spec.md` §5's 2026-08-03 note for the full reasoning;
+summary below.
 
-**Built:**
+**What happened:** a paired-run harness (`internal/harness`, `cmd/measure`,
+`cmd/usage-per-solve`, `harness/`) was built, and — after fixing a real bug
+where `claude -p` silently denied every trial because project
+`settings.json` `permissions.allow` is ignored in headless mode (needs the
+`--allowedTools` CLI flag instead) — run for real against `claude -p` on
+the one example task (`fix-typo`: fix a typo, then re-run `go build ./...`
+verbatim to give the Ledger a repeat to catch).
 
-- `internal/harness` — `Record`/`ClaudeResult` types, `Aggregate` (groups
-  trials by task+variant and computes `usage_per_solve = total_cost_usd /
-  successes`, `ok=false` when a variant has zero successes rather than
-  hiding a total failure behind a divide), and a JSONL results log
-  (`AppendRecord`/`ReadRecords`). Unit tested, no dependency on a real
-  `claude` binary.
-- `cmd/measure` — runs one paired-run trial: `claude -p <prompt>
-  --output-format json` in a prepared working directory, scores it against
-  the task's `check.sh`, appends a `Record`. Smoke-tested end-to-end with a
-  stubbed `claude` binary (both the success and failure scoring paths) —
-  caught and fixed a real bug where `check.sh`'s path was resolved
-  relative to the *parent's* cwd but executed with `cmd.Dir` pointed at the
-  workdir, so the script was never found and every trial silently scored
-  as a failure.
-- `cmd/usage-per-solve` — reads the results log, prints per-(task,variant)
-  success rate, avg turns, and `usage_per_solve`.
-- `harness/setup-workdir.sh` + `harness/run-paired.sh` — reset a working
-  directory to task fixture state and configure (or omit) the ledger hook
-  per variant; run one control + one hook trial back to back.
-- `harness/tasks/fix-typo/` — one example task (fixture Go package with a
-  bug, a prompt that nudges a repeated identical `go build ./...` call so
-  the ledger hook has something to act on, and a `check.sh`) proving the
-  harness runs end-to-end.
-- `harness/README.md` documents the workflow and flags the one real
-  limitation: `total_cost_usd` from `claude -p` is Anthropic's computed
-  cost, the closest scriptable proxy to usage — but the spec asks for
-  measurement against actual weekly-cap consumption, which isn't
-  exposable per-invocation. Treat `usage_per_solve` from this harness as a
-  strong leading indicator, not gate-closing on its own.
+Result: 9 real paired trials, 9/9 success both variants, **identical
+`usage_per_solve` between hook and control** ($0.1708 either way). Traced
+to the root cause, not just observed: `go build ./...` prints nothing on
+success, and the Session Ledger hook explicitly skips empty stdout
+(`if response.Stdout == "" { return nil, nil }` in
+`cmd/ledger-hook/main.go`) — confirmed by inspecting a real trial's ledger
+state file, which had zero entries for the `go build` command. The task
+never gave the hook anything to act on, regardless of repeat count. This
+isn't a hook bug (skipping empty output is correct — there's nothing to
+compact) — it's a task-design gap: small single-file fixup tasks tend not
+to produce the kind of repeated, non-trivial output the Ledger is meant to
+compact.
 
-**Still not started:**
+**Decision:** rather than keep tuning toy tasks to force a signal, the
+harness and its code have been removed from the working tree (still
+recoverable from git history — commit `afa445a` on `add-v1-smth` — nothing
+is lost, just parked). Revisit once §4.2's context-lifecycle levers give
+the tool a bigger real footprint to measure against; a small hooks-only
+Ledger on trivial tasks isn't where the interesting signal will be.
 
-- No real trial data. Every piece above has been exercised with a stubbed
-  `claude` binary, never a live `claude -p` run — running `fix-typo` for
-  real against both variants, repeated enough times to mean something, is
-  the next step.
-- No cross-check of a batch of real trials against actual weekly-cap
-  percentage in the Claude Code UI, which `harness/README.md` calls out as
-  required before the gate counts as closed.
-- Only one task exists (`fix-typo`). It exercises exactly one Ledger
-  scenario (an identical repeated Bash command). More tasks are needed to
-  cover other waste-taxonomy cases before the gate says anything general.
+**Still true regardless of when this resumes:** `total_cost_usd` from
+`claude -p` is Anthropic's computed cost, the closest scriptable proxy to
+usage — but the spec asks for measurement against actual weekly-cap
+consumption, which isn't exposable per-invocation. Any future harness
+needs a batch of real trials cross-checked against actual weekly-cap
+percentage in the Claude Code UI before the gate counts as closed, and
+needs more than one task/scenario to say anything general.
 
-**Until real trial data exists, nothing in §1 should be treated as
-validated —** only as "mechanically works as designed," now with a harness
-ready to generate the data that would actually validate it.
+**Nothing in §1 should be treated as validated —** only as "mechanically
+works as designed." That remains true; the harness that would validate it
+is parked, not built out further, for now.
 
 ### 2.3 Housekeeping — done
 
@@ -158,9 +152,8 @@ ready to generate the data that would actually validate it.
 1. Housekeeping (§2.3) — cheap, unblocks anyone else opening the repo.
    Done except for the items in §2.3.1 blocked on merging `add-v1-smth` to
    `main`.
-2. Measurement gate (§2.2) — per spec, required before investing further
-   in more levers; also the only way to know if §2.1 is worth building at
-   all. Harness is built; what's left is running it for real (see §2.2's
-   "still not started" list) and adding tasks beyond `fix-typo`.
-3. Context lifecycle hooks (§2.1) — only after the gate exists to judge
-   them against.
+2. Context lifecycle hooks (§2.1) — build enough of these to give the tool
+   a real footprint worth measuring.
+3. Measurement gate (§2.2) — resume once §2.1 exists. The harness code is
+   parked in git history (commit `afa445a`), not gone; reviving it is
+   cheaper than the original build was.
