@@ -40,7 +40,7 @@ Bash is handled.
 
 ## 2. Not started
 
-### 2.1 Context lifecycle hooks (spec §4.2)
+### 2.1 Context lifecycle hooks (spec §4.2) — resolved (2 built, 2 out of hooks-only scope)
 
 **Budget output by outcome — done.** `cmd/ledger-hook/main.go`'s
 `budgetStdout` now collapses a first-time (non-repeat), successful Bash
@@ -126,19 +126,38 @@ the pattern used to validate the Ledger): Read → silent, first Edit →
 the rest of §1/§2.1: mechanically works as designed, not yet observed
 firing inside an actual Claude Code run.
 
-One of the four §4.2 levers is still not started:
+**Retire used-up context at phase boundaries — resolved, out of v1 scope
+(2026-08-03).** Third scope correction, same pattern as the Read finding in
+§1 and the tool-schema finding above. Investigated whether `phase.Observe`'s
+crossing signal (above) could drive this lever as literally specified: on
+the investigate→implement crossing, replace the investigate-phase tool
+outputs *already sent earlier in the transcript* with a compact receipt.
 
-- **Retire used-up context at phase boundaries.** No mechanism yet to
-  replace a stale file-read/test-log with a compact receipt once it's
-  served its purpose. Distinct from the Ledger's exact-repeat case — this
-  is for content read once, used, and now stale relative to the task's
-  current phase. Unlike when this was originally scoped, it no longer needs
-  its own phase-boundary detector from scratch: `phase.Observe`'s crossing
-  signal (above) is a candidate trigger point ("investigation phase just
-  ended" is exactly when accumulated investigation content becomes
-  retirable) — but retiring content is a materially different mechanism
-  (rewriting/removing prior transcript content, not emitting a message) and
-  still needs its own design pass on top of that signal.
+Confirmed against the hooks reference (code.claude.com/docs/en/hooks,
+2026-08-03): a `PostToolUse` hook's `hookSpecificOutput.updatedToolOutput`
+only replaces the result of the tool call *that invocation is currently
+processing* — it has no way to reach back and rewrite the output of an
+earlier tool call already sitting in the transcript. No other hook event or
+output field can do this either: `MessageDisplay`'s `displayContent` is
+explicitly display-only ("the transcript and what Claude sees keep the
+original"), and `PreCompact` only observes or blocks a compaction already
+under way (same finding the boundary-suggestion lever above relies on).
+There is no hook-callable "rewrite turn N."
+
+Same underlying cause as the tool-schema-trimming finding: this lever
+assumes a capability — retroactively touching context already sent — that
+sits upstream of every hook Claude Code exposes. `phase.Observe` correctly
+identifies *when* investigate content becomes retirable, but no hook
+mechanism can act on that signal against anything but the tool call
+currently in flight. A hooks-only architecture can compact content at the
+moment it's first produced (the output-budgeting lever, already built) but
+not retroactively, once the model has already seen it in full.
+
+Retired from v1 scope, not just deferred — same status as tool-schema
+trimming. All four §4.2 levers are now resolved: two built (output
+budgeting; investigate→implement compact suggestion), two confirmed
+unbuildable in a hooks-only architecture (tool/schema trimming; retiring
+used-up context).
 
 ### 2.2 Measurement gate (spec §5) — deferred, set aside for now
 
@@ -229,8 +248,12 @@ is parked, not built out further, for now.
 1. Housekeeping (§2.3) — cheap, unblocks anyone else opening the repo.
    Done except for the items in §2.3.1 blocked on merging `add-v1-smth` to
    `main`.
-2. Context lifecycle hooks (§2.1) — build enough of these to give the tool
-   a real footprint worth measuring.
-3. Measurement gate (§2.2) — resume once §2.1 exists. The harness code is
-   parked in git history (commit `afa445a`), not gone; reviving it is
-   cheaper than the original build was.
+2. Context lifecycle hooks (§2.1) — done. All four §4.2 levers resolved:
+   output budgeting and the investigate→implement compact suggestion are
+   built; tool/schema trimming and retiring used-up context are both
+   confirmed unbuildable in a hooks-only architecture (native harness
+   behavior in the first case, no hook can rewrite transcript history in
+   the second).
+3. Measurement gate (§2.2) — next up. The harness code is parked in git
+   history (commit `afa445a`), not gone; reviving it is cheaper than the
+   original build was.
