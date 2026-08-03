@@ -12,6 +12,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   build:
@@ -21,13 +22,13 @@ jobs:
         os: [windows-latest, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26.5"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
 
@@ -47,4 +48,10 @@ jobs:
           if [ "${{ runner.os }}" = "macOS" ]; then
             export CGO_LDFLAGS="-framework UniformTypeIdentifiers"
           fi
-          wails build
+          tags=()
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            # Ubuntu 24.04+ dropped webkit2gtk-4.0; this tag switches Wails
+            # to the 4.1 API matching the libwebkit2gtk-4.1-dev installed above.
+            tags=(-tags webkit2_41)
+          fi
+          wails build "${tags[@]}"
