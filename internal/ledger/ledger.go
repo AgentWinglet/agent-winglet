@@ -13,6 +13,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+
+	"github.com/umitkaanusta/agent-winglet/internal/statedir"
 )
 
 type Entry struct {
@@ -25,12 +27,20 @@ type State struct {
 	Entries map[string]Entry `json:"entries"`
 }
 
-func statePath(projectDir, sessionID string) string {
-	return filepath.Join(projectDir, ".claude", "agent-winglet", sessionID+".json")
+func statePath(projectDir, sessionID string) (string, error) {
+	d, err := statedir.Dir(projectDir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(d, sessionID+".json"), nil
 }
 
 func Load(projectDir, sessionID string) (*State, error) {
-	data, err := os.ReadFile(statePath(projectDir, sessionID))
+	p, err := statePath(projectDir, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(p)
 	if os.IsNotExist(err) {
 		return &State{Entries: map[string]Entry{}}, nil
 	}
@@ -48,7 +58,10 @@ func Load(projectDir, sessionID string) (*State, error) {
 }
 
 func Save(projectDir, sessionID string, s *State) error {
-	p := statePath(projectDir, sessionID)
+	p, err := statePath(projectDir, sessionID)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
 	}
@@ -66,7 +79,11 @@ func Save(projectDir, sessionID string, s *State) error {
 // Invalidate deletes the ledger for a session. Called on SessionStart and PostCompact
 // so a resumed or compacted session never treats a prior state file as still valid.
 func Invalidate(projectDir, sessionID string) error {
-	err := os.Remove(statePath(projectDir, sessionID))
+	p, err := statePath(projectDir, sessionID)
+	if err != nil {
+		return err
+	}
+	err = os.Remove(p)
 	if os.IsNotExist(err) {
 		return nil
 	}

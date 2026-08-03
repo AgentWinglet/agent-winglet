@@ -6,6 +6,7 @@ import (
 )
 
 func TestStoreWritesRetrievableContent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	path, err := Store(dir, "sess1", []byte("hello world"))
 	if err != nil {
@@ -21,6 +22,7 @@ func TestStoreWritesRetrievableContent(t *testing.T) {
 }
 
 func TestStoreIsIdempotentForIdenticalContent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	first, err := Store(dir, "sess1", []byte("same"))
 	if err != nil {
@@ -36,6 +38,7 @@ func TestStoreIsIdempotentForIdenticalContent(t *testing.T) {
 }
 
 func TestStoreDifferentContentDifferentPath(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	first, err := Store(dir, "sess1", []byte("a"))
 	if err != nil {
@@ -51,6 +54,7 @@ func TestStoreDifferentContentDifferentPath(t *testing.T) {
 }
 
 func TestInvalidateRemovesStoredContent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	path, err := Store(dir, "sess1", []byte("x"))
 	if err != nil {
@@ -65,6 +69,7 @@ func TestInvalidateRemovesStoredContent(t *testing.T) {
 }
 
 func TestInvalidateOnMissingDirIsNoop(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	if err := Invalidate(dir, "sess-never-seen"); err != nil {
 		t.Fatalf("Invalidate on missing dir errored: %v", err)
@@ -72,6 +77,7 @@ func TestInvalidateOnMissingDirIsNoop(t *testing.T) {
 }
 
 func TestSessionsAreIsolated(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	if _, err := Store(dir, "sess1", []byte("x")); err != nil {
 		t.Fatalf("Store errored: %v", err)

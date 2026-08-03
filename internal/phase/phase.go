@@ -17,6 +17,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+
+	"github.com/umitkaanusta/agent-winglet/internal/statedir"
 )
 
 type State struct {
@@ -27,12 +29,20 @@ type State struct {
 	Suggested bool `json:"suggested"`
 }
 
-func statePath(projectDir, sessionID string) string {
-	return filepath.Join(projectDir, ".claude", "agent-winglet", sessionID+".phase.json")
+func statePath(projectDir, sessionID string) (string, error) {
+	d, err := statedir.Dir(projectDir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(d, sessionID+".phase.json"), nil
 }
 
 func Load(projectDir, sessionID string) (*State, error) {
-	data, err := os.ReadFile(statePath(projectDir, sessionID))
+	p, err := statePath(projectDir, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(p)
 	if os.IsNotExist(err) {
 		return &State{}, nil
 	}
@@ -47,7 +57,10 @@ func Load(projectDir, sessionID string) (*State, error) {
 }
 
 func Save(projectDir, sessionID string, s *State) error {
-	p := statePath(projectDir, sessionID)
+	p, err := statePath(projectDir, sessionID)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
 	}
@@ -67,7 +80,11 @@ func Save(projectDir, sessionID string, s *State) error {
 // session can cross the boundary again rather than staying silently
 // suppressed by a signal fired in a part of the session that's now gone.
 func Invalidate(projectDir, sessionID string) error {
-	err := os.Remove(statePath(projectDir, sessionID))
+	p, err := statePath(projectDir, sessionID)
+	if err != nil {
+		return err
+	}
+	err = os.Remove(p)
 	if os.IsNotExist(err) {
 		return nil
 	}

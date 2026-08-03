@@ -22,10 +22,16 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+
+	"github.com/umitkaanusta/agent-winglet/internal/statedir"
 )
 
-func dir(projectDir, sessionID string) string {
-	return filepath.Join(projectDir, ".claude", "agent-winglet", sessionID+".retired")
+func dir(projectDir, sessionID string) (string, error) {
+	d, err := statedir.Dir(projectDir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(d, sessionID+".retired"), nil
 }
 
 // Store content-addresses content under the session's retired-content
@@ -33,7 +39,10 @@ func dir(projectDir, sessionID string) string {
 // content twice (e.g. an identical repeat investigate call) writes the same
 // file, so it's naturally idempotent.
 func Store(projectDir, sessionID string, content []byte) (path string, err error) {
-	d := dir(projectDir, sessionID)
+	d, err := dir(projectDir, sessionID)
+	if err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(d, 0o755); err != nil {
 		return "", err
 	}
@@ -51,7 +60,11 @@ func Store(projectDir, sessionID string, content []byte) (path string, err error
 // phase.Invalidate, so retired content never stands in as a substitute
 // across a restart or compaction.
 func Invalidate(projectDir, sessionID string) error {
-	err := os.RemoveAll(dir(projectDir, sessionID))
+	d, err := dir(projectDir, sessionID)
+	if err != nil {
+		return err
+	}
+	err = os.RemoveAll(d)
 	if os.IsNotExist(err) {
 		return nil
 	}

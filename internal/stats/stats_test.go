@@ -7,6 +7,7 @@ import (
 )
 
 func TestLoadMissingSessionReturnsZeroValue(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	s, err := LoadSession(dir, "session-does-not-exist")
 	if err != nil {
@@ -116,6 +117,7 @@ func TestStretch(t *testing.T) {
 }
 
 func TestSessionSaveThenLoadRoundTrips(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	sessionID := "sess-roundtrip"
 
@@ -138,6 +140,7 @@ func TestSessionSaveThenLoadRoundTrips(t *testing.T) {
 }
 
 func TestInvalidateSessionRemovesState(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	sessionID := "sess-invalidate"
 
@@ -161,6 +164,7 @@ func TestInvalidateSessionRemovesState(t *testing.T) {
 }
 
 func TestInvalidateSessionOnMissingFileIsNotAnError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	if err := InvalidateSession(dir, "never-existed"); err != nil {
 		t.Fatalf("InvalidateSession on nonexistent session errored: %v", err)
@@ -168,6 +172,7 @@ func TestInvalidateSessionOnMissingFileIsNotAnError(t *testing.T) {
 }
 
 func TestLifetimeAddAccumulatesAcrossSessions(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 
 	l, err := LoadLifetime(dir)
@@ -205,6 +210,7 @@ func TestLifetimeAddAccumulatesAcrossSessions(t *testing.T) {
 }
 
 func TestLifetimeSurvivesSessionInvalidation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	sessionID := "sess1"
 
@@ -235,6 +241,7 @@ func TestLifetimeSurvivesSessionInvalidation(t *testing.T) {
 }
 
 func TestLifetimeSaveThenLoadRoundTrips(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 
 	l, _ := LoadLifetime(dir)

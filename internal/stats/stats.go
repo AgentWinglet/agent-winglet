@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/umitkaanusta/agent-winglet/internal/statedir"
 	"github.com/umitkaanusta/agent-winglet/internal/transcript"
 )
 
@@ -174,24 +175,40 @@ func Stretch(pct float64) float64 {
 	return 100 / (100 - pct)
 }
 
-func sessionPath(projectDir, sessionID string) string {
-	return filepath.Join(projectDir, ".claude", "agent-winglet", sessionID+".stats.json")
+func sessionPath(projectDir, sessionID string) (string, error) {
+	d, err := statedir.Dir(projectDir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(d, sessionID+".stats.json"), nil
 }
 
-func lifetimePath(projectDir string) string {
-	return filepath.Join(projectDir, ".claude", "agent-winglet", "lifetime.stats.json")
+func lifetimePath(projectDir string) (string, error) {
+	d, err := statedir.Dir(projectDir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(d, "lifetime.stats.json"), nil
 }
 
 func LoadSession(projectDir, sessionID string) (*Session, error) {
+	p, err := sessionPath(projectDir, sessionID)
+	if err != nil {
+		return nil, err
+	}
 	var s Session
-	if err := loadJSON(sessionPath(projectDir, sessionID), &s); err != nil {
+	if err := loadJSON(p, &s); err != nil {
 		return nil, err
 	}
 	return &s, nil
 }
 
 func SaveSession(projectDir, sessionID string, s *Session) error {
-	return saveJSON(sessionPath(projectDir, sessionID), s)
+	p, err := sessionPath(projectDir, sessionID)
+	if err != nil {
+		return err
+	}
+	return saveJSON(p, s)
 }
 
 // InvalidateSession deletes the session tally. Called on SessionStart and
@@ -199,7 +216,11 @@ func SaveSession(projectDir, sessionID string, s *Session) error {
 // so a resumed or compacted session doesn't report a receipt describing
 // activity from a part of the session that's now gone.
 func InvalidateSession(projectDir, sessionID string) error {
-	err := os.Remove(sessionPath(projectDir, sessionID))
+	p, err := sessionPath(projectDir, sessionID)
+	if err != nil {
+		return err
+	}
+	err = os.Remove(p)
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -207,15 +228,23 @@ func InvalidateSession(projectDir, sessionID string) error {
 }
 
 func LoadLifetime(projectDir string) (*Lifetime, error) {
+	p, err := lifetimePath(projectDir)
+	if err != nil {
+		return nil, err
+	}
 	var l Lifetime
-	if err := loadJSON(lifetimePath(projectDir), &l); err != nil {
+	if err := loadJSON(p, &l); err != nil {
 		return nil, err
 	}
 	return &l, nil
 }
 
 func SaveLifetime(projectDir string, l *Lifetime) error {
-	return saveJSON(lifetimePath(projectDir), l)
+	p, err := lifetimePath(projectDir)
+	if err != nil {
+		return err
+	}
+	return saveJSON(p, l)
 }
 
 func loadJSON(path string, v interface{}) error {

@@ -53,6 +53,7 @@ func TestCheckDifferentKeysAreIndependent(t *testing.T) {
 }
 
 func TestLoadMissingFileReturnsEmptyState(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	s, err := Load(dir, "session-does-not-exist")
 	if err != nil {
@@ -64,6 +65,7 @@ func TestLoadMissingFileReturnsEmptyState(t *testing.T) {
 }
 
 func TestSaveThenLoadRoundTrips(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	sessionID := "sess-roundtrip"
 
@@ -84,6 +86,7 @@ func TestSaveThenLoadRoundTrips(t *testing.T) {
 }
 
 func TestInvalidateRemovesState(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	sessionID := "sess-invalidate"
 
@@ -108,6 +111,7 @@ func TestInvalidateRemovesState(t *testing.T) {
 }
 
 func TestInvalidateOnMissingFileIsNotAnError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	if err := Invalidate(dir, "never-existed"); err != nil {
 		t.Fatalf("Invalidate on nonexistent session errored: %v", err)
