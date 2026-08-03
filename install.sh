@@ -47,7 +47,9 @@ jq --arg cmd "$HOOK_PATH" '
   .hooks.SessionStart //= [] |
   .hooks.SessionStart |= (if any(.[]; has_cmd) then . else . + [{"hooks": [{"type": "command", "command": $cmd}]}] end) |
   .hooks.PostCompact //= [] |
-  .hooks.PostCompact |= (if any(.[]; has_cmd) then . else . + [{"hooks": [{"type": "command", "command": $cmd}]}] end)
+  .hooks.PostCompact |= (if any(.[]; has_cmd) then . else . + [{"hooks": [{"type": "command", "command": $cmd}]}] end) |
+  .hooks.SessionEnd //= [] |
+  .hooks.SessionEnd |= (if any(.[]; has_cmd) then . else . + [{"hooks": [{"type": "command", "command": $cmd}]}] end)
 ' "$SETTINGS_FILE" > "$TMP_FILE"
 mv "$TMP_FILE" "$SETTINGS_FILE"
 

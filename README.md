@@ -1,6 +1,16 @@
 # agent-winglet
 Get X% more usage on the same Claude Code / Codex plan
 
+## Savings receipt
+
+At the end of a session (if at least one mechanism fired), agent-winglet
+prints a one-line summary of what it did — repeat commands deduped, long
+outputs trimmed, investigate calls retired post-boundary — plus a running
+lifetime total across sessions. It reports raw suppressed-content counts,
+not a cost or token-savings figure (no such measurement exists yet). Set
+`AGENT_WINGLET_QUIET=1` to suppress the message; every underlying mechanism
+stays active either way.
+
 ## Install into your own project (v1: Session Ledger)
 
 From the root of the project you want the hook active in (not from this

@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/umitkaanusta/agent-winglet/internal/stats"
 )
 
 func linesOfStdout(n int) string {
@@ -183,7 +185,7 @@ func TestBudgetStdoutThresholdBoundary(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, ok := budgetStdout(linesOfStdout(c.lineCount))
+			_, _, ok := budgetStdout(linesOfStdout(c.lineCount))
 			if ok != c.wantBudget {
 				t.Fatalf("%d lines: budgetStdout ok = %v, want %v", c.lineCount, ok, c.wantBudget)
 			}
@@ -571,6 +573,182 @@ func TestHandleSessionStartInvalidatesRetiredContent(t *testing.T) {
 	}
 	if out != nil {
 		t.Fatalf("investigate call after SessionStart should not be retired (boundary forgotten), got %+v", out)
+	}
+}
+
+func sessionEndInput(sessionID, dir string) hookInput {
+	return hookInput{SessionID: sessionID, Cwd: dir, HookEventName: "SessionEnd"}
+}
+
+func TestHandleSessionEndZeroActivityEmitsNothing(t *testing.T) {
+	dir := t.TempDir()
+	out, err := handle(sessionEndInput("sess1", dir))
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("a session with no mechanism activity should emit no receipt, got %+v", out)
+	}
+}
+
+func TestHandleSessionEndReportsDedupHit(t *testing.T) {
+	dir := t.TempDir()
+	repeatIn := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
+	if _, err := handle(repeatIn); err != nil {
+		t.Fatalf("first call errored: %v", err)
+	}
+	if _, err := handle(repeatIn); err != nil {
+		t.Fatalf("repeat call errored: %v", err)
+	}
+
+	out, err := handle(sessionEndInput("sess1", dir))
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	if out == nil || out.SystemMessage == "" {
+		t.Fatalf("expected a receipt systemMessage, got %+v", out)
+	}
+	if !strings.Contains(out.SystemMessage, "repeat command") {
+		t.Fatalf("receipt missing dedup mention, got %q", out.SystemMessage)
+	}
+	if !strings.Contains(out.SystemMessage, "not a validated usage or cost figure") {
+		t.Fatalf("receipt missing the honesty parenthetical, got %q", out.SystemMessage)
+	}
+}
+
+func TestHandleSessionEndReportsBudgetTrim(t *testing.T) {
+	dir := t.TempDir()
+	longOutput := linesOfStdout(budgetLineThreshold + 1)
+	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
+	if _, err := handle(in); err != nil {
+		t.Fatalf("budgeted call errored: %v", err)
+	}
+
+	out, err := handle(sessionEndInput("sess1", dir))
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	if out == nil || !strings.Contains(out.SystemMessage, "trimmed") {
+		t.Fatalf("expected a receipt mentioning trimming, got %+v", out)
+	}
+}
+
+func TestHandleSessionEndReportsRetiredCall(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
+		t.Fatalf("seeding investigate call errored: %v", err)
+	}
+	if _, err := handle(toolCallInput("sess1", dir, "Edit")); err != nil {
+		t.Fatalf("crossing call errored: %v", err)
+	}
+	if _, err := handle(toolCallInput("sess1", dir, "Grep")); err != nil {
+		t.Fatalf("post-boundary investigate call errored: %v", err)
+	}
+
+	out, err := handle(sessionEndInput("sess1", dir))
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	if out == nil || !strings.Contains(out.SystemMessage, "retired post-boundary") {
+		t.Fatalf("expected a receipt mentioning retirement, got %+v", out)
+	}
+}
+
+func TestHandleSessionEndRespectsQuietEnvVar(t *testing.T) {
+	dir := t.TempDir()
+	repeatIn := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
+	if _, err := handle(repeatIn); err != nil {
+		t.Fatalf("first call errored: %v", err)
+	}
+	if _, err := handle(repeatIn); err != nil {
+		t.Fatalf("repeat call errored: %v", err)
+	}
+
+	t.Setenv(quietEnvVar, "1")
+
+	out, err := handle(sessionEndInput("sess1", dir))
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("AGENT_WINGLET_QUIET should suppress the receipt message, got %+v", out)
+	}
+}
+
+func TestHandleSessionEndStillUpdatesLifetimeWhenQuiet(t *testing.T) {
+	dir := t.TempDir()
+	repeatIn := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
+	if _, err := handle(repeatIn); err != nil {
+		t.Fatalf("first call errored: %v", err)
+	}
+	if _, err := handle(repeatIn); err != nil {
+		t.Fatalf("repeat call errored: %v", err)
+	}
+
+	t.Setenv(quietEnvVar, "1")
+	if _, err := handle(sessionEndInput("sess1", dir)); err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+
+	lifetime, err := stats.LoadLifetime(dir)
+	if err != nil {
+		t.Fatalf("LoadLifetime errored: %v", err)
+	}
+	if lifetime.Sessions != 1 || lifetime.DedupHits != 1 {
+		t.Fatalf("lifetime tally not updated while quiet: %+v", lifetime)
+	}
+}
+
+func TestHandleSessionEndAccumulatesLifetimeAcrossSessions(t *testing.T) {
+	dir := t.TempDir()
+
+	sess1 := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
+	if _, err := handle(sess1); err != nil {
+		t.Fatalf("sess1 first call errored: %v", err)
+	}
+	if _, err := handle(sess1); err != nil {
+		t.Fatalf("sess1 repeat call errored: %v", err)
+	}
+	if _, err := handle(sessionEndInput("sess1", dir)); err != nil {
+		t.Fatalf("sess1 SessionEnd errored: %v", err)
+	}
+
+	sess2 := bashInput(t, dir, "sess2", "echo bye", bashOutput{Stdout: "bye\n"})
+	if _, err := handle(sess2); err != nil {
+		t.Fatalf("sess2 first call errored: %v", err)
+	}
+	if _, err := handle(sess2); err != nil {
+		t.Fatalf("sess2 repeat call errored: %v", err)
+	}
+	out, err := handle(sessionEndInput("sess2", dir))
+	if err != nil {
+		t.Fatalf("sess2 SessionEnd errored: %v", err)
+	}
+	if out == nil || !strings.Contains(out.SystemMessage, "Lifetime across 2 sessions") {
+		t.Fatalf("expected lifetime tally across 2 sessions, got %+v", out)
+	}
+}
+
+func TestHandleSessionStartInvalidatesStatsTally(t *testing.T) {
+	dir := t.TempDir()
+	repeatIn := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
+	if _, err := handle(repeatIn); err != nil {
+		t.Fatalf("first call errored: %v", err)
+	}
+	if _, err := handle(repeatIn); err != nil {
+		t.Fatalf("repeat call errored: %v", err)
+	}
+
+	if _, err := handle(hookInput{SessionID: "sess1", Cwd: dir, HookEventName: "SessionStart"}); err != nil {
+		t.Fatalf("SessionStart handling errored: %v", err)
+	}
+
+	out, err := handle(sessionEndInput("sess1", dir))
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("stats tally should be wiped by SessionStart, got receipt %+v", out)
 	}
 }
 

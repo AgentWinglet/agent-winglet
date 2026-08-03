@@ -15,9 +15,18 @@
 //     receipt (see handleRetireInvestigate). Anything else passes through
 //     untouched.
 //   - SessionStart / PostCompact: deletes the session's ledger, phase state,
-//     and retired-content directory so no substitution, boundary
-//     suggestion, or retired receipt survives a restart or compaction (a
-//     hard constraint).
+//     retired-content directory, and stats tally so no substitution,
+//     boundary suggestion, retired receipt, or session receipt survives a
+//     restart or compaction (a hard constraint).
+//   - SessionEnd: emits a one-time "savings receipt" systemMessage
+//     summarizing what the above mechanisms did this session (see
+//     handleSessionEnd), then folds the session's tally into a lifetime
+//     total. SessionEnd was confirmed to support the systemMessage output
+//     field (a universal field, per the hooks reference) on 2026-08-03 —
+//     unlike hookSpecificOutput.additionalContext, which is not documented
+//     for this event and isn't needed here since no further model turn
+//     follows session end. Emits nothing if no mechanism fired this session
+//     (see handleSessionEnd) or if AGENT_WINGLET_QUIET is set.
 //
 // Read is intentionally not handled by the Ledger (repeat-detection) path:
 // Claude Code already detects an unchanged file natively and returns
@@ -38,6 +47,7 @@ import (
 	"github.com/umitkaanusta/agent-winglet/internal/ledger"
 	"github.com/umitkaanusta/agent-winglet/internal/phase"
 	"github.com/umitkaanusta/agent-winglet/internal/retire"
+	"github.com/umitkaanusta/agent-winglet/internal/stats"
 )
 
 // Output budgeting by outcome: a first-time (non-repeat) command that
@@ -54,8 +64,9 @@ const (
 
 // budgetStdout collapses stdout to its first budgetHeadLines and last
 // budgetTailLines lines if it has more than budgetLineThreshold lines. It
-// reports ok == false when stdout is short enough to leave untouched.
-func budgetStdout(stdout string) (budgeted string, ok bool) {
+// reports ok == false when stdout is short enough to leave untouched, and
+// omitted as the number of lines dropped (0 when ok is false).
+func budgetStdout(stdout string) (budgeted string, omitted int, ok bool) {
 	lines := strings.Split(stdout, "\n")
 	trailingNewline := len(lines) > 0 && lines[len(lines)-1] == ""
 	if trailingNewline {
@@ -63,20 +74,20 @@ func budgetStdout(stdout string) (budgeted string, ok bool) {
 	}
 	n := len(lines)
 	if n <= budgetLineThreshold {
-		return "", false
+		return "", 0, false
 	}
 
 	var b strings.Builder
 	b.WriteString(strings.Join(lines[:budgetHeadLines], "\n"))
 	b.WriteString("\n")
-	omitted := n - budgetHeadLines - budgetTailLines
+	omitted = n - budgetHeadLines - budgetTailLines
 	fmt.Fprintf(&b, "[agent-winglet] %d lines omitted, exit 0 (showing first %d/last %d)\n",
 		omitted, budgetHeadLines, budgetTailLines)
 	b.WriteString(strings.Join(lines[n-budgetTailLines:], "\n"))
 	if trailingNewline {
 		b.WriteString("\n")
 	}
-	return b.String(), true
+	return b.String(), omitted, true
 }
 
 type hookInput struct {
@@ -146,9 +157,14 @@ func handle(in hookInput) (*hookOutput, error) {
 		if err := phase.Invalidate(in.Cwd, in.SessionID); err != nil {
 			return nil, err
 		}
-		return nil, retire.Invalidate(in.Cwd, in.SessionID)
+		if err := retire.Invalidate(in.Cwd, in.SessionID); err != nil {
+			return nil, err
+		}
+		return nil, stats.InvalidateSession(in.Cwd, in.SessionID)
 	case "PostToolUse":
 		return handlePostToolUse(in)
+	case "SessionEnd":
+		return handleSessionEnd(in)
 	}
 	return nil, nil
 }
@@ -275,14 +291,30 @@ func handleRetireInvestigate(in hookInput) (*hookOutput, error) {
 		return nil, err
 	}
 	key := investigateKey(in.ToolInput)
+	n := len(in.ToolResponse)
 	receipt := fmt.Sprintf(
 		"[agent-winglet] investigate output retired post-boundary (%s %s, %d bytes) — full content at %s",
-		in.ToolName, key, len(in.ToolResponse), path,
+		in.ToolName, key, n, path,
 	)
+	if err := recordStat(in.Cwd, in.SessionID, func(s *stats.Session) { s.RecordRetire(n) }); err != nil {
+		return nil, err
+	}
 	return &hookOutput{HookSpecificOutput: hookSpecificOutput{
 		HookEventName:     "PostToolUse",
 		UpdatedToolOutput: receipt,
 	}}, nil
+}
+
+// recordStat loads the session's stats tally, applies mutate, and saves it
+// back — the same load/mutate/save shape as the ledger and phase call sites
+// already use, just with the stats package's own state instead.
+func recordStat(cwd, sessionID string, mutate func(*stats.Session)) error {
+	s, err := stats.LoadSession(cwd, sessionID)
+	if err != nil {
+		return err
+	}
+	mutate(s)
+	return stats.SaveSession(cwd, sessionID, s)
 }
 
 func handlePostToolUse(in hookInput) (*hookOutput, error) {
@@ -335,9 +367,12 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 		if err := ledger.Save(in.Cwd, in.SessionID, st); err != nil {
 			return nil, err
 		}
-		budgeted, ok := budgetStdout(response.Stdout)
+		budgeted, omitted, ok := budgetStdout(response.Stdout)
 		if !ok {
 			return nil, nil
+		}
+		if err := recordStat(in.Cwd, in.SessionID, func(s *stats.Session) { s.RecordBudgetTrim(omitted) }); err != nil {
+			return nil, err
 		}
 		return &hookOutput{HookSpecificOutput: hookSpecificOutput{
 			HookEventName:     "PostToolUse",
@@ -354,5 +389,94 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 	if err := ledger.Save(in.Cwd, in.SessionID, st); err != nil {
 		return nil, err
 	}
+	dedupBytes := len(response.Stdout)
+	if err := recordStat(in.Cwd, in.SessionID, func(s *stats.Session) { s.RecordDedup(dedupBytes) }); err != nil {
+		return nil, err
+	}
 	return repeatOut, nil
+}
+
+// quietEnvVar is the one piece of configurability in scope for the savings
+// receipt: it suppresses the SessionEnd systemMessage while leaving every
+// underlying mechanism (dedup, budgeting, retirement, the compact nudge)
+// fully active, and while lifetime bookkeeping still happens.
+const quietEnvVar = "AGENT_WINGLET_QUIET"
+
+func quiet() bool {
+	v := os.Getenv(quietEnvVar)
+	return v != "" && v != "0" && v != "false"
+}
+
+// handleSessionEnd emits the session's savings receipt: a summary of what
+// the ledger (dedup), output-budgeting, and retirement mechanisms did this
+// session, plus the running lifetime total. If no mechanism fired this
+// session, it emits nothing — a receipt reporting "0 things happened" is
+// noise, not signal (see the package doc's zero-activity note). The
+// session's tally is folded into the lifetime tally either way once it's
+// non-zero, even when AGENT_WINGLET_QUIET suppresses the message itself.
+func handleSessionEnd(in hookInput) (*hookOutput, error) {
+	sess, err := stats.LoadSession(in.Cwd, in.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	if sess.IsZero() {
+		return nil, nil
+	}
+
+	lifetime, err := stats.LoadLifetime(in.Cwd)
+	if err != nil {
+		return nil, err
+	}
+	lifetime.Add(sess)
+	if err := stats.SaveLifetime(in.Cwd, lifetime); err != nil {
+		return nil, err
+	}
+
+	if quiet() {
+		return nil, nil
+	}
+
+	return &hookOutput{
+		SystemMessage: receiptMessage(sess, lifetime),
+		HookSpecificOutput: hookSpecificOutput{
+			HookEventName: "SessionEnd",
+		},
+	}, nil
+}
+
+// receiptMessage composes the savings-receipt text. It reports only raw
+// suppressed-content counts (dedup bytes, trimmed lines, retired bytes),
+// framed explicitly as unvalidated — never a cost, token, or usage-cap
+// savings figure, since no such measurement exists yet (the paired-run
+// harness came back inconclusive on the tasks tested so far). That framing
+// is load-bearing, not throat-clearing: a self-reported "this saved you
+// money" claim with no evidence behind it is the exact failure mode this
+// receipt exists to avoid.
+func receiptMessage(s *stats.Session, l *stats.Lifetime) string {
+	var parts []string
+	if s.DedupHits > 0 {
+		parts = append(parts, fmt.Sprintf("%d repeat command%s deduped (%d bytes not replayed)",
+			s.DedupHits, plural(s.DedupHits), s.DedupBytes))
+	}
+	if s.BudgetTrims > 0 {
+		parts = append(parts, fmt.Sprintf("%d long output%s trimmed (%d lines omitted)",
+			s.BudgetTrims, plural(s.BudgetTrims), s.BudgetLinesOmitted))
+	}
+	if s.RetiredCalls > 0 {
+		parts = append(parts, fmt.Sprintf("%d investigate call%s retired post-boundary (%d bytes archived)",
+			s.RetiredCalls, plural(s.RetiredCalls), s.RetiredBytes))
+	}
+
+	return fmt.Sprintf(
+		"[agent-winglet] this session: %s. Lifetime across %d session%s: %d dedup hits, %d trims, %d retires. "+
+			"(Raw suppressed-content counts, not a validated usage or cost figure.)",
+		strings.Join(parts, ", "), l.Sessions, plural(l.Sessions), l.DedupHits, l.BudgetTrims, l.RetiredCalls,
+	)
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
