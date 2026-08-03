@@ -130,10 +130,11 @@ func formatBytes(n int64) string {
 }
 
 // ProjectRow is one row of the Projects screen: the project's name (dir
-// basename), whether the hook is actually wired into that project's
-// .claude/settings.json right now (not just registry presence — see
-// internal/registry.HookInstalled's doc comment), and its own lifetime
-// tally broken into the same three cards as Overview.
+// basename), whether the hook is actually active for this project right now
+// (not just registry presence — see internal/registry's doc comment) via
+// either the global ~/.claude/settings.json install.sh wires by default, or
+// a legacy/opt-in per-project .claude/settings.json entry, and its own
+// lifetime tally broken into the same three cards as Overview.
 type ProjectRow struct {
 	Name      string   `json:"name"`
 	Path      string   `json:"path"`
@@ -148,6 +149,7 @@ func (a *App) GetProjects() ([]ProjectRow, error) {
 		return nil, err
 	}
 
+	globalInstalled := registry.GlobalHookInstalled()
 	rows := make([]ProjectRow, 0, len(dirs))
 	for _, dir := range dirs {
 		l, err := stats.LoadLifetime(dir)
@@ -157,7 +159,7 @@ func (a *App) GetProjects() ([]ProjectRow, error) {
 		rows = append(rows, ProjectRow{
 			Name:      filepath.Base(dir),
 			Path:      dir,
-			Installed: registry.HookInstalled(dir),
+			Installed: globalInstalled || registry.HookInstalled(dir),
 			Overview:  lifetimeToOverview(l, 1),
 		})
 	}

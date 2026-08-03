@@ -17,7 +17,10 @@
 //   - SessionStart / PostCompact: deletes the session's ledger, phase state,
 //     retired-content directory, and stats tally so no substitution,
 //     boundary suggestion, retired receipt, or session receipt survives a
-//     restart or compaction (a hard constraint).
+//     restart or compaction (a hard constraint). Also registers the current
+//     project (in.Cwd) in the global ~/.agent-winglet/projects.json registry
+//     (see internal/registry.Register) — the hook installs globally now, so
+//     this is the only place a project gets added to that registry.
 //   - SessionEnd: emits a one-time "savings receipt" systemMessage
 //     summarizing what the above mechanisms did this session (see
 //     handleSessionEnd), then folds the session's tally into a lifetime
@@ -47,6 +50,7 @@ import (
 	"github.com/umitkaanusta/agent-winglet/internal/config"
 	"github.com/umitkaanusta/agent-winglet/internal/ledger"
 	"github.com/umitkaanusta/agent-winglet/internal/phase"
+	"github.com/umitkaanusta/agent-winglet/internal/registry"
 	"github.com/umitkaanusta/agent-winglet/internal/retire"
 	"github.com/umitkaanusta/agent-winglet/internal/stats"
 )
@@ -161,7 +165,15 @@ func handle(in hookInput) (*hookOutput, error) {
 		if err := retire.Invalidate(in.Cwd, in.SessionID); err != nil {
 			return nil, err
 		}
-		return nil, stats.InvalidateSession(in.Cwd, in.SessionID)
+		if err := stats.InvalidateSession(in.Cwd, in.SessionID); err != nil {
+			return nil, err
+		}
+		// Self-registration: now that the hook installs globally rather than
+		// per-project (see install.sh), there's no install-time moment inside
+		// each project to register it in ~/.agent-winglet/projects.json.
+		// Registering here means the first session the hook ever sees for a
+		// given cwd adds that project to the registry.
+		return nil, registry.Register(in.Cwd)
 	case "PostToolUse":
 		return handlePostToolUse(in)
 	case "SessionEnd":

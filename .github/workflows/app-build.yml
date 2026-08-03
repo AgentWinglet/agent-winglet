@@ -41,17 +41,15 @@ jobs:
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
 
-      - name: Build app
-        working-directory: cmd/agent-winglet-app
+      - name: Build, install, and uninstall the app
         shell: bash
+        # Runs install.sh/uninstall.sh's --app-only path instead of a bare
+        # `wails build` — this is a real end-to-end smoke test of the actual
+        # user-facing install mechanism (which wraps `make app`, so it's
+        # still "a real wails build per OS, not just go build ./..." per the
+        # original point of this job) on all three OSes, which matters
+        # because only macOS gets run by hand day to day; Windows/Linux only
+        # get exercised here.
         run: |
-          if [ "${{ runner.os }}" = "macOS" ]; then
-            export CGO_LDFLAGS="-framework UniformTypeIdentifiers"
-          fi
-          tags=()
-          if [ "${{ runner.os }}" = "Linux" ]; then
-            # Ubuntu 24.04+ dropped webkit2gtk-4.0; this tag switches Wails
-            # to the 4.1 API matching the libwebkit2gtk-4.1-dev installed above.
-            tags=(-tags webkit2_41)
-          fi
-          wails build "${tags[@]}"
+          ./install.sh --app-only
+          ./uninstall.sh --app-only

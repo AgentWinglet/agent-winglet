@@ -64,7 +64,7 @@ async function renderProjectsScreen(container) {
     container.innerHTML = `
       <h1 class="screen-title">Projects</h1>
       <p class="screen-subtitle">Projects with the agent-winglet hook installed.</p>
-      <div class="empty-state">No projects registered yet — run install.sh from a project to add one.</div>
+      <div class="empty-state">No projects registered yet — the hook installs globally; a project is added automatically the first time Claude Code starts a session in it.</div>
     `;
     return;
   }
