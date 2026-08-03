@@ -36,14 +36,19 @@ func TestReadSessionUsageSumsTokensBytesAndCost(t *testing.T) {
 		t.Fatalf("ReadSessionUsage errored: %v", err)
 	}
 
-	wantTokens := int64(100 + 200 + 100 + 200) // input + cache_read + 5m + 1h
+	// cache_read_input_tokens (200) and output_tokens (50) are deliberately
+	// excluded: they don't represent content newly fed to the model on this
+	// line, so including them would inflate Tokens/CostUSD relative to
+	// ContentBytes (which counts each line's content once) — see
+	// SessionUsage's doc comment.
+	wantTokens := int64(100 + 100 + 200) // input + 5m + 1h
 	if u.Tokens != wantTokens {
 		t.Fatalf("Tokens = %d, want %d", u.Tokens, wantTokens)
 	}
 
 	rate := pricing.Lookup("claude-sonnet-5")
-	wantCost := float64(100)*rate.Input/1e6 + float64(50)*rate.Output/1e6 +
-		float64(200)*rate.CacheRead/1e6 + float64(100)*rate.CacheWrite5m/1e6 + float64(200)*rate.CacheWrite1h/1e6
+	wantCost := float64(100)*rate.Input/1e6 +
+		float64(100)*rate.CacheWrite5m/1e6 + float64(200)*rate.CacheWrite1h/1e6
 	if u.CostUSD != wantCost {
 		t.Fatalf("CostUSD = %v, want %v", u.CostUSD, wantCost)
 	}
@@ -84,6 +89,47 @@ func TestReadSessionUsageSkipsMalformedLines(t *testing.T) {
 	}
 	if u.Tokens != 10 {
 		t.Fatalf("Tokens = %d, want 10 (only the well-formed line should count)", u.Tokens)
+	}
+}
+
+// TestReadSessionUsageManyTurnsDontInflateTokensOrCost is a regression test
+// for the exact bug report this fix addresses: a long session where every
+// turn re-reads the whole growing context from cache (cache_read_input_
+// tokens) must not make Tokens/CostUSD scale with turn count. Ten turns each
+// replaying a 100K-token cache (a realistic long-session shape) would have
+// summed to 1M+ cache-read tokens under the old accounting, for a session
+// whose actual new content is a handful of small tool_result lines — pricing
+// that against a tiny ContentBytes total is what produced a $18+ estimate
+// for 3.5 MiB of suppressed content.
+func TestReadSessionUsageManyTurnsDontInflateTokensOrCost(t *testing.T) {
+	var lines []string
+	for i := 0; i < 10; i++ {
+		lines = append(lines, `{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{`+
+			`"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":100000}}}`)
+		lines = append(lines, `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}`)
+	}
+	path := writeFixture(t, lines)
+
+	u, err := ReadSessionUsage(path)
+	if err != nil {
+		t.Fatalf("ReadSessionUsage errored: %v", err)
+	}
+
+	if wantTokens := int64(10 * 10); u.Tokens != wantTokens {
+		t.Fatalf("Tokens = %d, want %d (cache-read replays across 10 turns must not accumulate)", u.Tokens, wantTokens)
+	}
+
+	rate := pricing.Lookup("claude-sonnet-5")
+	wantCost := float64(10*10) * rate.Input / 1e6
+	if u.CostUSD != wantCost {
+		t.Fatalf("CostUSD = %v, want %v (cache-read and output cost must not accumulate into the content price)",
+			u.CostUSD, wantCost)
+	}
+
+	costPerByte := u.CostUSD / float64(u.ContentBytes)
+	if costPerByte > 0.01 {
+		t.Fatalf("costPerByte = %v, implausibly high for plain text content (want a small fraction of a cent per byte)",
+			costPerByte)
 	}
 }
 

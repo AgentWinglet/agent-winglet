@@ -154,6 +154,14 @@ body {
   letter-spacing: -0.01em;
 }
 
+.hero-usage {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--accent);
+  margin-top: 6px;
+}
+
 .hero-bar {
   margin-top: 16px;
 }
@@ -314,7 +322,13 @@ body {
   margin-bottom: 8px;
 }
 
-@media (max-width: 520px) {
+@media (max-width: 760px) {
+  .card-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 380px) {
   .card-grid {
     grid-template-columns: 1fr;
   }

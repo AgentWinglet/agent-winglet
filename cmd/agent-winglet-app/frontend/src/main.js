@@ -21,14 +21,17 @@ function navigate(screen) {
 }
 
 // hero renders the primary figure: the headline percent-saved figure (e.g.
-// "38% saved") plus, once real transcript data exists to size it against, a
-// bytes bar showing suppressed bytes against the real total (transcript
-// content bytes + suppressed) — the same total the headline percent itself
-// is computed from, so the fill width and the number always agree.
+// "38% saved"), a one-line restatement of that same figure as extra runway
+// ("→ ~61% more usage with the same plan") — the actual claim agent-winglet
+// makes — and, once real transcript data exists to size it against, a bytes
+// bar showing suppressed bytes against the real total (transcript content
+// bytes + suppressed) — the same total the headline percent itself is
+// computed from, so the fill width and the number always agree.
 function hero(overview) {
   return `
     <div class="hero">
       <div class="hero-number">${overview.heroHeadline}</div>
+      ${overview.hasTranscriptData ? `<div class="hero-usage">→ ${overview.heroUsageDetail} ${overview.heroUsageSub}</div>` : ''}
       ${overview.hasTranscriptData ? heroBar(overview) : ''}
     </div>`;
 }
@@ -77,13 +80,13 @@ function barList(overview) {
 
   return `
     <div class="bar-list">
-      <div class="bar-list-header">Suppressed, by mechanism</div>
+      <div class="bar-list-header">Where the savings come from</div>
       ${rows}
     </div>`;
 }
 
 function cardRow(overview) {
-  const cards = [overview.bytesSavedCard, overview.dollarSavedCard, overview.moreUsageCard];
+  const cards = [overview.bytesSavedCard, overview.tokensSavedCard, overview.dollarSavedCard];
   return `
     <div class="card-grid">
       ${cards
@@ -101,7 +104,7 @@ function cardRow(overview) {
 
 // statsBlock is the full hierarchy shared by the Overview screen and each
 // Projects-screen row: hero (raw suppressed bytes) -> summary cards (bytes/
-// $/more-usage) -> per-mechanism bars. One function, two call sites, so the
+// tokens/$) -> per-mechanism bars. One function, two call sites, so the
 // layout can never drift between the two.
 function statsBlock(overview) {
   return `

@@ -48,10 +48,12 @@ export namespace main {
 	    heroTotalBytesLabel: string;
 	    heroPercent: number;
 	    heroHeadline: string;
+	    heroUsageDetail: string;
+	    heroUsageSub: string;
 	    hasTranscriptData: boolean;
 	    bytesSavedCard: Card;
+	    tokensSavedCard: Card;
 	    dollarSavedCard: Card;
-	    moreUsageCard: Card;
 	    bars: BarRow[];
 	    projectCount: number;
 	    sessionCount: number;
@@ -67,10 +69,12 @@ export namespace main {
 	        this.heroTotalBytesLabel = source["heroTotalBytesLabel"];
 	        this.heroPercent = source["heroPercent"];
 	        this.heroHeadline = source["heroHeadline"];
+	        this.heroUsageDetail = source["heroUsageDetail"];
+	        this.heroUsageSub = source["heroUsageSub"];
 	        this.hasTranscriptData = source["hasTranscriptData"];
 	        this.bytesSavedCard = this.convertValues(source["bytesSavedCard"], Card);
+	        this.tokensSavedCard = this.convertValues(source["tokensSavedCard"], Card);
 	        this.dollarSavedCard = this.convertValues(source["dollarSavedCard"], Card);
-	        this.moreUsageCard = this.convertValues(source["moreUsageCard"], Card);
 	        this.bars = this.convertValues(source["bars"], BarRow);
 	        this.projectCount = source["projectCount"];
 	        this.sessionCount = source["sessionCount"];

@@ -19,9 +19,12 @@ func TestBuildOverviewNoDataYetWhenNothingProcessed(t *testing.T) {
 	if o.HasTranscriptData {
 		t.Fatalf("expected HasTranscriptData = false with no transcript content bytes, got true")
 	}
-	if o.BytesSavedCard.Detail != "no data yet" || o.DollarSavedCard.Detail != "no data yet" || o.MoreUsageCard.Detail != "no data yet" {
-		t.Fatalf("card details should read 'no data yet' with no processed-bytes data, got bytesSaved=%q dollarSaved=%q moreUsage=%q",
-			o.BytesSavedCard.Detail, o.DollarSavedCard.Detail, o.MoreUsageCard.Detail)
+	if o.BytesSavedCard.Detail != "no data yet" || o.DollarSavedCard.Detail != "no data yet" {
+		t.Fatalf("card details should read 'no data yet' with no processed-bytes data, got bytesSaved=%q dollarSaved=%q",
+			o.BytesSavedCard.Detail, o.DollarSavedCard.Detail)
+	}
+	if o.HeroUsageDetail != "no data yet" {
+		t.Fatalf("HeroUsageDetail = %q, want %q with no processed-bytes data", o.HeroUsageDetail, "no data yet")
 	}
 	for _, bar := range o.Bars {
 		if bar.HasPercent {
@@ -52,14 +55,19 @@ func TestBuildOverviewComputesBytesAndStretch(t *testing.T) {
 	if o.BytesSavedCard.Detail != "38 B" {
 		t.Fatalf("BytesSavedCard.Detail = %q, want %q", o.BytesSavedCard.Detail, "38 B")
 	}
-	if o.BytesSavedCard.Sub != "38%" {
-		t.Fatalf("BytesSavedCard.Sub = %q, want %q", o.BytesSavedCard.Sub, "38%")
+	if o.BytesSavedCard.Sub != "" {
+		t.Fatalf("BytesSavedCard.Sub = %q, want empty (percentage sub-line removed)", o.BytesSavedCard.Sub)
 	}
-	if !strings.Contains(o.MoreUsageCard.Detail, "1.6x") {
-		t.Fatalf("MoreUsageCard.Detail missing expected stretch multiplier, got %q", o.MoreUsageCard.Detail)
+	if o.TokensSavedCard.Detail != "no data yet" {
+		t.Fatalf("TokensSavedCard.Detail = %q, want %q (no TranscriptTokens seeded)", o.TokensSavedCard.Detail, "no data yet")
 	}
-	if o.MoreUsageCard.Sub != "with the same plan" {
-		t.Fatalf("MoreUsageCard.Sub = %q, want %q", o.MoreUsageCard.Sub, "with the same plan")
+	// HeroUsageDetail restates the same stretch (≈1.6129x) as a percent
+	// instead of a multiplier: (1.6129 - 1) * 100 ≈ 61%.
+	if !strings.Contains(o.HeroUsageDetail, "61%") || !strings.Contains(o.HeroUsageDetail, "usage") {
+		t.Fatalf("HeroUsageDetail missing expected percent or 'usage' wording, got %q", o.HeroUsageDetail)
+	}
+	if o.HeroUsageSub != "with the same plan" {
+		t.Fatalf("HeroUsageSub = %q, want %q", o.HeroUsageSub, "with the same plan")
 	}
 
 	// Bars: dedup(20) > budget(10) > retired(8), descending by bytes.
@@ -87,7 +95,11 @@ func TestBuildOverviewWithTranscriptDataPricesDollarCard(t *testing.T) {
 	o := buildOverview(overviewTotals{
 		DedupHits: 1, DedupBytes: 100,
 		// This rollup's transcript usage: $1 cost backed by 4000 content
-		// bytes -> costPerByte = $0.00025/byte.
+		// bytes -> costPerByte = $0.00025/byte. TranscriptTokens: 4000 gives
+		// a clean 1 token/byte ratio, so TokensSavedCard's expected value
+		// below is easy to check; the dollar figure would come out the same
+		// regardless of this value (it cancels out of the math).
+		TranscriptTokens:       4000,
 		TranscriptCostUSD:      1.0,
 		TranscriptContentBytes: 4000,
 	}, 1, 1)
@@ -95,31 +107,44 @@ func TestBuildOverviewWithTranscriptDataPricesDollarCard(t *testing.T) {
 	if !o.HasTranscriptData {
 		t.Fatalf("expected HasTranscriptData = true when TranscriptContentBytes > 0")
 	}
+	// tokensSaved = 100 suppressed bytes * 1 token/byte = 100 tokens.
+	if o.TokensSavedCard.Detail != "100" {
+		t.Fatalf("TokensSavedCard.Detail = %q, want %q", o.TokensSavedCard.Detail, "100")
+	}
 	// usdSaved = 100 suppressed bytes * $0.00025/byte = $0.025 -> "$0.03".
 	if o.DollarSavedCard.Detail != "$0.03" {
 		t.Fatalf("DollarSavedCard.Detail = %q, want %q", o.DollarSavedCard.Detail, "$0.03")
 	}
-	// suppressed = 100, real total = 4000+100 = 4100 -> 100/4100 ≈ 2.4%.
-	if o.DollarSavedCard.Sub != "2%" {
-		t.Fatalf("DollarSavedCard.Sub = %q, want %q", o.DollarSavedCard.Sub, "2%")
+	if o.DollarSavedCard.Sub != "" {
+		t.Fatalf("DollarSavedCard.Sub = %q, want empty (percentage sub-line removed)", o.DollarSavedCard.Sub)
 	}
 }
 
 func TestBuildOverviewDollarCardStaysProportionalAcrossOutlierSessions(t *testing.T) {
-	// Regression test: pricing must go through a cost-per-byte ratio
-	// computed from independently-summed cost and content bytes, never
-	// through a per-token intermediate — a lifetime rollup mixing a
-	// content-heavy session with a trivial one that still burned huge
-	// context-replay tokens must not distort the $ estimate by orders of
-	// magnitude (see the manual-verification note this test captures).
+	// Regression test: cost, tokens, and content bytes must each be summed
+	// independently across sessions before dividing, never averaged as a
+	// per-session ratio first — a lifetime rollup mixing a content-heavy
+	// session with a trivial one that still burned huge context-replay
+	// tokens must not distort the $ estimate by orders of magnitude. Going
+	// through a tokens intermediate is safe here specifically because
+	// TranscriptTokens/TranscriptCostUSD (see internal/transcript) exclude
+	// cache-read replays and output tokens at the source, so they scale
+	// with actual content size, not with how many turns a session ran.
 	o := buildOverview(overviewTotals{
 		DedupHits: 1, DedupBytes: 13926, // ~13.6 KiB, matches the observed regression
+		TranscriptTokens:       100, // cancels out of the dollar math; only sizes TokensSavedCard below
 		TranscriptCostUSD:      0.1578,
 		TranscriptContentBytes: 455, // tiny, from a mostly-trivial session
 	}, 1, 1)
 
 	if !o.HasTranscriptData {
 		t.Fatalf("expected HasTranscriptData = true")
+	}
+	// tokensPerByte = 100/455 ≈ 0.2198 -> tokensSaved ≈ 13926*0.2198 ≈ 3061 -> "3.1K",
+	// a plausible small token count, not the millions an uncorrected
+	// cache-read-inflated ratio would have produced.
+	if o.TokensSavedCard.Detail != "3.1K" {
+		t.Fatalf("TokensSavedCard.Detail = %q, want %q", o.TokensSavedCard.Detail, "3.1K")
 	}
 	// costPerByte = 0.1578/455 ≈ 0.000347 -> usdSaved ≈ 13926*0.000347 ≈ $4.83,
 	// proportional to suppressed bytes and nowhere near the ~2-orders-of-

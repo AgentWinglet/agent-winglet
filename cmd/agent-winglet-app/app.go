@@ -66,11 +66,14 @@ type BarRow struct {
 // same shape, two call sites). Hierarchy, top to bottom:
 //
 //  1. HeroHeadline — the headline percent-saved figure (e.g. "38% saved"),
-//     the primary claim.
-//  2. Cards — three small summary cards: bytes suppressed (with percent
-//     underneath), a priced dollar estimate (when transcript data exists,
-//     also with percent underneath), and the "~A.Bx" net-gains multiplier
-//     ("with the same plan" underneath).
+//     the primary claim, restated directly underneath as HeroUsageDetail —
+//     the same stretch multiplier reframed as a percent ("with the same
+//     plan" underneath), so the hero doesn't repeat itself with a bare "Ax"
+//     multiplier right below a percent figure.
+//  2. Cards — three small summary cards: bytes suppressed, the same bytes
+//     converted to a token estimate, and that token estimate priced in
+//     dollars. The net-gains multiplier lives only in HeroUsageDetail now —
+//     a fourth card restating it would just repeat the hero line.
 //  3. Bars — one row per suppression mechanism, descending by bytes.
 type Overview struct {
 	HeroBytes           int64    `json:"heroBytes"`
@@ -78,10 +81,12 @@ type Overview struct {
 	HeroTotalBytesLabel string   `json:"heroTotalBytesLabel"`
 	HeroPercent         float64  `json:"heroPercent"`
 	HeroHeadline        string   `json:"heroHeadline"`
+	HeroUsageDetail     string   `json:"heroUsageDetail"`
+	HeroUsageSub        string   `json:"heroUsageSub"`
 	HasTranscriptData   bool     `json:"hasTranscriptData"`
 	BytesSavedCard      Card     `json:"bytesSavedCard"`
+	TokensSavedCard     Card     `json:"tokensSavedCard"`
 	DollarSavedCard     Card     `json:"dollarSavedCard"`
-	MoreUsageCard       Card     `json:"moreUsageCard"`
 	Bars                []BarRow `json:"bars"`
 	ProjectCount        int      `json:"projectCount"`
 	SessionCount        int      `json:"sessionCount"`
@@ -250,23 +255,27 @@ func barRows(t overviewTotals, total int64) []BarRow {
 	return rows
 }
 
-// buildOverview composes the percent-saved hero, the three summary cards,
-// and the suppressed-by-mechanism bars from a totals tally.
+// buildOverview composes the percent-saved hero, the summary cards, and the
+// suppressed-by-mechanism bars from a totals tally.
 //
-// HeroHeadline is always the headline percent-saved figure. The dollar card
-// prices the suppressed-byte figure directly at this rollup's own
-// cost-per-byte ratio
-// (TranscriptCostUSD / TranscriptContentBytes, both measured on the
-// "input-side content" unit — see internal/transcript), skipping tokens as
-// an intermediate unit entirely: a token count only makes sense computed
-// from a bytes-per-token ratio local to the session that produced it, and a
-// lifetime/project rollup mixes sessions whose ratios can differ by orders
-// of magnitude (a trivial session that replays a huge cached system prompt
-// for one line of real content has a wildly different bytes-per-token ratio
-// than a content-heavy one) — prone to wild distortion once aggregated.
-// Pricing directly in cost-per-byte sidesteps that: cost and content bytes
-// are summed independently across sessions before dividing, so the ratio is
-// a weighted average, not one dominated by a single outlier's token count.
+// HeroHeadline is always the headline percent-saved figure. The tokens and
+// dollar cards both price the suppressed-byte figure as a proxy for tokens
+// saved, ccusage-style: extrapolate from the same percent-saved figure as
+// the hero headline (suppressed / (suppressed+actual)) rather than a second,
+// independently-computed bytes-per-token ratio — pct/(100-pct) is the odds
+// form of that percentage, which is algebraically the same suppressed/actual
+// scale factor a separate ratio would give, just derived from the number
+// already on screen instead of recomputed. Those priced tokens are then
+// converted to dollars at this rollup's own cost-per-token rate. Both
+// TranscriptTokens and TranscriptCostUSD (see internal/transcript's
+// SessionUsage doc) count only content newly fed to the model — cache-read
+// replays of earlier turns and output tokens are excluded at the source —
+// so the price-per-token rate stays a stable per-content-unit price instead
+// of one that inflates with how many turns a session ran. Cost, tokens, and
+// content bytes are all summed independently across sessions before
+// dividing, so a lifetime/project rollup mixing sessions of different sizes
+// still comes out as a weighted average, not distorted by any single
+// outlier session.
 func buildOverview(t overviewTotals, projectCount, sessionCount int) Overview {
 	suppressed := t.DedupBytes + t.BudgetBytesOmitted + t.RetiredBytes
 	total := t.TranscriptContentBytes + suppressed
@@ -279,30 +288,36 @@ func buildOverview(t overviewTotals, projectCount, sessionCount int) Overview {
 	}
 
 	hasTranscriptData := t.TranscriptContentBytes > 0
+	hasTokenData := hasTranscriptData && t.TranscriptTokens > 0
+
+	tokensSavedDetail := "no data yet"
 	dollarDetail := "no data yet"
-	dollarSub := ""
-	if hasTranscriptData {
-		costPerByte := t.TranscriptCostUSD / float64(t.TranscriptContentBytes)
-		usdSaved := float64(suppressed) * costPerByte
+	if hasTokenData {
+		tokensSaved := float64(t.TranscriptTokens) * pct / (100 - pct)
+		tokensSavedDetail = formatTokens(tokensSaved)
+
+		costPerToken := t.TranscriptCostUSD / float64(t.TranscriptTokens)
+		usdSaved := tokensSaved * costPerToken
 		dollarDetail = fmt.Sprintf("$%.2f", usdSaved)
-		if hasPct {
-			dollarSub = fmt.Sprintf("%.0f%%", pct)
-		}
 	}
 
-	moreUsageDetail := "no data yet"
-	moreUsageSub := ""
+	// HeroUsageDetail reframes the percent-saved figure as extra runway on
+	// the same plan — the actual claim agent-winglet makes — expressed as a
+	// percent rather than a bare "Ax" multiplier with no unit. stats.Stretch
+	// gives that runway as a ratio of 1 (e.g. 1.6129), so subtracting 100
+	// after scaling to a percent yields "how much more," not "how much
+	// total."
+	heroUsageDetail := "no data yet"
+	heroUsageSub := ""
 	if hasPct {
-		stretch := stats.Stretch(pct)
-		moreUsageDetail = fmt.Sprintf("~%.1fx", stretch)
-		moreUsageSub = "with the same plan"
+		extraPercent := stats.Stretch(pct)*100 - 100
+		heroUsageDetail = fmt.Sprintf("~%.0f%% more usage", extraPercent)
+		heroUsageSub = "with the same plan"
 	}
 
 	bytesSavedDetail := "no data yet"
-	bytesSavedSub := ""
 	if hasPct {
 		bytesSavedDetail = formatBytes(suppressed)
-		bytesSavedSub = fmt.Sprintf("%.0f%%", pct)
 	}
 
 	return Overview{
@@ -311,15 +326,17 @@ func buildOverview(t overviewTotals, projectCount, sessionCount int) Overview {
 		HeroTotalBytesLabel: formatBytes(total),
 		HeroPercent:         pct,
 		HeroHeadline:        heroHeadline,
+		HeroUsageDetail:     heroUsageDetail,
+		HeroUsageSub:        heroUsageSub,
 		HasTranscriptData:   hasTranscriptData,
 		BytesSavedCard: Card{
-			Label: "Bytes saved", Detail: bytesSavedDetail, Sub: bytesSavedSub,
+			Label: "Bytes saved", Detail: bytesSavedDetail,
+		},
+		TokensSavedCard: Card{
+			Label: "Tokens saved", Detail: tokensSavedDetail,
 		},
 		DollarSavedCard: Card{
-			Label: "Money saved", Detail: dollarDetail, Sub: dollarSub,
-		},
-		MoreUsageCard: Card{
-			Label: "Net gains", Detail: moreUsageDetail, Sub: moreUsageSub,
+			Label: "Money saved", Detail: dollarDetail,
 		},
 		Bars:         barRows(t, total),
 		ProjectCount: projectCount,
@@ -337,6 +354,23 @@ func plural(n int) string {
 // formatBytes renders a byte count the way the rest of the receipt does —
 // a plain magnitude, never implying a cost or token-savings figure, since no
 // such validated measurement exists yet.
+// formatTokens renders a token count with a K/M/B/T suffix (base 1000, unlike
+// formatBytes' base 1024 — tokens aren't a binary-scaled unit). n is a
+// float64 because it's a derived estimate (suppressed bytes * a
+// tokens-per-byte ratio), not a directly counted integer.
+func formatTokens(n float64) string {
+	const unit = 1000
+	if n < unit {
+		return fmt.Sprintf("%.0f", n)
+	}
+	div, exp := float64(unit), 0
+	for v := n / unit; v >= unit; v /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f%c", n/div, "KMBT"[exp])
+}
+
 func formatBytes(n int64) string {
 	const unit = 1024
 	if n < unit {
