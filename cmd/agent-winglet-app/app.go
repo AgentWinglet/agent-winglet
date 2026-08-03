@@ -11,6 +11,7 @@ import (
 
 	"github.com/umitkaanusta/agent-winglet/internal/config"
 	"github.com/umitkaanusta/agent-winglet/internal/registry"
+	"github.com/umitkaanusta/agent-winglet/internal/statedir"
 	"github.com/umitkaanusta/agent-winglet/internal/stats"
 )
 
@@ -446,11 +447,14 @@ type sessionFileInfo struct {
 
 // listSessionFiles returns every session-stats file still on disk for
 // projectDir (excluding lifetime.stats.json), newest first by modification
-// time. A project with no .claude/agent-winglet directory yet (hook never
-// fired here) returns an empty slice, not an error, same fail-soft
-// convention the rest of this package follows.
+// time. A project with no state dir yet (hook never fired here) returns an
+// empty slice, not an error, same fail-soft convention the rest of this
+// package follows.
 func listSessionFiles(projectDir string) ([]sessionFileInfo, error) {
-	dir := filepath.Join(projectDir, ".claude", "agent-winglet")
+	dir, err := statedir.Dir(projectDir)
+	if err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/umitkaanusta/agent-winglet/internal/registry"
+	"github.com/umitkaanusta/agent-winglet/internal/statedir"
 	"github.com/umitkaanusta/agent-winglet/internal/stats"
 )
 
@@ -192,8 +193,12 @@ func TestGetOverviewSumsAcrossProjects(t *testing.T) {
 }
 
 func TestGetSessionStatsListsSessionsNewestFirstAndSkipsLifetime(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
-	agentDir := filepath.Join(dir, ".claude", "agent-winglet")
+	agentDir, err := statedir.Dir(dir)
+	if err != nil {
+		t.Fatalf("statedir.Dir errored: %v", err)
+	}
 	if err := os.MkdirAll(agentDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll errored: %v", err)
 	}
@@ -230,13 +235,14 @@ func TestGetSessionStatsListsSessionsNewestFirstAndSkipsLifetime(t *testing.T) {
 }
 
 func TestGetSessionStatsMissingDirReturnsEmpty(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	a := NewApp()
 	rows, err := a.GetSessionStats(t.TempDir())
 	if err != nil {
 		t.Fatalf("GetSessionStats errored: %v", err)
 	}
 	if len(rows) != 0 {
-		t.Fatalf("expected no rows for a project with no .claude/agent-winglet dir, got %+v", rows)
+		t.Fatalf("expected no rows for a project with no state dir yet, got %+v", rows)
 	}
 }
 
