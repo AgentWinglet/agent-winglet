@@ -12,8 +12,12 @@
 #                                   # (--hook-only scope only; the app has no
 #                                   # such concept)
 #   ./uninstall.sh --purge-binary  # also delete the installed ledger-hook binary
-#   ./uninstall.sh --purge-data    # also delete ~/.agent-winglet (global registry/config)
-#                                   # and every registered project's .claude/agent-winglet/
+#   ./uninstall.sh --purge-data    # also delete ~/.agent-winglet (global registry/config
+#                                   # and, since all per-project state now lives under
+#                                   # ~/.agent-winglet/projects/, this alone is the primary
+#                                   # cleanup) plus, as a fallback for any pre-move-storage
+#                                   # leftovers, every registered project's legacy
+#                                   # .claude/agent-winglet/ that hasn't self-migrated yet
 #                                   # (lists what it's about to delete and asks for
 #                                   # confirmation unless -y/--yes is also passed)
 #   ./uninstall.sh -y|--yes        # skip the --purge-data confirmation prompt
@@ -184,6 +188,12 @@ if [ "$PURGE_DATA" = "1" ]; then
   GLOBAL_DIR="${HOME}/.agent-winglet"
   REGISTRY_FILE="${GLOBAL_DIR}/projects.json"
 
+  # Per-project state now lives under ${GLOBAL_DIR}/projects/, so deleting
+  # GLOBAL_DIR below already covers it in one shot. This loop only catches
+  # legacy pre-move-storage leftovers: a project whose hook hasn't fired from
+  # every one of its old cwds since upgrading, so its <dir>/.claude/agent-winglet
+  # hasn't self-migrated (and self-deleted) yet — a rare-case safety net, not
+  # the primary mechanism.
   PROJECT_DIRS=()
   if [ -f "$REGISTRY_FILE" ]; then
     while IFS= read -r dir; do
@@ -193,9 +203,9 @@ if [ "$PURGE_DATA" = "1" ]; then
 
   echo ""
   echo "--purge-data will permanently delete:"
-  [ -d "$GLOBAL_DIR" ] && echo "  ${GLOBAL_DIR}  (global registry + quiet-mode config)"
+  [ -d "$GLOBAL_DIR" ] && echo "  ${GLOBAL_DIR}  (global registry, quiet-mode config, and all per-project state)"
   for d in "${PROJECT_DIRS[@]:-}"; do
-    [ -n "$d" ] && echo "  ${d}  (that project's savings ledger/stats history)"
+    [ -n "$d" ] && echo "  ${d}  (legacy pre-migration leftover)"
   done
   if [ ! -d "$GLOBAL_DIR" ] && [ "${#PROJECT_DIRS[@]}" -eq 0 ]; then
     echo "  (nothing found — no global or per-project data on this machine)"
