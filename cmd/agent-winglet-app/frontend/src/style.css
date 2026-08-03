@@ -1,0 +1,363 @@
+:root {
+  --font-ui: -apple-system, "SF Pro Text", "Segoe UI", "Ubuntu", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Consolas", monospace;
+
+  --bg: #f5f5f7;
+  --bg-elevated: #ffffff;
+  --sidebar-bg: #ececef;
+  --text-primary: #1d1d1f;
+  --text-secondary: #6e6e73;
+  --border: rgba(0, 0, 0, 0.06);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 4px 12px rgba(0, 0, 0, 0.05);
+  --accent: #1f9d55;
+  --accent-bg: rgba(31, 157, 85, 0.12);
+  --muted: #8e8e93;
+  --muted-bg: rgba(142, 142, 147, 0.12);
+  --hairline: rgba(0, 0, 0, 0.08);
+  --nav-active-bg: rgba(0, 0, 0, 0.06);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1c1e;
+    --bg-elevated: #2c2c2e;
+    --sidebar-bg: #18181a;
+    --text-primary: #f5f5f7;
+    --text-secondary: #98989d;
+    --border: rgba(255, 255, 255, 0.08);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.35);
+    --accent: #35d76e;
+    --accent-bg: rgba(53, 215, 110, 0.16);
+    --muted: #8e8e93;
+    --muted-bg: rgba(142, 142, 147, 0.18);
+    --hairline: rgba(255, 255, 255, 0.1);
+    --nav-active-bg: rgba(255, 255, 255, 0.08);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  user-select: none;
+}
+
+#app {
+  display: flex;
+  height: 100vh;
+}
+
+/* --- Sidebar --- */
+
+.sidebar {
+  width: 200px;
+  flex-shrink: 0;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--hairline);
+  padding: 44px 12px 16px;
+  display: flex;
+  flex-direction: column;
+  -webkit-app-region: drag;
+}
+
+.sidebar-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  padding: 0 10px 12px;
+  letter-spacing: 0.01em;
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  -webkit-app-region: no-drag;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: default;
+  border: none;
+  background: transparent;
+  text-align: left;
+  font-family: inherit;
+}
+
+.nav-item svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+
+.nav-item:hover {
+  background: var(--nav-active-bg);
+}
+
+.nav-item.active {
+  background: var(--nav-active-bg);
+}
+
+.nav-item.active svg {
+  color: var(--accent);
+}
+
+/* --- Main --- */
+
+.main {
+  flex: 1;
+  overflow-y: auto;
+  padding: 40px 40px 32px;
+}
+
+.screen-title {
+  font-size: 20px;
+  font-weight: 700;
+  margin: 0 0 4px;
+}
+
+.screen-subtitle {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin: 0 0 28px;
+}
+
+/* --- Hero --- */
+
+.hero {
+  margin-bottom: 28px;
+}
+
+.hero-number {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 48px;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+}
+
+.hero-label {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-top: 6px;
+}
+
+/* --- Cards --- */
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+}
+
+.card {
+  background: var(--bg-elevated);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 20px 20px 18px;
+}
+
+.card-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 10px;
+}
+
+.card-count {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 26px;
+}
+
+.card-detail {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+/* --- Status pill --- */
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 100px;
+}
+
+.status-pill svg {
+  width: 11px;
+  height: 11px;
+}
+
+.status-pill.active {
+  color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.status-pill.stale {
+  color: var(--muted);
+  background: var(--muted-bg);
+}
+
+/* --- Projects list --- */
+
+.project-row {
+  background: var(--bg-elevated);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+
+.project-row-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  cursor: default;
+  border: none;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+  color: inherit;
+}
+
+.project-row-chevron {
+  width: 12px;
+  height: 12px;
+  color: var(--text-secondary);
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+
+.project-row.expanded .project-row-chevron {
+  transform: rotate(90deg);
+}
+
+.project-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.project-path {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 1px;
+}
+
+.project-row-spacer {
+  flex: 1;
+}
+
+.project-hero-inline {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.project-row-detail {
+  padding: 4px 18px 18px;
+  display: none;
+}
+
+.project-row.expanded .project-row-detail {
+  display: block;
+}
+
+.empty-state {
+  color: var(--text-secondary);
+  font-size: 13px;
+  padding: 32px 0;
+}
+
+/* --- Settings --- */
+
+.settings-row {
+  background: var(--bg-elevated);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 480px;
+}
+
+.settings-row-label {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.settings-row-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+  max-width: 340px;
+}
+
+.toggle {
+  position: relative;
+  width: 40px;
+  height: 24px;
+  border-radius: 100px;
+  background: var(--muted-bg);
+  border: none;
+  cursor: default;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.toggle.on {
+  background: var(--accent);
+}
+
+.toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  transition: transform 0.15s ease;
+}
+
+.toggle.on .toggle-knob {
+  transform: translateX(16px);
+}
+
+.settings-note {
+  font-size: 12px;
+  color: var(--text-secondary);
+  max-width: 480px;
+  margin-top: 12px;
+  line-height: 1.5;
+}
