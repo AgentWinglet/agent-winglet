@@ -1,0 +1,13 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "agent-winglet-app",
+  "outputfilename": "agent-winglet-app",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "Umit Kaan Usta",
+    "email": "u.kaanusta@gmail.com"
+  }
+}
