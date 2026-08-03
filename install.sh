@@ -36,8 +36,23 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "Installing ${BINARY_NAME} ${SCOPE_DESC}..."
-go install "${REPO_URL}/cmd/${BINARY_NAME}@latest"
+# agent-winglet's repo is private, so `go install` can't resolve it through
+# the public module proxy/sumdb (proxy.golang.org has no access to it) —
+# GOPRIVATE tells the go tool to skip both and fetch straight from git
+# instead, using whatever git credentials are already configured for
+# github.com (SSH key, or an HTTPS credential helper set up by e.g.
+# `gh auth login`). This only takes effect for this repo's module path, and
+# is additive to any GOPRIVATE the caller already had set.
+export GOPRIVATE="${GOPRIVATE:+${GOPRIVATE},}${REPO_URL}"
+
+echo "Installing/updating ${BINARY_NAME} ${SCOPE_DESC}..."
+if ! go install "${REPO_URL}/cmd/${BINARY_NAME}@latest"; then
+  echo "error: go install failed — since this repo is private, this is usually" >&2
+  echo "a git auth problem rather than a go problem. Make sure git can fetch" >&2
+  echo "${REPO_URL} (e.g. 'gh auth setup-git' for HTTPS, or an SSH key added" >&2
+  echo "to your GitHub account for the git@ form), then re-run this script." >&2
+  exit 1
+fi
 
 GOBIN="$(go env GOBIN)"
 if [ -z "$GOBIN" ]; then
@@ -79,5 +94,6 @@ mv "$TMP_FILE" "$SETTINGS_FILE"
 # internal/registry.Register) — the desktop app's Projects screen fills in
 # on its own as you use Claude Code in each project.
 
-echo "Installed. Hook binary: ${HOOK_PATH}"
+echo "Installed/updated. Hook binary: ${HOOK_PATH}"
 echo "Updated: ${SETTINGS_FILE}"
+echo "(To update later, just re-run this script — it always installs @latest and is safe to re-run.)"
