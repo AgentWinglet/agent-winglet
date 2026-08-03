@@ -33,4 +33,4 @@ go.work.sum
 
 # agent-winglet build output and per-session ledger state
 /bin/
-.claude/agent-winglet/
+**/.claude/agent-winglet/

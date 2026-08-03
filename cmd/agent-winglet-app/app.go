@@ -3,7 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
+	"sort"
+	"strings"
+	"time"
 
 	"github.com/umitkaanusta/agent-winglet/internal/config"
 	"github.com/umitkaanusta/agent-winglet/internal/registry"
@@ -28,39 +32,64 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 }
 
-// Card is one stat block: a raw suppressed-content count plus a
-// pre-formatted detail string. Detail is formatted server-side because the
-// three mechanisms don't share a unit — dedup and retirement suppress bytes,
-// but internal/stats only ever tracked budget trims by lines omitted, never
-// bytes (see stats.Session.BudgetLinesOmitted) — so a fixed "byte total"
-// field would be a lie for Budget Trims. Rather than fabricate a byte figure
-// that doesn't exist in the underlying data, this card reports the same "N
-// lines omitted" framing the SessionEnd receipt message already uses.
-// Deliberately never a dollar figure or a "% saved": no validated cost or
-// token-savings measurement exists yet, so showing one would misrepresent a
-// raw suppressed-content count as a proven savings claim.
+// Card is one of the three summary cards on the card row: a label, a
+// pre-formatted primary detail string, and an optional secondary line shown
+// beneath it (e.g. a percent under a byte count, or a fixed caption under
+// the net-gains multiplier).
 type Card struct {
 	Label  string `json:"label"`
-	Count  int    `json:"count"`
 	Detail string `json:"detail"`
+	Sub    string `json:"sub"`
 }
 
-// Overview is the Overview screen's data: the hero number (dedup bytes +
-// retired bytes, summed across every registered project) plus the three
-// per-mechanism cards, and how many projects contributed. Summing dedup and
-// retired bytes is safe because they're mutually exclusive per tool call —
-// cmd/ledger-hook's handlePostToolUse only ever takes the repeat-check
-// branch or the post-boundary retire branch for a given call, never both —
-// so no byte is ever counted twice. HeroBytes is the raw count for any
-// future use; HeroDetail is the pre-formatted string the UI renders.
+// BarRow is one row of the suppressed-by-mechanism bar list (spec.md §4): a
+// label, a hover-tooltip explanation, this mechanism's share of processed
+// bytes (already computed via stats.PartPercent, so the frontend never
+// re-derives it), a fill ratio relative to the largest mechanism in this
+// rollup (so the longest bar reads as ~full width instead of three
+// near-invisible slivers when total suppression is small), and the raw
+// count/unit-noun plus formatted bytes for the row's bottom line — split
+// into their own fields so the frontend never has to parse a composed
+// Detail string to lay out left/right.
+type BarRow struct {
+	Label      string  `json:"label"`
+	Tooltip    string  `json:"tooltip"`
+	Percent    float64 `json:"percent"`
+	HasPercent bool    `json:"hasPercent"`
+	FillRatio  float64 `json:"fillRatio"`
+	CountLabel string  `json:"countLabel"`
+	Bytes      int64   `json:"bytes"`
+	BytesLabel string  `json:"bytesLabel"`
+}
+
+// Overview is the Overview screen's data (and each Projects-row's data —
+// same shape, two call sites). Hierarchy, top to bottom:
+//
+//  1. HeroHeadline — the headline percent-saved figure (e.g. "38% saved"),
+//     the primary claim, restated directly underneath as HeroUsageDetail —
+//     the same stretch multiplier reframed as a percent ("with the same
+//     plan" underneath), so the hero doesn't repeat itself with a bare "Ax"
+//     multiplier right below a percent figure.
+//  2. Cards — three small summary cards: bytes suppressed, the same bytes
+//     converted to a token estimate, and that token estimate priced in
+//     dollars. The net-gains multiplier lives only in HeroUsageDetail now —
+//     a fourth card restating it would just repeat the hero line.
+//  3. Bars — one row per suppression mechanism, descending by bytes.
 type Overview struct {
-	HeroBytes    int64  `json:"heroBytes"`
-	HeroDetail   string `json:"heroDetail"`
-	Dedup        Card   `json:"dedup"`
-	BudgetTrims  Card   `json:"budgetTrims"`
-	Retired      Card   `json:"retired"`
-	ProjectCount int    `json:"projectCount"`
-	SessionCount int    `json:"sessionCount"`
+	HeroBytes           int64    `json:"heroBytes"`
+	HeroTotalBytes      int64    `json:"heroTotalBytes"`
+	HeroTotalBytesLabel string   `json:"heroTotalBytesLabel"`
+	HeroPercent         float64  `json:"heroPercent"`
+	HeroHeadline        string   `json:"heroHeadline"`
+	HeroUsageDetail     string   `json:"heroUsageDetail"`
+	HeroUsageSub        string   `json:"heroUsageSub"`
+	HasTranscriptData   bool     `json:"hasTranscriptData"`
+	BytesSavedCard      Card     `json:"bytesSavedCard"`
+	TokensSavedCard     Card     `json:"tokensSavedCard"`
+	DollarSavedCard     Card     `json:"dollarSavedCard"`
+	Bars                []BarRow `json:"bars"`
+	ProjectCount        int      `json:"projectCount"`
+	SessionCount        int      `json:"sessionCount"`
 }
 
 // GetOverview sums the lifetime tally of every project in the registry that
@@ -73,49 +102,275 @@ func (a *App) GetOverview() (Overview, error) {
 		return Overview{}, err
 	}
 
-	var total stats.Lifetime
+	var total overviewTotals
+	sessions := 0
 	for _, dir := range dirs {
 		l, err := stats.LoadLifetime(dir)
 		if err != nil {
 			return Overview{}, err
 		}
-		total.Sessions += l.Sessions
-		total.DedupHits += l.DedupHits
-		total.DedupBytes += l.DedupBytes
-		total.BudgetTrims += l.BudgetTrims
-		total.BudgetLinesOmitted += l.BudgetLinesOmitted
-		total.RetiredCalls += l.RetiredCalls
-		total.RetiredBytes += l.RetiredBytes
+		total.add(totalsFromLifetime(l))
+		sessions += l.Sessions
 	}
 
-	return lifetimeToOverview(&total, len(dirs)), nil
+	return buildOverview(total, len(dirs), sessions), nil
 }
 
-func lifetimeToOverview(l *stats.Lifetime, projectCount int) Overview {
-	heroBytes := l.DedupBytes + l.RetiredBytes
-	return Overview{
-		HeroBytes:  heroBytes,
-		HeroDetail: formatBytes(heroBytes),
-		Dedup: Card{
-			Label: "Dedup", Count: l.DedupHits,
-			Detail: formatBytes(l.DedupBytes) + " not replayed",
-		},
-		BudgetTrims: Card{
-			Label: "Budget Trims", Count: l.BudgetTrims,
-			Detail: fmt.Sprintf("%d lines omitted", l.BudgetLinesOmitted),
-		},
-		Retired: Card{
-			Label: "Retired", Count: l.RetiredCalls,
-			Detail: formatBytes(l.RetiredBytes) + " archived",
-		},
-		ProjectCount: projectCount,
-		SessionCount: l.Sessions,
+// overviewTotals is the minimal common shape buildOverview needs — both
+// stats.Session (one session's tally) and stats.Lifetime (a project or
+// cross-project rollup's tally) share these fields, just without a common
+// Go type, so callers adapt each into this before formatting.
+type overviewTotals struct {
+	DedupHits          int
+	DedupBytes         int64
+	BudgetTrims        int
+	BudgetLinesOmitted int
+	BudgetBytesOmitted int64
+	RetiredCalls       int
+	RetiredBytes       int64
+
+	TranscriptTokens       int64
+	TranscriptCostUSD      float64
+	TranscriptContentBytes int64
+}
+
+// add folds o into t in place, so a caller summing across many projects (or
+// many sessions) can do so without a Lifetime/Session type of its own.
+func (t *overviewTotals) add(o overviewTotals) {
+	t.DedupHits += o.DedupHits
+	t.DedupBytes += o.DedupBytes
+	t.BudgetTrims += o.BudgetTrims
+	t.BudgetLinesOmitted += o.BudgetLinesOmitted
+	t.BudgetBytesOmitted += o.BudgetBytesOmitted
+	t.RetiredCalls += o.RetiredCalls
+	t.RetiredBytes += o.RetiredBytes
+	t.TranscriptTokens += o.TranscriptTokens
+	t.TranscriptCostUSD += o.TranscriptCostUSD
+	t.TranscriptContentBytes += o.TranscriptContentBytes
+}
+
+func totalsFromLifetime(l *stats.Lifetime) overviewTotals {
+	return overviewTotals{
+		DedupHits:          l.DedupHits,
+		DedupBytes:         l.DedupBytes,
+		BudgetTrims:        l.BudgetTrims,
+		BudgetLinesOmitted: l.BudgetLinesOmitted,
+		BudgetBytesOmitted: l.BudgetBytesOmitted,
+		RetiredCalls:       l.RetiredCalls,
+		RetiredBytes:       l.RetiredBytes,
+
+		TranscriptTokens:       l.TranscriptTokens,
+		TranscriptCostUSD:      l.TranscriptCostUSD,
+		TranscriptContentBytes: l.TranscriptContentBytes,
 	}
+}
+
+func totalsFromSession(s *stats.Session) overviewTotals {
+	return overviewTotals{
+		DedupHits:          s.DedupHits,
+		DedupBytes:         s.DedupBytes,
+		BudgetTrims:        s.BudgetTrims,
+		BudgetLinesOmitted: s.BudgetLinesOmitted,
+		BudgetBytesOmitted: s.BudgetBytesOmitted,
+		RetiredCalls:       s.RetiredCalls,
+		RetiredBytes:       s.RetiredBytes,
+
+		TranscriptTokens:       s.TranscriptTokens,
+		TranscriptCostUSD:      s.TranscriptCostUSD,
+		TranscriptContentBytes: s.TranscriptContentBytes,
+	}
+}
+
+func overviewFromLifetime(l *stats.Lifetime, projectCount int) Overview {
+	return buildOverview(totalsFromLifetime(l), projectCount, l.Sessions)
+}
+
+func overviewFromSession(s *stats.Session, projectCount, sessionCount int) Overview {
+	return buildOverview(totalsFromSession(s), projectCount, sessionCount)
+}
+
+// mechanism bundles one suppression mechanism's raw fields for barRows to
+// sort and format uniformly, instead of repeating the same five-argument
+// shape three times inline.
+type mechanism struct {
+	label      string
+	tooltip    string
+	bytes      int64
+	countLabel string
+}
+
+const (
+	dedupTooltip = "When Claude re-runs a shell command it's already run with identical output this session, " +
+		"agent-winglet replaces the repeat with a short reference instead of sending it to the model again."
+	budgetTrimTooltip = "Commands that succeed but print more than 60 lines have their middle section collapsed " +
+		"to a head/tail summary."
+	retireTooltip = "Once a session moves from investigating to editing, earlier read/search/fetch output is " +
+		"assumed to have served its purpose and is archived instead of replayed."
+)
+
+// barRows builds the suppressed-by-mechanism bar list: one row per
+// mechanism, descending by bytes, fill width relative to the largest
+// mechanism in t (not an absolute 0-100% of total bytes) — see spec.md §4.
+// A mechanism with zero bytes still gets a row (fill ratio 0) so the list
+// always shows all three, in whatever order this rollup's own numbers
+// produce. total is the same real total buildOverview passes to
+// stats.Percent (transcriptContentBytes + suppressed), so each row's
+// percent is directly comparable to — and sums to — the hero figure.
+func barRows(t overviewTotals, total int64) []BarRow {
+	mechanisms := []mechanism{
+		{"Repeat output skipped", dedupTooltip, t.DedupBytes,
+			fmt.Sprintf("%d hit%s", t.DedupHits, plural(t.DedupHits))},
+		{"Long output trimmed", budgetTrimTooltip, t.BudgetBytesOmitted,
+			fmt.Sprintf("%d trim%s", t.BudgetTrims, plural(t.BudgetTrims))},
+		{"Old investigation output archived", retireTooltip, t.RetiredBytes,
+			fmt.Sprintf("%d call%s", t.RetiredCalls, plural(t.RetiredCalls))},
+	}
+	sort.SliceStable(mechanisms, func(i, j int) bool { return mechanisms[i].bytes > mechanisms[j].bytes })
+
+	var largest int64
+	for _, m := range mechanisms {
+		if m.bytes > largest {
+			largest = m.bytes
+		}
+	}
+
+	rows := make([]BarRow, len(mechanisms))
+	for i, m := range mechanisms {
+		pct, ok := stats.PartPercent(m.bytes, total)
+		var fillRatio float64
+		if largest > 0 {
+			fillRatio = float64(m.bytes) / float64(largest)
+		}
+		rows[i] = BarRow{
+			Label:      m.label,
+			Tooltip:    m.tooltip,
+			Percent:    pct,
+			HasPercent: ok,
+			FillRatio:  fillRatio,
+			CountLabel: m.countLabel,
+			Bytes:      m.bytes,
+			BytesLabel: formatBytes(m.bytes),
+		}
+	}
+	return rows
+}
+
+// buildOverview composes the percent-saved hero, the summary cards, and the
+// suppressed-by-mechanism bars from a totals tally.
+//
+// HeroHeadline is always the headline percent-saved figure. The tokens and
+// dollar cards both price the suppressed-byte figure as a proxy for tokens
+// saved, ccusage-style: extrapolate from the same percent-saved figure as
+// the hero headline (suppressed / (suppressed+actual)) rather than a second,
+// independently-computed bytes-per-token ratio — pct/(100-pct) is the odds
+// form of that percentage, which is algebraically the same suppressed/actual
+// scale factor a separate ratio would give, just derived from the number
+// already on screen instead of recomputed. Those priced tokens are then
+// converted to dollars at this rollup's own cost-per-token rate. Both
+// TranscriptTokens and TranscriptCostUSD (see internal/transcript's
+// SessionUsage doc) count only content newly fed to the model — cache-read
+// replays of earlier turns and output tokens are excluded at the source —
+// so the price-per-token rate stays a stable per-content-unit price instead
+// of one that inflates with how many turns a session ran. Cost, tokens, and
+// content bytes are all summed independently across sessions before
+// dividing, so a lifetime/project rollup mixing sessions of different sizes
+// still comes out as a weighted average, not distorted by any single
+// outlier session.
+func buildOverview(t overviewTotals, projectCount, sessionCount int) Overview {
+	suppressed := t.DedupBytes + t.BudgetBytesOmitted + t.RetiredBytes
+	total := t.TranscriptContentBytes + suppressed
+
+	pct, hasPct := stats.Percent(t.DedupBytes, t.BudgetBytesOmitted, t.RetiredBytes, t.TranscriptContentBytes)
+
+	heroHeadline := "No data yet"
+	if hasPct {
+		heroHeadline = fmt.Sprintf("%.0f%% saved", pct)
+	}
+
+	hasTranscriptData := t.TranscriptContentBytes > 0
+	hasTokenData := hasTranscriptData && t.TranscriptTokens > 0
+
+	tokensSavedDetail := "no data yet"
+	dollarDetail := "no data yet"
+	if hasTokenData {
+		tokensSaved := float64(t.TranscriptTokens) * pct / (100 - pct)
+		tokensSavedDetail = formatTokens(tokensSaved)
+
+		costPerToken := t.TranscriptCostUSD / float64(t.TranscriptTokens)
+		usdSaved := tokensSaved * costPerToken
+		dollarDetail = fmt.Sprintf("$%.2f", usdSaved)
+	}
+
+	// HeroUsageDetail reframes the percent-saved figure as extra runway on
+	// the same plan — the actual claim agent-winglet makes — expressed as a
+	// percent rather than a bare "Ax" multiplier with no unit. stats.Stretch
+	// gives that runway as a ratio of 1 (e.g. 1.6129), so subtracting 100
+	// after scaling to a percent yields "how much more," not "how much
+	// total."
+	heroUsageDetail := "no data yet"
+	heroUsageSub := ""
+	if hasPct {
+		extraPercent := stats.Stretch(pct)*100 - 100
+		heroUsageDetail = fmt.Sprintf("~%.0f%% more usage", extraPercent)
+		heroUsageSub = "with the same plan"
+	}
+
+	bytesSavedDetail := "no data yet"
+	if hasPct {
+		bytesSavedDetail = formatBytes(suppressed)
+	}
+
+	return Overview{
+		HeroBytes:           suppressed,
+		HeroTotalBytes:      total,
+		HeroTotalBytesLabel: formatBytes(total),
+		HeroPercent:         pct,
+		HeroHeadline:        heroHeadline,
+		HeroUsageDetail:     heroUsageDetail,
+		HeroUsageSub:        heroUsageSub,
+		HasTranscriptData:   hasTranscriptData,
+		BytesSavedCard: Card{
+			Label: "Bytes saved", Detail: bytesSavedDetail,
+		},
+		TokensSavedCard: Card{
+			Label: "Tokens saved", Detail: tokensSavedDetail,
+		},
+		DollarSavedCard: Card{
+			Label: "Money saved", Detail: dollarDetail,
+		},
+		Bars:         barRows(t, total),
+		ProjectCount: projectCount,
+		SessionCount: sessionCount,
+	}
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 // formatBytes renders a byte count the way the rest of the receipt does —
 // a plain magnitude, never implying a cost or token-savings figure, since no
 // such validated measurement exists yet.
+// formatTokens renders a token count with a K/M/B/T suffix (base 1000, unlike
+// formatBytes' base 1024 — tokens aren't a binary-scaled unit). n is a
+// float64 because it's a derived estimate (suppressed bytes * a
+// tokens-per-byte ratio), not a directly counted integer.
+func formatTokens(n float64) string {
+	const unit = 1000
+	if n < unit {
+		return fmt.Sprintf("%.0f", n)
+	}
+	div, exp := float64(unit), 0
+	for v := n / unit; v >= unit; v /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f%c", n/div, "KMBT"[exp])
+}
+
 func formatBytes(n int64) string {
 	const unit = 1024
 	if n < unit {
@@ -133,8 +388,9 @@ func formatBytes(n int64) string {
 // basename), whether the hook is actually active for this project right now
 // (not just registry presence — see internal/registry's doc comment) via
 // either the global ~/.claude/settings.json install.sh wires by default, or
-// a legacy/opt-in per-project .claude/settings.json entry, and its own
-// lifetime tally broken into the same three cards as Overview.
+// a legacy/opt-in per-project .claude/settings.json entry, and its lifetime
+// tally (Overview) — the same shape the Overview screen uses (see spec.md
+// §6), so the frontend renders both with one shared component.
 type ProjectRow struct {
 	Name      string   `json:"name"`
 	Path      string   `json:"path"`
@@ -160,7 +416,85 @@ func (a *App) GetProjects() ([]ProjectRow, error) {
 			Name:      filepath.Base(dir),
 			Path:      dir,
 			Installed: globalInstalled || registry.HookInstalled(dir),
-			Overview:  lifetimeToOverview(l, 1),
+			Overview:  overviewFromLifetime(l, 1),
+		})
+	}
+	return rows, nil
+}
+
+// SessionRow is one row of a project's per-session breakdown (ccusage's
+// `ccusage session` report shape): one row per still-on-disk
+// <sessionID>.stats.json file, using the same percentage-first Overview
+// shape as the project/lifetime rollup. This only works because completed
+// sessions' stats files are NOT deleted on SessionEnd — only
+// stats.InvalidateSession (SessionStart/PostCompact) removes one, to wipe a
+// resumed/compacted session's stale tally — so a finished session's file
+// (and its suppressed-bytes/transcript-usage tally) persists for this to
+// read.
+type SessionRow struct {
+	SessionID string   `json:"sessionId"`
+	Overview  Overview `json:"overview"`
+}
+
+// sessionFileInfo identifies one <sessionID>.stats.json file on disk and its
+// modification time — the closest thing to a session timestamp available,
+// since the stats.Session content itself carries no clock reading.
+type sessionFileInfo struct {
+	id      string
+	modTime time.Time
+}
+
+// listSessionFiles returns every session-stats file still on disk for
+// projectDir (excluding lifetime.stats.json), newest first by modification
+// time. A project with no .claude/agent-winglet directory yet (hook never
+// fired here) returns an empty slice, not an error, same fail-soft
+// convention the rest of this package follows.
+func listSessionFiles(projectDir string) ([]sessionFileInfo, error) {
+	dir := filepath.Join(projectDir, ".claude", "agent-winglet")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var files []sessionFileInfo
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || name == "lifetime.stats.json" || !strings.HasSuffix(name, ".stats.json") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, sessionFileInfo{
+			id:      strings.TrimSuffix(name, ".stats.json"),
+			modTime: info.ModTime(),
+		})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].modTime.After(files[j].modTime) })
+	return files, nil
+}
+
+// GetSessionStats returns one row per session-stats file still on disk for
+// projectDir, newest first.
+func (a *App) GetSessionStats(projectDir string) ([]SessionRow, error) {
+	files, err := listSessionFiles(projectDir)
+	if err != nil {
+		return nil, err
+	}
+
+	rows := make([]SessionRow, 0, len(files))
+	for _, f := range files {
+		s, err := stats.LoadSession(projectDir, f.id)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, SessionRow{
+			SessionID: f.id,
+			Overview:  overviewFromSession(s, 1, 1),
 		})
 	}
 	return rows, nil

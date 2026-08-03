@@ -10,6 +10,10 @@ export function GetProjects() {
   return window['go']['main']['App']['GetProjects']();
 }
 
+export function GetSessionStats(arg1) {
+  return window['go']['main']['App']['GetSessionStats'](arg1);
+}
+
 export function GetSettings() {
   return window['go']['main']['App']['GetSettings']();
 }

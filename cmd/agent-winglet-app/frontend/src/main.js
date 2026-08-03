@@ -1,10 +1,12 @@
 import './style.css';
 import { icons } from './icons.js';
-import { GetOverview, GetProjects, GetSettings, SetQuiet } from '../wailsjs/go/main/App';
+import { GetOverview, GetProjects, GetSessionStats, GetSettings, SetQuiet } from '../wailsjs/go/main/App';
 
 const state = {
   screen: 'overview',
   expanded: new Set(),
+  expandedSessions: new Set(),
+  sessionsByProject: new Map(),
 };
 
 const NAV_ITEMS = [
@@ -18,8 +20,73 @@ function navigate(screen) {
   render();
 }
 
-function cardGrid(overview) {
-  const cards = [overview.dedup, overview.budgetTrims, overview.retired];
+// hero renders the primary figure: the headline percent-saved figure (e.g.
+// "38% saved"), a one-line restatement of that same figure as extra runway
+// ("→ ~61% more usage with the same plan") — the actual claim agent-winglet
+// makes — and, once real transcript data exists to size it against, a bytes
+// bar showing suppressed bytes against the real total (transcript content
+// bytes + suppressed) — the same total the headline percent itself is
+// computed from, so the fill width and the number always agree.
+function hero(overview) {
+  return `
+    <div class="hero">
+      <div class="hero-number">${overview.heroHeadline}</div>
+      ${overview.hasTranscriptData ? `<div class="hero-usage">→ ${overview.heroUsageDetail} ${overview.heroUsageSub}</div>` : ''}
+      ${overview.hasTranscriptData ? heroBar(overview) : ''}
+    </div>`;
+}
+
+function heroBar(overview) {
+  return `
+    <div class="hero-bar">
+      <div class="hero-bar-track">
+        <div class="hero-bar-fill" style="width: ${Math.min(100, overview.heroPercent).toFixed(1)}%"></div>
+      </div>
+      <div class="hero-bar-labels">
+        <span>${overview.bytesSavedCard.detail} saved</span>
+        <span>${overview.heroTotalBytesLabel} total</span>
+      </div>
+    </div>`;
+}
+
+// barList renders the suppressed-by-mechanism bars: a total-bytes header
+// stat above one row per mechanism, ordered (server-side) descending by
+// bytes, fill width relative to the largest mechanism in this rollup.
+function barList(overview) {
+  const rows = overview.bars
+    .map(
+      (bar) => `
+    <div class="bar-row">
+      <div class="bar-row-top">
+        <span class="bar-label">
+          ${bar.label}
+          <span class="info-affordance" tabindex="0">
+            ${icons.info}
+            <span class="tooltip" role="tooltip">${bar.tooltip}</span>
+          </span>
+        </span>
+        <span class="bar-pill">${bar.hasPercent ? `${bar.percent.toFixed(0)}%` : '—'}</span>
+      </div>
+      <div class="bar-track">
+        <div class="bar-fill" style="width: ${(bar.fillRatio * 100).toFixed(1)}%"></div>
+      </div>
+      <div class="bar-row-bottom">
+        <span>${bar.countLabel}</span>
+        <span>${bar.bytesLabel}</span>
+      </div>
+    </div>`
+    )
+    .join('');
+
+  return `
+    <div class="bar-list">
+      <div class="bar-list-header">Where the savings come from</div>
+      ${rows}
+    </div>`;
+}
+
+function cardRow(overview) {
+  const cards = [overview.bytesSavedCard, overview.tokensSavedCard, overview.dollarSavedCard];
   return `
     <div class="card-grid">
       ${cards
@@ -27,12 +94,30 @@ function cardGrid(overview) {
           (c) => `
         <div class="card">
           <div class="card-label">${c.label}</div>
-          <div class="card-count">${c.count}</div>
           <div class="card-detail">${c.detail}</div>
+          ${c.sub ? `<div class="card-sub">${c.sub}</div>` : ''}
         </div>`
         )
         .join('')}
     </div>`;
+}
+
+// statsBlock is the full hierarchy shared by the Overview screen and each
+// Projects-screen row: hero (raw suppressed bytes) -> summary cards (bytes/
+// tokens/$) -> per-mechanism bars. One function, two call sites, so the
+// layout can never drift between the two.
+function statsBlock(overview) {
+  return `
+    ${hero(overview)}
+    ${cardRow(overview)}
+    ${barList(overview)}`;
+}
+
+// lightweightCardGrid is the compact view used only for per-session rows
+// nested inside an expanded project — just the three cards, no hero/bars/
+// tooltips stacked three levels deep.
+function lightweightCardGrid(overview) {
+  return cardRow(overview);
 }
 
 async function renderOverviewScreen(container) {
@@ -41,11 +126,7 @@ async function renderOverviewScreen(container) {
   container.innerHTML = `
     <h1 class="screen-title">Overview</h1>
     <p class="screen-subtitle">Lifetime, across ${o.projectCount} project${o.projectCount === 1 ? '' : 's'} and ${o.sessionCount} session${o.sessionCount === 1 ? '' : 's'}.</p>
-    <div class="hero">
-      <div class="hero-number">${o.heroDetail}</div>
-      <div class="hero-label">bytes suppressed (dedup + retired) — a raw count, not a validated cost figure</div>
-    </div>
-    ${cardGrid(o)}
+    ${statsBlock(o)}
   `;
 }
 
@@ -87,10 +168,13 @@ async function renderProjectsScreen(container) {
           <div class="project-path">${row.path}</div>
         </div>
         <span class="project-row-spacer"></span>
-        <span class="project-hero-inline">${row.overview.heroDetail}</span>
+        <span class="project-hero-inline">${row.overview.heroHeadline}</span>
         ${statusPill(row.installed)}
       </button>
-      <div class="project-row-detail">${cardGrid(row.overview)}</div>
+      <div class="project-row-detail">
+        ${statsBlock(row.overview)}
+        <div class="sessions-section" data-sessions="${row.path}"></div>
+      </div>
     </div>`
     )
     .join('');
@@ -104,6 +188,60 @@ async function renderProjectsScreen(container) {
         state.expanded.add(path);
       }
       renderProjectsScreen(container);
+    });
+  });
+
+  for (const row of rows) {
+    if (state.expanded.has(row.path)) {
+      renderSessionsSection(container, row.path);
+    }
+  }
+}
+
+async function renderSessionsSection(container, projectPath) {
+  const target = container.querySelector(`[data-sessions="${CSS.escape(projectPath)}"]`);
+  if (!target) return;
+
+  if (!state.sessionsByProject.has(projectPath)) {
+    target.innerHTML = `<div class="sessions-loading">Loading sessions…</div>`;
+    state.sessionsByProject.set(projectPath, await GetSessionStats(projectPath));
+  }
+  const sessions = state.sessionsByProject.get(projectPath);
+
+  if (!sessions || sessions.length === 0) {
+    target.innerHTML = `<div class="sessions-empty">No completed sessions on disk yet for this project.</div>`;
+    return;
+  }
+
+  target.innerHTML = `
+    <div class="sessions-title">Sessions (${sessions.length})</div>
+    ${sessions
+      .map((row) => {
+        const key = `${projectPath}::${row.sessionId}`;
+        const expanded = state.expandedSessions.has(key);
+        return `
+        <div class="session-row ${expanded ? 'expanded' : ''}">
+          <button class="session-row-header" data-toggle-session="${key}">
+            <span class="project-row-chevron">${icons.chevron}</span>
+            <span class="session-id">${row.sessionId}</span>
+            <span class="project-row-spacer"></span>
+            <span class="project-hero-inline">${row.overview.heroHeadline}</span>
+          </button>
+          <div class="session-row-detail">${lightweightCardGrid(row.overview)}</div>
+        </div>`;
+      })
+      .join('')}
+  `;
+
+  target.querySelectorAll('[data-toggle-session]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const key = btn.getAttribute('data-toggle-session');
+      if (state.expandedSessions.has(key)) {
+        state.expandedSessions.delete(key);
+      } else {
+        state.expandedSessions.add(key);
+      }
+      renderSessionsSection(container, projectPath);
     });
   });
 }

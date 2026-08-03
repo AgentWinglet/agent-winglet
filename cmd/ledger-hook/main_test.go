@@ -206,7 +206,7 @@ func TestBudgetStdoutThresholdBoundary(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, _, ok := budgetStdout(linesOfStdout(c.lineCount))
+			_, _, _, ok := budgetStdout(linesOfStdout(c.lineCount))
 			if ok != c.wantBudget {
 				t.Fatalf("%d lines: budgetStdout ok = %v, want %v", c.lineCount, ok, c.wantBudget)
 			}
@@ -678,6 +678,90 @@ func TestHandleSessionEndReportsRetiredCall(t *testing.T) {
 	}
 }
 
+func TestHandleSessionEndReadsTranscriptUsage(t *testing.T) {
+	dir := t.TempDir()
+	repeatIn := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
+	if _, err := handle(repeatIn); err != nil {
+		t.Fatalf("first call errored: %v", err)
+	}
+	if _, err := handle(repeatIn); err != nil {
+		t.Fatalf("repeat call errored: %v", err)
+	}
+
+	transcriptPath := writeTranscriptFixture(t, dir)
+	in := sessionEndInput("sess1", dir)
+	in.TranscriptPath = transcriptPath
+
+	if _, err := handle(in); err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+
+	lifetime, err := stats.LoadLifetime(dir)
+	if err != nil {
+		t.Fatalf("LoadLifetime errored: %v", err)
+	}
+	if lifetime.TranscriptTokens == 0 {
+		t.Fatalf("expected lifetime.TranscriptTokens to be folded in from the transcript, got %+v", lifetime)
+	}
+	if lifetime.TranscriptCostUSD == 0 {
+		t.Fatalf("expected lifetime.TranscriptCostUSD to be nonzero, got %+v", lifetime)
+	}
+
+	// Regression: the per-session file must carry the transcript usage too,
+	// not just the in-memory copy folded into lifetime — GetSessionStats
+	// (agent-winglet-app) reads this file back later for the per-session
+	// breakdown.
+	sess, err := stats.LoadSession(dir, "sess1")
+	if err != nil {
+		t.Fatalf("LoadSession errored: %v", err)
+	}
+	if sess.TranscriptContentBytes == 0 {
+		t.Fatalf("expected the per-session file's TranscriptContentBytes to be persisted, got %+v", sess)
+	}
+}
+
+func TestHandleSessionEndUnreadableTranscriptStillEmitsReceipt(t *testing.T) {
+	dir := t.TempDir()
+	repeatIn := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
+	if _, err := handle(repeatIn); err != nil {
+		t.Fatalf("first call errored: %v", err)
+	}
+	if _, err := handle(repeatIn); err != nil {
+		t.Fatalf("repeat call errored: %v", err)
+	}
+
+	in := sessionEndInput("sess1", dir)
+	in.TranscriptPath = "/does/not/exist.jsonl"
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle errored with an unreadable transcript path: %v", err)
+	}
+	if out == nil || out.SystemMessage == "" {
+		t.Fatalf("expected a receipt even when the transcript can't be read, got %+v", out)
+	}
+
+	lifetime, err := stats.LoadLifetime(dir)
+	if err != nil {
+		t.Fatalf("LoadLifetime errored: %v", err)
+	}
+	if lifetime.TranscriptTokens != 0 {
+		t.Fatalf("expected TranscriptTokens to stay zero for an unreadable transcript, got %d", lifetime.TranscriptTokens)
+	}
+}
+
+func writeTranscriptFixture(t *testing.T, dir string) string {
+	t.Helper()
+	path := dir + "/fixture-transcript.jsonl"
+	assistantLine := `{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":100,"output_tokens":50}}}` + "\n"
+	userLine := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"hi"}]}}` + "\n"
+	line := assistantLine + userLine
+	if err := os.WriteFile(path, []byte(line), 0o644); err != nil {
+		t.Fatalf("write transcript fixture: %v", err)
+	}
+	return path
+}
+
 func TestHandleSessionEndRespectsQuietEnvVar(t *testing.T) {
 	dir := t.TempDir()
 	repeatIn := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
@@ -840,5 +924,84 @@ func TestHandleDifferentSessionsAreIsolated(t *testing.T) {
 	}
 	if out != nil {
 		t.Fatalf("a different session_id should not see sess1's ledger, got %+v", out)
+	}
+}
+
+func TestPassthroughBashCallRecordsNoActivity(t *testing.T) {
+	dir := t.TempDir()
+
+	// Short, non-repeat, passes through untouched — nothing suppressed, so
+	// nothing should be recorded at all.
+	in := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
+	if _, err := handle(in); err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+
+	s, err := stats.LoadSession(dir, "sess1")
+	if err != nil {
+		t.Fatalf("LoadSession errored: %v", err)
+	}
+	if !s.IsZero() {
+		t.Fatalf("a passthrough-only session has no mechanism activity and should report IsZero, got %+v", s)
+	}
+}
+
+func TestBudgetBytesOmittedOnTrim(t *testing.T) {
+	dir := t.TempDir()
+	longOutput := linesOfStdout(budgetLineThreshold + 1)
+	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
+
+	if _, err := handle(in); err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+
+	s, err := stats.LoadSession(dir, "sess1")
+	if err != nil {
+		t.Fatalf("LoadSession errored: %v", err)
+	}
+	if s.BudgetBytesOmitted <= 0 || s.BudgetBytesOmitted >= int64(len(longOutput)) {
+		t.Fatalf("BudgetBytesOmitted = %d, want a positive value less than the original output length (%d)",
+			s.BudgetBytesOmitted, len(longOutput))
+	}
+}
+
+func TestDedupBytesOnDedupHit(t *testing.T) {
+	dir := t.TempDir()
+	in := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
+	if _, err := handle(in); err != nil {
+		t.Fatalf("first call errored: %v", err)
+	}
+	if _, err := handle(in); err != nil {
+		t.Fatalf("repeat call errored: %v", err)
+	}
+
+	s, err := stats.LoadSession(dir, "sess1")
+	if err != nil {
+		t.Fatalf("LoadSession errored: %v", err)
+	}
+	if s.DedupBytes != int64(len("hi\n")) {
+		t.Fatalf("DedupBytes = %d, want %d", s.DedupBytes, len("hi\n"))
+	}
+}
+
+func TestRetiredBytesOnRetiredCall(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
+		t.Fatalf("seeding investigate call errored: %v", err)
+	}
+	if _, err := handle(toolCallInput("sess1", dir, "Edit")); err != nil {
+		t.Fatalf("crossing call errored: %v", err)
+	}
+	response := json.RawMessage(`{"matches":["a"]}`)
+	if _, err := handle(investigateInput("sess1", dir, "Grep", json.RawMessage(`{"pattern":"a"}`), response)); err != nil {
+		t.Fatalf("retiring call errored: %v", err)
+	}
+
+	s, err := stats.LoadSession(dir, "sess1")
+	if err != nil {
+		t.Fatalf("LoadSession errored: %v", err)
+	}
+	if s.RetiredBytes != int64(len(response)) {
+		t.Fatalf("RetiredBytes = %d, want %d", s.RetiredBytes, len(response))
 	}
 }

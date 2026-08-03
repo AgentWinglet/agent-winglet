@@ -10,14 +10,16 @@
 #                                 # of ~/.claude/settings.json (--hook-only
 #                                 # scope only; the app has no such concept)
 #
-# The hook is a plain Go binary fetched with `go install`, so it doesn't
-# matter where you run this from. The app is a Wails desktop app whose
-# frontend build output isn't checked into git (cmd/agent-winglet-app/
-# frontend/dist is gitignored — it's generated), so installing/updating the
-# app always builds from *this checkout's* current source — run it from a
-# clone of this repo, and `git pull` first if you want the latest app code.
-# (The hook doesn't need a git pull first: `go install ...@latest` always
-# fetches fresh from GitHub regardless of what your local checkout is at.)
+# When run from a clone of this repo, the hook and app are both built from
+# this checkout so their stats schema stays in lockstep. If the script is run
+# outside a checkout and only the hook is requested, the hook falls back to
+# `go install ...@latest`.
+#
+# The app is a Wails desktop app whose frontend build output isn't checked
+# into git (cmd/agent-winglet-app/frontend/dist is gitignored — it's
+# generated), so installing/updating the app always builds from *this
+# checkout's* current source — run it from a clone of this repo, and `git
+# pull` first if you want the latest app code.
 #
 # Migration note: if a project already has a per-project hook install from
 # before, remove its `ledger-hook` entry from that project's
@@ -81,8 +83,13 @@ if [ "$WANT_HOOK" = "1" ]; then
   # is additive to any GOPRIVATE the caller already had set.
   export GOPRIVATE="${GOPRIVATE:+${GOPRIVATE},}${REPO_URL}"
 
-  echo "Installing/updating ${BINARY_NAME} ${SCOPE_DESC}..."
-  if ! go install "${REPO_URL}/cmd/${BINARY_NAME}@latest"; then
+  HOOK_INSTALL_TARGET="${REPO_URL}/cmd/${BINARY_NAME}@latest"
+  if [ -f "go.mod" ] && [ -d "cmd/${BINARY_NAME}" ] && grep -q "^module ${REPO_URL}$" go.mod; then
+    HOOK_INSTALL_TARGET="./cmd/${BINARY_NAME}"
+  fi
+
+  echo "Installing/updating ${BINARY_NAME} ${SCOPE_DESC} from ${HOOK_INSTALL_TARGET}..."
+  if ! go install "${HOOK_INSTALL_TARGET}"; then
     echo "error: go install failed — since this repo is private, this is usually" >&2
     echo "a git auth problem rather than a go problem. Make sure git can fetch" >&2
     echo "${REPO_URL} (e.g. 'gh auth setup-git' for HTTPS, or an SSH key added" >&2
@@ -165,6 +172,11 @@ if [ "$WANT_APP" = "1" ]; then
     WAILS_GOBIN="$(go env GOBIN)"
     if [ -z "$WAILS_GOBIN" ]; then
       WAILS_GOBIN="$(go env GOPATH)/bin"
+    fi
+    if [ -x "${WAILS_GOBIN}/wails" ]; then
+      export PATH="${WAILS_GOBIN}:$PATH"
+    elif [ -x "${WAILS_GOBIN}/wails.exe" ]; then
+      export PATH="${WAILS_GOBIN}:$PATH"
     fi
     if ! command -v wails >/dev/null 2>&1; then
       echo "error: installed wails CLI to ${WAILS_GOBIN} but it's not on your PATH. Add ${WAILS_GOBIN} to PATH and re-run." >&2
