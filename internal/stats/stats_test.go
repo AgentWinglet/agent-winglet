@@ -1,6 +1,8 @@
 package stats
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestLoadMissingSessionReturnsZeroValue(t *testing.T) {
 	dir := t.TempDir()
@@ -229,3 +231,4 @@ func TestLifetimeSaveThenLoadRoundTrips(t *testing.T) {
 		t.Fatalf("reloaded lifetime = %+v, want %+v", reloaded, l)
 	}
 }
+
