@@ -22,7 +22,9 @@ curl -fsSL https://raw.githubusercontent.com/umitkaanusta/agent-winglet/main/ins
 
 This runs `go install` to fetch the `ledger-hook` binary and merges the
 hook config into that project's `.claude/settings.json`, without touching
-any existing settings there.
+any existing settings there. It also registers the project's absolute path
+in `~/.agent-winglet/projects.json` (deduped, pruned of stale/deleted
+entries on each run).
 
 ## Developing this repo
 
