@@ -28,8 +28,16 @@ type Session struct {
 	DedupBytes         int64 `json:"dedupBytes"`
 	BudgetTrims        int   `json:"budgetTrims"`
 	BudgetLinesOmitted int   `json:"budgetLinesOmitted"`
+	BudgetBytesOmitted int64 `json:"budgetBytesOmitted"`
 	RetiredCalls       int   `json:"retiredCalls"`
 	RetiredBytes       int64 `json:"retiredBytes"`
+	// ProcessedBytes is the original byte length of every tool response the
+	// hook actually evaluated for suppression — the denominator for
+	// Percent, incremented whether or not the call ended up suppressed.
+	// Deliberately excluded from IsZero/mechanism-activity checks: a
+	// session that only ever passed output through untouched still grows
+	// this counter, and that alone isn't "a mechanism fired."
+	ProcessedBytes int64 `json:"processedBytes"`
 }
 
 // RecordDedup records one ledger repeat-hit that replaced would-be-replayed
@@ -40,10 +48,13 @@ func (s *Session) RecordDedup(bytes int) {
 }
 
 // RecordBudgetTrim records one output-budgeting trim that omitted the given
-// number of lines.
-func (s *Session) RecordBudgetTrim(linesOmitted int) {
+// number of lines, totaling bytesOmitted bytes — on the same byte unit as
+// RecordDedup/RecordRetire so all three can share one denominator (see
+// Percent).
+func (s *Session) RecordBudgetTrim(linesOmitted int, bytesOmitted int64) {
 	s.BudgetTrims++
 	s.BudgetLinesOmitted += linesOmitted
+	s.BudgetBytesOmitted += bytesOmitted
 }
 
 // RecordRetire records one post-boundary investigate call whose output of
@@ -53,9 +64,18 @@ func (s *Session) RecordRetire(bytes int) {
 	s.RetiredBytes += int64(bytes)
 }
 
-// IsZero reports whether no mechanism fired this session.
+// RecordProcessed records the original byte length of a tool response the
+// hook evaluated for suppression, regardless of the outcome (suppressed or
+// passed through untouched). Called once per call handlePostToolUse/
+// handleRetireInvestigate actually looks at.
+func (s *Session) RecordProcessed(bytes int) {
+	s.ProcessedBytes += int64(bytes)
+}
+
+// IsZero reports whether no mechanism fired this session. ProcessedBytes is
+// deliberately not part of this check — see its field doc comment.
 func (s *Session) IsZero() bool {
-	return *s == Session{}
+	return s.DedupHits == 0 && s.BudgetTrims == 0 && s.RetiredCalls == 0
 }
 
 // Lifetime is the running tally across every session, plus a count of how
@@ -66,8 +86,10 @@ type Lifetime struct {
 	DedupBytes         int64 `json:"dedupBytes"`
 	BudgetTrims        int   `json:"budgetTrims"`
 	BudgetLinesOmitted int   `json:"budgetLinesOmitted"`
+	BudgetBytesOmitted int64 `json:"budgetBytesOmitted"`
 	RetiredCalls       int   `json:"retiredCalls"`
 	RetiredBytes       int64 `json:"retiredBytes"`
+	ProcessedBytes     int64 `json:"processedBytes"`
 }
 
 // Add folds one session's tally into the lifetime tally and counts that
@@ -79,8 +101,47 @@ func (l *Lifetime) Add(s *Session) {
 	l.DedupBytes += s.DedupBytes
 	l.BudgetTrims += s.BudgetTrims
 	l.BudgetLinesOmitted += s.BudgetLinesOmitted
+	l.BudgetBytesOmitted += s.BudgetBytesOmitted
 	l.RetiredCalls += s.RetiredCalls
 	l.RetiredBytes += s.RetiredBytes
+	l.ProcessedBytes += s.ProcessedBytes
+}
+
+// Percent computes winglet_pct = suppressed / processed * 100, where
+// suppressed is dedup + budget-trim + retire bytes, all measured on the
+// same original-byte-length unit (see Session.ProcessedBytes). ok is false
+// when processedBytes is zero (nothing observed yet) — callers must render
+// that as "no data yet," not "0%," per the spec's honesty requirement: 0%
+// reads as "this doesn't work," a different claim than "nothing to measure
+// yet."
+func Percent(dedupBytes, budgetBytesOmitted, retiredBytes, processedBytes int64) (pct float64, ok bool) {
+	if processedBytes == 0 {
+		return 0, false
+	}
+	suppressed := dedupBytes + budgetBytesOmitted + retiredBytes
+	return float64(suppressed) / float64(processedBytes) * 100, true
+}
+
+// PartPercent reports what fraction of processedBytes a single mechanism's
+// bytes represent — the same shape as Percent but for one card instead of
+// the combined hero figure. Same zero-processed-bytes guard.
+func PartPercent(bytes, processedBytes int64) (pct float64, ok bool) {
+	if processedBytes == 0 {
+		return 0, false
+	}
+	return float64(bytes) / float64(processedBytes) * 100, true
+}
+
+// Stretch converts a suppressed-percentage into the "same package, Nx more
+// headroom" multiplier framing: stretch = 1 / (1 - p). Guards pct >= 100 to
+// avoid a divide-by-zero/Inf — suppressed bytes can't exceed processed bytes
+// in practice, but this keeps a corrupted or hand-edited stats file from
+// producing a nonsensical multiplier.
+func Stretch(pct float64) float64 {
+	if pct >= 100 {
+		return 0
+	}
+	return 100 / (100 - pct)
 }
 
 func sessionPath(projectDir, sessionID string) string {

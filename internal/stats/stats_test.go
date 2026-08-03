@@ -27,10 +27,11 @@ func TestRecordDedupAccumulates(t *testing.T) {
 
 func TestRecordBudgetTrimAccumulates(t *testing.T) {
 	s := &Session{}
-	s.RecordBudgetTrim(30)
-	s.RecordBudgetTrim(10)
-	if s.BudgetTrims != 2 || s.BudgetLinesOmitted != 40 {
-		t.Fatalf("got BudgetTrims=%d BudgetLinesOmitted=%d, want 2/40", s.BudgetTrims, s.BudgetLinesOmitted)
+	s.RecordBudgetTrim(30, 300)
+	s.RecordBudgetTrim(10, 100)
+	if s.BudgetTrims != 2 || s.BudgetLinesOmitted != 40 || s.BudgetBytesOmitted != 400 {
+		t.Fatalf("got BudgetTrims=%d BudgetLinesOmitted=%d BudgetBytesOmitted=%d, want 2/40/400",
+			s.BudgetTrims, s.BudgetLinesOmitted, s.BudgetBytesOmitted)
 	}
 }
 
@@ -42,13 +43,68 @@ func TestRecordRetireAccumulates(t *testing.T) {
 	}
 }
 
+func TestRecordProcessedAccumulates(t *testing.T) {
+	s := &Session{}
+	s.RecordProcessed(100)
+	s.RecordProcessed(50)
+	if s.ProcessedBytes != 150 {
+		t.Fatalf("got ProcessedBytes=%d, want 150", s.ProcessedBytes)
+	}
+}
+
+func TestIsZeroIgnoresProcessedBytes(t *testing.T) {
+	s := &Session{}
+	s.RecordProcessed(1000)
+	if !s.IsZero() {
+		t.Fatalf("a session with only ProcessedBytes recorded (no mechanism fired) should still report zero")
+	}
+}
+
+func TestPercentReportsNoDataYetWhenNothingProcessed(t *testing.T) {
+	if _, ok := Percent(0, 0, 0, 0); ok {
+		t.Fatalf("Percent with zero processed bytes should report ok=false, not a computed percentage")
+	}
+}
+
+func TestPercentComputesSuppressedFractionOfProcessed(t *testing.T) {
+	pct, ok := Percent(20, 10, 8, 100)
+	if !ok {
+		t.Fatalf("Percent with nonzero processed bytes should report ok=true")
+	}
+	if pct != 38 {
+		t.Fatalf("Percent = %v, want 38", pct)
+	}
+}
+
+func TestPartPercent(t *testing.T) {
+	pct, ok := PartPercent(12, 100)
+	if !ok || pct != 12 {
+		t.Fatalf("PartPercent = %v/%v, want 12/true", pct, ok)
+	}
+	if _, ok := PartPercent(0, 0); ok {
+		t.Fatalf("PartPercent with zero processed bytes should report ok=false")
+	}
+}
+
+func TestStretch(t *testing.T) {
+	if got := Stretch(50); got != 2 {
+		t.Fatalf("Stretch(50) = %v, want 2", got)
+	}
+	if got := Stretch(0); got != 1 {
+		t.Fatalf("Stretch(0) = %v, want 1", got)
+	}
+	if got := Stretch(100); got != 0 {
+		t.Fatalf("Stretch(100) should guard against divide-by-zero, got %v", got)
+	}
+}
+
 func TestSessionSaveThenLoadRoundTrips(t *testing.T) {
 	dir := t.TempDir()
 	sessionID := "sess-roundtrip"
 
 	s, _ := LoadSession(dir, sessionID)
 	s.RecordDedup(10)
-	s.RecordBudgetTrim(5)
+	s.RecordBudgetTrim(5, 50)
 	s.RecordRetire(20)
 	if err := SaveSession(dir, sessionID, s); err != nil {
 		t.Fatalf("SaveSession failed: %v", err)
@@ -159,7 +215,7 @@ func TestLifetimeSaveThenLoadRoundTrips(t *testing.T) {
 
 	l, _ := LoadLifetime(dir)
 	s := &Session{}
-	s.RecordBudgetTrim(15)
+	s.RecordBudgetTrim(15, 150)
 	l.Add(s)
 	if err := SaveLifetime(dir, l); err != nil {
 		t.Fatalf("SaveLifetime failed: %v", err)

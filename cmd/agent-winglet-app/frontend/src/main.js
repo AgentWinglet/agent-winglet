@@ -1,10 +1,14 @@
 import './style.css';
 import { icons } from './icons.js';
-import { GetOverview, GetProjects, GetSettings, SetQuiet } from '../wailsjs/go/main/App';
+import { GetOverview, GetOverviewWindow, GetProjects, GetSessionStats, GetSettings, SetQuiet } from '../wailsjs/go/main/App';
+
+const WINDOW_DAYS = 7;
 
 const state = {
   screen: 'overview',
   expanded: new Set(),
+  expandedSessions: new Set(),
+  sessionsByProject: new Map(),
 };
 
 const NAV_ITEMS = [
@@ -16,6 +20,22 @@ const NAV_ITEMS = [
 function navigate(screen) {
   state.screen = screen;
   render();
+}
+
+function hero(overview, compact = false) {
+  return `
+    <div class="hero ${compact ? 'compact' : ''}">
+      <div class="hero-number">${overview.heroHeadline}</div>
+      <div class="hero-label">${overview.heroSubtext}</div>
+    </div>`;
+}
+
+function windowBlock(windowOverview) {
+  const n = windowOverview.sessionCount;
+  return `
+    <div class="subsection-title">Last ${WINDOW_DAYS} days (${n} session${n === 1 ? '' : 's'})</div>
+    ${hero(windowOverview, true)}
+    ${cardGrid(windowOverview)}`;
 }
 
 function cardGrid(overview) {
@@ -37,15 +57,13 @@ function cardGrid(overview) {
 
 async function renderOverviewScreen(container) {
   container.innerHTML = `<div class="empty-state">Loading…</div>`;
-  const o = await GetOverview();
+  const [o, w] = await Promise.all([GetOverview(), GetOverviewWindow()]);
   container.innerHTML = `
     <h1 class="screen-title">Overview</h1>
     <p class="screen-subtitle">Lifetime, across ${o.projectCount} project${o.projectCount === 1 ? '' : 's'} and ${o.sessionCount} session${o.sessionCount === 1 ? '' : 's'}.</p>
-    <div class="hero">
-      <div class="hero-number">${o.heroDetail}</div>
-      <div class="hero-label">bytes suppressed (dedup + retired) — a raw count, not a validated cost figure</div>
-    </div>
+    ${hero(o)}
     ${cardGrid(o)}
+    ${windowBlock(w)}
   `;
 }
 
@@ -87,10 +105,14 @@ async function renderProjectsScreen(container) {
           <div class="project-path">${row.path}</div>
         </div>
         <span class="project-row-spacer"></span>
-        <span class="project-hero-inline">${row.overview.heroDetail}</span>
+        <span class="project-hero-inline">${row.overview.heroHeadline}</span>
         ${statusPill(row.installed)}
       </button>
-      <div class="project-row-detail">${cardGrid(row.overview)}</div>
+      <div class="project-row-detail">
+        ${cardGrid(row.overview)}
+        ${windowBlock(row.window)}
+        <div class="sessions-section" data-sessions="${row.path}"></div>
+      </div>
     </div>`
     )
     .join('');
@@ -104,6 +126,60 @@ async function renderProjectsScreen(container) {
         state.expanded.add(path);
       }
       renderProjectsScreen(container);
+    });
+  });
+
+  for (const row of rows) {
+    if (state.expanded.has(row.path)) {
+      renderSessionsSection(container, row.path);
+    }
+  }
+}
+
+async function renderSessionsSection(container, projectPath) {
+  const target = container.querySelector(`[data-sessions="${CSS.escape(projectPath)}"]`);
+  if (!target) return;
+
+  if (!state.sessionsByProject.has(projectPath)) {
+    target.innerHTML = `<div class="sessions-loading">Loading sessions…</div>`;
+    state.sessionsByProject.set(projectPath, await GetSessionStats(projectPath));
+  }
+  const sessions = state.sessionsByProject.get(projectPath);
+
+  if (!sessions || sessions.length === 0) {
+    target.innerHTML = `<div class="sessions-empty">No completed sessions on disk yet for this project.</div>`;
+    return;
+  }
+
+  target.innerHTML = `
+    <div class="sessions-title">Sessions (${sessions.length})</div>
+    ${sessions
+      .map((row) => {
+        const key = `${projectPath}::${row.sessionId}`;
+        const expanded = state.expandedSessions.has(key);
+        return `
+        <div class="session-row ${expanded ? 'expanded' : ''}">
+          <button class="session-row-header" data-toggle-session="${key}">
+            <span class="project-row-chevron">${icons.chevron}</span>
+            <span class="session-id">${row.sessionId}</span>
+            <span class="project-row-spacer"></span>
+            <span class="project-hero-inline">${row.overview.heroHeadline}</span>
+          </button>
+          <div class="session-row-detail">${cardGrid(row.overview)}</div>
+        </div>`;
+      })
+      .join('')}
+  `;
+
+  target.querySelectorAll('[data-toggle-session]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const key = btn.getAttribute('data-toggle-session');
+      if (state.expandedSessions.has(key)) {
+        state.expandedSessions.delete(key);
+      } else {
+        state.expandedSessions.add(key);
+      }
+      renderSessionsSection(container, projectPath);
     });
   });
 }

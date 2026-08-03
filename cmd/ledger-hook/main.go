@@ -70,8 +70,11 @@ const (
 // budgetStdout collapses stdout to its first budgetHeadLines and last
 // budgetTailLines lines if it has more than budgetLineThreshold lines. It
 // reports ok == false when stdout is short enough to leave untouched, and
-// omitted as the number of lines dropped (0 when ok is false).
-func budgetStdout(stdout string) (budgeted string, omitted int, ok bool) {
+// omittedLines/omittedBytes as the size of the dropped middle section (both
+// 0 when ok is false). omittedBytes is the "\n"-joined byte length of just
+// the dropped lines — the same original-size unit RecordDedup/RecordRetire
+// use — so budget-trims can contribute to the same suppressed-bytes total.
+func budgetStdout(stdout string) (budgeted string, omittedLines int, omittedBytes int64, ok bool) {
 	lines := strings.Split(stdout, "\n")
 	trailingNewline := len(lines) > 0 && lines[len(lines)-1] == ""
 	if trailingNewline {
@@ -79,20 +82,23 @@ func budgetStdout(stdout string) (budgeted string, omitted int, ok bool) {
 	}
 	n := len(lines)
 	if n <= budgetLineThreshold {
-		return "", 0, false
+		return "", 0, 0, false
 	}
+
+	dropped := lines[budgetHeadLines : n-budgetTailLines]
+	omittedLines = len(dropped)
+	omittedBytes = int64(len(strings.Join(dropped, "\n")))
 
 	var b strings.Builder
 	b.WriteString(strings.Join(lines[:budgetHeadLines], "\n"))
 	b.WriteString("\n")
-	omitted = n - budgetHeadLines - budgetTailLines
 	fmt.Fprintf(&b, "[agent-winglet] %d lines omitted, exit 0 (showing first %d/last %d)\n",
-		omitted, budgetHeadLines, budgetTailLines)
+		omittedLines, budgetHeadLines, budgetTailLines)
 	b.WriteString(strings.Join(lines[n-budgetTailLines:], "\n"))
 	if trailingNewline {
 		b.WriteString("\n")
 	}
-	return b.String(), omitted, true
+	return b.String(), omittedLines, omittedBytes, true
 }
 
 type hookInput struct {
@@ -309,7 +315,10 @@ func handleRetireInvestigate(in hookInput) (*hookOutput, error) {
 		"[agent-winglet] investigate output retired post-boundary (%s %s, %d bytes) — full content at %s",
 		in.ToolName, key, n, path,
 	)
-	if err := recordStat(in.Cwd, in.SessionID, func(s *stats.Session) { s.RecordRetire(n) }); err != nil {
+	if err := recordStat(in.Cwd, in.SessionID, func(s *stats.Session) {
+		s.RecordProcessed(n)
+		s.RecordRetire(n)
+	}); err != nil {
 		return nil, err
 	}
 	return &hookOutput{HookSpecificOutput: hookSpecificOutput{
@@ -375,16 +384,26 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 		return nil, err
 	}
 
+	processedBytes := len(response.Stdout)
+
 	repeatOfTurn, isRepeat := st.Check(key, response.Stdout)
 	if !isRepeat {
 		if err := ledger.Save(in.Cwd, in.SessionID, st); err != nil {
 			return nil, err
 		}
-		budgeted, omitted, ok := budgetStdout(response.Stdout)
+		budgeted, omittedLines, omittedBytes, ok := budgetStdout(response.Stdout)
 		if !ok {
+			// Short enough to leave untouched, but still a call the hook
+			// evaluated for suppression — counts toward the denominator.
+			if err := recordStat(in.Cwd, in.SessionID, func(s *stats.Session) { s.RecordProcessed(processedBytes) }); err != nil {
+				return nil, err
+			}
 			return nil, nil
 		}
-		if err := recordStat(in.Cwd, in.SessionID, func(s *stats.Session) { s.RecordBudgetTrim(omitted) }); err != nil {
+		if err := recordStat(in.Cwd, in.SessionID, func(s *stats.Session) {
+			s.RecordProcessed(processedBytes)
+			s.RecordBudgetTrim(omittedLines, omittedBytes)
+		}); err != nil {
 			return nil, err
 		}
 		return &hookOutput{HookSpecificOutput: hookSpecificOutput{
@@ -402,8 +421,10 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 	if err := ledger.Save(in.Cwd, in.SessionID, st); err != nil {
 		return nil, err
 	}
-	dedupBytes := len(response.Stdout)
-	if err := recordStat(in.Cwd, in.SessionID, func(s *stats.Session) { s.RecordDedup(dedupBytes) }); err != nil {
+	if err := recordStat(in.Cwd, in.SessionID, func(s *stats.Session) {
+		s.RecordProcessed(processedBytes)
+		s.RecordDedup(processedBytes)
+	}); err != nil {
 		return nil, err
 	}
 	return repeatOut, nil

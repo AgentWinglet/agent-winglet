@@ -4,7 +4,11 @@ import {main} from '../models';
 
 export function GetOverview():Promise<main.Overview>;
 
+export function GetOverviewWindow():Promise<main.Overview>;
+
 export function GetProjects():Promise<Array<main.ProjectRow>>;
+
+export function GetSessionStats(arg1:string):Promise<Array<main.SessionRow>>;
 
 export function GetSettings():Promise<main.Settings>;
 
