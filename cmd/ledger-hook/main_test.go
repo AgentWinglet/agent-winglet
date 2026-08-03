@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/umitkaanusta/agent-winglet/internal/config"
 	"github.com/umitkaanusta/agent-winglet/internal/stats"
 )
 
@@ -749,6 +750,55 @@ func TestHandleSessionStartInvalidatesStatsTally(t *testing.T) {
 	}
 	if out != nil {
 		t.Fatalf("stats tally should be wiped by SessionStart, got receipt %+v", out)
+	}
+}
+
+func TestHandleSessionEndRespectsQuietConfigFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	repeatIn := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
+	if _, err := handle(repeatIn); err != nil {
+		t.Fatalf("first call errored: %v", err)
+	}
+	if _, err := handle(repeatIn); err != nil {
+		t.Fatalf("repeat call errored: %v", err)
+	}
+
+	if err := config.Save(&config.Config{Quiet: true}); err != nil {
+		t.Fatalf("config.Save errored: %v", err)
+	}
+
+	out, err := handle(sessionEndInput("sess1", dir))
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("config-file Quiet=true should suppress the receipt message, got %+v", out)
+	}
+}
+
+func TestHandleSessionEndQuietEnvVarOverridesConfigFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	repeatIn := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
+	if _, err := handle(repeatIn); err != nil {
+		t.Fatalf("first call errored: %v", err)
+	}
+	if _, err := handle(repeatIn); err != nil {
+		t.Fatalf("repeat call errored: %v", err)
+	}
+
+	if err := config.Save(&config.Config{Quiet: true}); err != nil {
+		t.Fatalf("config.Save errored: %v", err)
+	}
+	t.Setenv(quietEnvVar, "0")
+
+	out, err := handle(sessionEndInput("sess1", dir))
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	if out == nil || out.SystemMessage == "" {
+		t.Fatalf("AGENT_WINGLET_QUIET=0 should override a quiet config file, got %+v", out)
 	}
 }
 

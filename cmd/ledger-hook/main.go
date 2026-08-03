@@ -44,6 +44,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/umitkaanusta/agent-winglet/internal/config"
 	"github.com/umitkaanusta/agent-winglet/internal/ledger"
 	"github.com/umitkaanusta/agent-winglet/internal/phase"
 	"github.com/umitkaanusta/agent-winglet/internal/retire"
@@ -402,9 +403,22 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 // fully active, and while lifetime bookkeeping still happens.
 const quietEnvVar = "AGENT_WINGLET_QUIET"
 
+// quiet checks AGENT_WINGLET_QUIET first, falling back to the global
+// ~/.agent-winglet/config.json Quiet field only when the env var is unset
+// entirely. The env var wins whenever it's set (including explicitly to "0"
+// or "false") so existing terminal-session usage is unaffected by a GUI
+// toggle — the config file exists for the desktop app's Settings screen,
+// which has no way to set an env var in a Claude Code session's process
+// tree (different process, no shared env).
 func quiet() bool {
-	v := os.Getenv(quietEnvVar)
-	return v != "" && v != "0" && v != "false"
+	if v := os.Getenv(quietEnvVar); v != "" {
+		return v != "0" && v != "false"
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return false
+	}
+	return cfg.Quiet
 }
 
 // handleSessionEnd emits the session's savings receipt: a summary of what
