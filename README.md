@@ -13,11 +13,15 @@ stays active either way.
 
 ## Install (v1: Session Ledger)
 
-Run this once, from anywhere — it doesn't need to be run from inside a
-project:
+This repo is private, so there's no public curl-one-liner — clone it and run
+`install.sh` from a checkout instead. It doesn't need to be run from inside
+whichever project you want the hook active in; it installs the hook
+globally by default, not per-project.
 
 ```
-curl -fsSL https://raw.githubusercontent.com/umitkaanusta/agent-winglet/main/install.sh | bash
+git clone https://github.com/umitkaanusta/agent-winglet.git
+cd agent-winglet
+./install.sh
 ```
 
 This runs `go install` to fetch the `ledger-hook` binary and merges the hook
@@ -29,6 +33,12 @@ The underlying mechanism was always project-scoped (ledger/stats state
 lives under each project's own `.claude/agent-winglet/`, keyed off the
 session's working directory), so installing once globally doesn't change
 per-project isolation, just where the hook gets registered.
+
+Because the repo is private, `go install` can't resolve it through the
+public module proxy — `install.sh` sets `GOPRIVATE` itself so `go` fetches
+straight from git instead, using whatever git credentials you already have
+configured for github.com (an SSH key, or `gh auth setup-git` for HTTPS).
+If that's not set up yet, `install.sh` will fail with a pointer to fix it.
 
 The hook itself registers whichever project it's running in — the first
 time it fires there — into `~/.agent-winglet/projects.json` (deduped,
@@ -44,6 +54,40 @@ per-project install from before, remove its `ledger-hook` entry from that
 project's `.claude/settings.json` after installing globally — running both
 at once fires the hook twice per event for that project and will
 double-count stats and corrupt the ledger's turn tracking.
+
+## Update
+
+Re-run `install.sh` — it always installs `@latest` (the tip of `main`) and
+the hook-config merge is a no-op if the entries are already there, so it's
+safe to run repeatedly:
+
+```
+cd agent-winglet && git pull && ./install.sh
+```
+
+(`git pull` isn't actually required — `go install` fetches straight from
+GitHub regardless of what your local checkout is at — but keeping the
+checkout current avoids drift between what you read in the repo and what's
+actually installed.)
+
+## Uninstall
+
+```
+./uninstall.sh
+```
+
+Strips every `ledger-hook` entry out of `~/.claude/settings.json`, leaving
+everything else in that file untouched. Same `--local` flag as `install.sh`
+to target `./.claude/settings.json` instead. Add:
+
+- `--purge-binary` to also delete the installed `ledger-hook` binary
+- `--purge-data` to also delete `~/.agent-winglet` (the global project
+  registry and quiet-mode config) and every registered project's
+  `.claude/agent-winglet/` (that project's savings-ledger/stats history) —
+  lists exactly what it's about to delete and asks for confirmation first,
+  unless `-y`/`--yes` is also passed
+
+`./uninstall.sh --purge-binary --purge-data -y` does a full teardown.
 
 ## Desktop app
 
@@ -81,7 +125,4 @@ make test    # runs the Go test suite
 This repo's own `.claude/settings.json` is a dev/test fixture — it points
 at the locally-built `bin/ledger-hook` so the hook can be exercised against
 this repo itself while working on it. It is not the install mechanism end
-users go through; that's `install.sh` above.
-
-`agent-winglet-v1-remaining.md` in this repo tracks what's built vs.
-outstanding, including the deferred usage_per_solve measurement gate.
+users go through; that's `install.sh`/`uninstall.sh` above.

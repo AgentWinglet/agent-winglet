@@ -1,10 +1,16 @@
-.PHONY: build test app
+.PHONY: build test app install uninstall
 
 build:
 	go build -o bin/ledger-hook ./cmd/ledger-hook
 
 test:
 	go test ./...
+
+install:
+	./install.sh
+
+uninstall:
+	./uninstall.sh
 
 # Builds the desktop dashboard app (Wails). On macOS, CGO_LDFLAGS must link
 # UniformTypeIdentifiers explicitly — Wails' darwin frontend code references
