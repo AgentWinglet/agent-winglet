@@ -154,6 +154,34 @@ body {
   letter-spacing: -0.01em;
 }
 
+.hero-bar {
+  margin-top: 16px;
+}
+
+.hero-bar-track {
+  height: 10px;
+  border-radius: 100px;
+  background: var(--muted-bg);
+  overflow: hidden;
+}
+
+.hero-bar-fill {
+  height: 100%;
+  border-radius: 100px;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
+.hero-bar-labels {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 6px;
+}
+
 /* --- Suppressed-by-mechanism bars --- */
 
 .bar-list {

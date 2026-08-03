@@ -44,6 +44,9 @@ export namespace main {
 	}
 	export class Overview {
 	    heroBytes: number;
+	    heroTotalBytes: number;
+	    heroTotalBytesLabel: string;
+	    heroPercent: number;
 	    heroHeadline: string;
 	    hasTranscriptData: boolean;
 	    bytesSavedCard: Card;
@@ -60,6 +63,9 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.heroBytes = source["heroBytes"];
+	        this.heroTotalBytes = source["heroTotalBytes"];
+	        this.heroTotalBytesLabel = source["heroTotalBytesLabel"];
+	        this.heroPercent = source["heroPercent"];
 	        this.heroHeadline = source["heroHeadline"];
 	        this.hasTranscriptData = source["hasTranscriptData"];
 	        this.bytesSavedCard = this.convertValues(source["bytesSavedCard"], Card);

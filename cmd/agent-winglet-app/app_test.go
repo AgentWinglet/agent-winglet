@@ -35,15 +35,16 @@ func TestBuildOverviewComputesBytesAndStretch(t *testing.T) {
 		DedupHits: 1, DedupBytes: 20,
 		BudgetTrims: 1, BudgetLinesOmitted: 5, BudgetBytesOmitted: 10,
 		RetiredCalls: 1, RetiredBytes: 8,
-		ProcessedBytes: 100,
+		// suppressed = 38; real total = transcriptContentBytes(62) + 38 = 100.
+		TranscriptContentBytes: 62,
 	}, 1, 1)
 
-	// suppressed = 20+10+8 = 38 -> 38% -> stretch = 100/(100-38) ≈ 1.6129
+	// 38/100 -> 38% -> stretch = 100/(100-38) ≈ 1.6129
 	if o.HeroHeadline != "38% saved" {
 		t.Fatalf("HeroHeadline = %q, want %q", o.HeroHeadline, "38% saved")
 	}
-	if o.HasTranscriptData {
-		t.Fatalf("expected HasTranscriptData = false with no transcript data seeded, got true")
+	if !o.HasTranscriptData {
+		t.Fatalf("expected HasTranscriptData = true with transcript content bytes seeded, got false")
 	}
 	if o.HeroBytes != 38 {
 		t.Fatalf("HeroBytes = %d, want 38", o.HeroBytes)
@@ -85,7 +86,6 @@ func TestBuildOverviewComputesBytesAndStretch(t *testing.T) {
 func TestBuildOverviewWithTranscriptDataPricesDollarCard(t *testing.T) {
 	o := buildOverview(overviewTotals{
 		DedupHits: 1, DedupBytes: 100,
-		ProcessedBytes: 200,
 		// This rollup's transcript usage: $1 cost backed by 4000 content
 		// bytes -> costPerByte = $0.00025/byte.
 		TranscriptCostUSD:      1.0,
@@ -99,9 +99,9 @@ func TestBuildOverviewWithTranscriptDataPricesDollarCard(t *testing.T) {
 	if o.DollarSavedCard.Detail != "$0.03" {
 		t.Fatalf("DollarSavedCard.Detail = %q, want %q", o.DollarSavedCard.Detail, "$0.03")
 	}
-	// suppressed = 100, ProcessedBytes = 200 -> 50%.
-	if o.DollarSavedCard.Sub != "50%" {
-		t.Fatalf("DollarSavedCard.Sub = %q, want %q", o.DollarSavedCard.Sub, "50%")
+	// suppressed = 100, real total = 4000+100 = 4100 -> 100/4100 ≈ 2.4%.
+	if o.DollarSavedCard.Sub != "2%" {
+		t.Fatalf("DollarSavedCard.Sub = %q, want %q", o.DollarSavedCard.Sub, "2%")
 	}
 }
 
@@ -114,7 +114,6 @@ func TestBuildOverviewDollarCardStaysProportionalAcrossOutlierSessions(t *testin
 	// magnitude (see the manual-verification note this test captures).
 	o := buildOverview(overviewTotals{
 		DedupHits: 1, DedupBytes: 13926, // ~13.6 KiB, matches the observed regression
-		ProcessedBytes:         24084,
 		TranscriptCostUSD:      0.1578,
 		TranscriptContentBytes: 455, // tiny, from a mostly-trivial session
 	}, 1, 1)
@@ -142,11 +141,11 @@ func TestGetOverviewSumsAcrossProjects(t *testing.T) {
 		t.Fatalf("Register dir2 errored: %v", err)
 	}
 
-	l1 := &stats.Lifetime{Sessions: 1, DedupHits: 1, DedupBytes: 10, ProcessedBytes: 50}
+	l1 := &stats.Lifetime{Sessions: 1, DedupHits: 1, DedupBytes: 10, TranscriptContentBytes: 100}
 	if err := stats.SaveLifetime(dir1, l1); err != nil {
 		t.Fatalf("SaveLifetime dir1 errored: %v", err)
 	}
-	l2 := &stats.Lifetime{Sessions: 2, RetiredCalls: 1, RetiredBytes: 20, ProcessedBytes: 50}
+	l2 := &stats.Lifetime{Sessions: 2, RetiredCalls: 1, RetiredBytes: 20}
 	if err := stats.SaveLifetime(dir2, l2); err != nil {
 		t.Fatalf("SaveLifetime dir2 errored: %v", err)
 	}
@@ -174,12 +173,12 @@ func TestGetSessionStatsListsSessionsNewestFirstAndSkipsLifetime(t *testing.T) {
 		t.Fatalf("MkdirAll errored: %v", err)
 	}
 
-	older := &stats.Session{DedupHits: 1, DedupBytes: 5, ProcessedBytes: 10}
+	older := &stats.Session{DedupHits: 1, DedupBytes: 5}
 	if err := stats.SaveSession(dir, "sess-older", older); err != nil {
 		t.Fatalf("SaveSession sess-older errored: %v", err)
 	}
 	newerPath := filepath.Join(agentDir, "sess-newer.stats.json")
-	if err := os.WriteFile(newerPath, []byte(`{"retiredCalls":1,"retiredBytes":7,"processedBytes":10}`), 0o644); err != nil {
+	if err := os.WriteFile(newerPath, []byte(`{"retiredCalls":1,"retiredBytes":7}`), 0o644); err != nil {
 		t.Fatalf("write sess-newer errored: %v", err)
 	}
 	// Give sess-newer a distinct, later mtime than sess-older so ordering is
@@ -222,7 +221,7 @@ func TestGetProjectsReturnsLifetimeOverviewPerProject(t *testing.T) {
 	if err := registry.Register(dir); err != nil {
 		t.Fatalf("Register errored: %v", err)
 	}
-	if err := stats.SaveLifetime(dir, &stats.Lifetime{Sessions: 2, DedupHits: 2, DedupBytes: 110, ProcessedBytes: 220}); err != nil {
+	if err := stats.SaveLifetime(dir, &stats.Lifetime{Sessions: 2, DedupHits: 2, DedupBytes: 110}); err != nil {
 		t.Fatalf("SaveLifetime errored: %v", err)
 	}
 

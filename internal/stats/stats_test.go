@@ -47,23 +47,6 @@ func TestRecordRetireAccumulates(t *testing.T) {
 	}
 }
 
-func TestRecordProcessedAccumulates(t *testing.T) {
-	s := &Session{}
-	s.RecordProcessed(100)
-	s.RecordProcessed(50)
-	if s.ProcessedBytes != 150 {
-		t.Fatalf("got ProcessedBytes=%d, want 150", s.ProcessedBytes)
-	}
-}
-
-func TestIsZeroIgnoresProcessedBytes(t *testing.T) {
-	s := &Session{}
-	s.RecordProcessed(1000)
-	if !s.IsZero() {
-		t.Fatalf("a session with only ProcessedBytes recorded (no mechanism fired) should still report zero")
-	}
-}
-
 func TestSetTranscriptUsageCopiesFields(t *testing.T) {
 	s := &Session{}
 	s.SetTranscriptUsage(transcript.SessionUsage{Tokens: 500, CostUSD: 0.25, ContentBytes: 2000})
@@ -81,16 +64,29 @@ func TestIsZeroIgnoresTranscriptUsage(t *testing.T) {
 	}
 }
 
-func TestPercentReportsNoDataYetWhenNothingProcessed(t *testing.T) {
+func TestPercentReportsNoDataYetWhenNoTranscriptData(t *testing.T) {
 	if _, ok := Percent(0, 0, 0, 0); ok {
-		t.Fatalf("Percent with zero processed bytes should report ok=false, not a computed percentage")
+		t.Fatalf("Percent with zero transcript content bytes should report ok=false, not a computed percentage")
 	}
 }
 
-func TestPercentComputesSuppressedFractionOfProcessed(t *testing.T) {
-	pct, ok := Percent(20, 10, 8, 100)
+func TestPercentReportsNoDataYetWhenSuppressedButNoTranscriptData(t *testing.T) {
+	// Regression guard: suppression happening (dedup/budget/retire bytes >
+	// 0) must not, on its own, make Percent report a computed percentage
+	// when there's no real transcript-content total to measure it against —
+	// that degenerate case (total = suppressed) would report 100% saved,
+	// which is a false claim, not an honest "no data yet."
+	if _, ok := Percent(20, 10, 8, 0); ok {
+		t.Fatalf("Percent with suppression but zero transcript content bytes should report ok=false")
+	}
+}
+
+func TestPercentComputesSuppressedFractionOfRealTotal(t *testing.T) {
+	// suppressed = 20+10+8 = 38, transcriptContentBytes = 62 -> real total =
+	// 100 -> 38%.
+	pct, ok := Percent(20, 10, 8, 62)
 	if !ok {
-		t.Fatalf("Percent with nonzero processed bytes should report ok=true")
+		t.Fatalf("Percent with nonzero transcript content bytes should report ok=true")
 	}
 	if pct != 38 {
 		t.Fatalf("Percent = %v, want 38", pct)
@@ -103,7 +99,7 @@ func TestPartPercent(t *testing.T) {
 		t.Fatalf("PartPercent = %v/%v, want 12/true", pct, ok)
 	}
 	if _, ok := PartPercent(0, 0); ok {
-		t.Fatalf("PartPercent with zero processed bytes should report ok=false")
+		t.Fatalf("PartPercent with zero total should report ok=false")
 	}
 }
 

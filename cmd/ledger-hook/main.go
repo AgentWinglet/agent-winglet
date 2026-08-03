@@ -318,7 +318,6 @@ func handleRetireInvestigate(in hookInput) (*hookOutput, error) {
 		in.ToolName, key, n, path,
 	)
 	if err := recordStat(in.Cwd, in.SessionID, func(s *stats.Session) {
-		s.RecordProcessed(n)
 		s.RecordRetire(n)
 	}); err != nil {
 		return nil, err
@@ -395,15 +394,11 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 		}
 		budgeted, omittedLines, omittedBytes, ok := budgetStdout(response.Stdout)
 		if !ok {
-			// Short enough to leave untouched, but still a call the hook
-			// evaluated for suppression — counts toward the denominator.
-			if err := recordStat(in.Cwd, in.SessionID, func(s *stats.Session) { s.RecordProcessed(processedBytes) }); err != nil {
-				return nil, err
-			}
+			// Short enough to leave untouched — nothing suppressed, nothing
+			// to record.
 			return nil, nil
 		}
 		if err := recordStat(in.Cwd, in.SessionID, func(s *stats.Session) {
-			s.RecordProcessed(processedBytes)
 			s.RecordBudgetTrim(omittedLines, omittedBytes)
 		}); err != nil {
 			return nil, err
@@ -424,7 +419,6 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 		return nil, err
 	}
 	if err := recordStat(in.Cwd, in.SessionID, func(s *stats.Session) {
-		s.RecordProcessed(processedBytes)
 		s.RecordDedup(processedBytes)
 	}); err != nil {
 		return nil, err
@@ -478,6 +472,14 @@ func handleSessionEnd(in hookInput) (*hookOutput, error) {
 	// whenever it doesn't.
 	if usage, err := transcript.ReadSessionUsage(in.TranscriptPath); err == nil {
 		sess.SetTranscriptUsage(usage)
+	}
+	// Persist the transcript usage onto the per-session file too, not just
+	// the in-memory copy folded into lifetime below — GetSessionStats reads
+	// this file back later for the per-session breakdown, and without this
+	// write it would always see zero transcript data even for a completed
+	// session.
+	if err := stats.SaveSession(in.Cwd, in.SessionID, sess); err != nil {
+		return nil, err
 	}
 
 	lifetime, err := stats.LoadLifetime(in.Cwd)

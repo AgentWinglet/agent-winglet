@@ -706,6 +706,18 @@ func TestHandleSessionEndReadsTranscriptUsage(t *testing.T) {
 	if lifetime.TranscriptCostUSD == 0 {
 		t.Fatalf("expected lifetime.TranscriptCostUSD to be nonzero, got %+v", lifetime)
 	}
+
+	// Regression: the per-session file must carry the transcript usage too,
+	// not just the in-memory copy folded into lifetime — GetSessionStats
+	// (agent-winglet-app) reads this file back later for the per-session
+	// breakdown.
+	sess, err := stats.LoadSession(dir, "sess1")
+	if err != nil {
+		t.Fatalf("LoadSession errored: %v", err)
+	}
+	if sess.TranscriptContentBytes == 0 {
+		t.Fatalf("expected the per-session file's TranscriptContentBytes to be persisted, got %+v", sess)
+	}
 }
 
 func TestHandleSessionEndUnreadableTranscriptStillEmitsReceipt(t *testing.T) {
@@ -741,7 +753,9 @@ func TestHandleSessionEndUnreadableTranscriptStillEmitsReceipt(t *testing.T) {
 func writeTranscriptFixture(t *testing.T, dir string) string {
 	t.Helper()
 	path := dir + "/fixture-transcript.jsonl"
-	line := `{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":100,"output_tokens":50}}}` + "\n"
+	assistantLine := `{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":100,"output_tokens":50}}}` + "\n"
+	userLine := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"hi"}]}}` + "\n"
+	line := assistantLine + userLine
 	if err := os.WriteFile(path, []byte(line), 0o644); err != nil {
 		t.Fatalf("write transcript fixture: %v", err)
 	}
@@ -913,11 +927,11 @@ func TestHandleDifferentSessionsAreIsolated(t *testing.T) {
 	}
 }
 
-func TestProcessedBytesTracksEveryEvaluatedBashCall(t *testing.T) {
+func TestPassthroughBashCallRecordsNoActivity(t *testing.T) {
 	dir := t.TempDir()
 
-	// Short, non-repeat, passes through untouched — still evaluated for
-	// suppression, so it must still count toward ProcessedBytes.
+	// Short, non-repeat, passes through untouched — nothing suppressed, so
+	// nothing should be recorded at all.
 	in := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
 	if _, err := handle(in); err != nil {
 		t.Fatalf("handle errored: %v", err)
@@ -927,39 +941,12 @@ func TestProcessedBytesTracksEveryEvaluatedBashCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSession errored: %v", err)
 	}
-	if s.ProcessedBytes != int64(len("hi\n")) {
-		t.Fatalf("ProcessedBytes = %d, want %d", s.ProcessedBytes, len("hi\n"))
-	}
 	if !s.IsZero() {
 		t.Fatalf("a passthrough-only session has no mechanism activity and should report IsZero, got %+v", s)
 	}
 }
 
-func TestProcessedBytesExcludesSkippedCalls(t *testing.T) {
-	dir := t.TempDir()
-	cases := []bashOutput{
-		{Stdout: "hi\n", Interrupted: true},
-		{Stdout: "hi\n", IsImage: true},
-		{Stdout: "hi\n", Stderr: "warning"},
-		{Stdout: ""},
-	}
-	for _, c := range cases {
-		in := bashInput(t, dir, "sess1", "echo hi", c)
-		if _, err := handle(in); err != nil {
-			t.Fatalf("handle errored for %+v: %v", c, err)
-		}
-	}
-
-	s, err := stats.LoadSession(dir, "sess1")
-	if err != nil {
-		t.Fatalf("LoadSession errored: %v", err)
-	}
-	if s.ProcessedBytes != 0 {
-		t.Fatalf("skipped calls should not count toward ProcessedBytes, got %d", s.ProcessedBytes)
-	}
-}
-
-func TestProcessedBytesAndBudgetBytesOmittedOnTrim(t *testing.T) {
+func TestBudgetBytesOmittedOnTrim(t *testing.T) {
 	dir := t.TempDir()
 	longOutput := linesOfStdout(budgetLineThreshold + 1)
 	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
@@ -972,16 +959,13 @@ func TestProcessedBytesAndBudgetBytesOmittedOnTrim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSession errored: %v", err)
 	}
-	if s.ProcessedBytes != int64(len(longOutput)) {
-		t.Fatalf("ProcessedBytes = %d, want %d", s.ProcessedBytes, len(longOutput))
-	}
-	if s.BudgetBytesOmitted <= 0 || s.BudgetBytesOmitted >= s.ProcessedBytes {
-		t.Fatalf("BudgetBytesOmitted = %d, want a positive value less than ProcessedBytes (%d)",
-			s.BudgetBytesOmitted, s.ProcessedBytes)
+	if s.BudgetBytesOmitted <= 0 || s.BudgetBytesOmitted >= int64(len(longOutput)) {
+		t.Fatalf("BudgetBytesOmitted = %d, want a positive value less than the original output length (%d)",
+			s.BudgetBytesOmitted, len(longOutput))
 	}
 }
 
-func TestProcessedBytesOnDedupHit(t *testing.T) {
+func TestDedupBytesOnDedupHit(t *testing.T) {
 	dir := t.TempDir()
 	in := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
 	if _, err := handle(in); err != nil {
@@ -995,18 +979,12 @@ func TestProcessedBytesOnDedupHit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSession errored: %v", err)
 	}
-	// Both the first (passthrough) and second (deduped) call are each
-	// evaluated for suppression, so ProcessedBytes counts both.
-	want := int64(len("hi\n")) * 2
-	if s.ProcessedBytes != want {
-		t.Fatalf("ProcessedBytes = %d, want %d", s.ProcessedBytes, want)
-	}
 	if s.DedupBytes != int64(len("hi\n")) {
 		t.Fatalf("DedupBytes = %d, want %d", s.DedupBytes, len("hi\n"))
 	}
 }
 
-func TestProcessedBytesOnRetiredCall(t *testing.T) {
+func TestRetiredBytesOnRetiredCall(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
 		t.Fatalf("seeding investigate call errored: %v", err)
@@ -1023,7 +1001,7 @@ func TestProcessedBytesOnRetiredCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSession errored: %v", err)
 	}
-	if s.ProcessedBytes != int64(len(response)) || s.RetiredBytes != int64(len(response)) {
-		t.Fatalf("ProcessedBytes/RetiredBytes = %d/%d, want both %d", s.ProcessedBytes, s.RetiredBytes, len(response))
+	if s.RetiredBytes != int64(len(response)) {
+		t.Fatalf("RetiredBytes = %d, want %d", s.RetiredBytes, len(response))
 	}
 }

@@ -21,11 +21,28 @@ function navigate(screen) {
 }
 
 // hero renders the primary figure: the headline percent-saved figure (e.g.
-// "38% saved").
+// "38% saved") plus, once real transcript data exists to size it against, a
+// bytes bar showing suppressed bytes against the real total (transcript
+// content bytes + suppressed) — the same total the headline percent itself
+// is computed from, so the fill width and the number always agree.
 function hero(overview) {
   return `
     <div class="hero">
       <div class="hero-number">${overview.heroHeadline}</div>
+      ${overview.hasTranscriptData ? heroBar(overview) : ''}
+    </div>`;
+}
+
+function heroBar(overview) {
+  return `
+    <div class="hero-bar">
+      <div class="hero-bar-track">
+        <div class="hero-bar-fill" style="width: ${Math.min(100, overview.heroPercent).toFixed(1)}%"></div>
+      </div>
+      <div class="hero-bar-labels">
+        <span>${overview.bytesSavedCard.detail} saved</span>
+        <span>${overview.heroTotalBytesLabel} total</span>
+      </div>
     </div>`;
 }
 

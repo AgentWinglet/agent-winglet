@@ -73,15 +73,18 @@ type BarRow struct {
 //     ("with the same plan" underneath).
 //  3. Bars — one row per suppression mechanism, descending by bytes.
 type Overview struct {
-	HeroBytes         int64    `json:"heroBytes"`
-	HeroHeadline      string   `json:"heroHeadline"`
-	HasTranscriptData bool     `json:"hasTranscriptData"`
-	BytesSavedCard    Card     `json:"bytesSavedCard"`
-	DollarSavedCard   Card     `json:"dollarSavedCard"`
-	MoreUsageCard     Card     `json:"moreUsageCard"`
-	Bars              []BarRow `json:"bars"`
-	ProjectCount      int      `json:"projectCount"`
-	SessionCount      int      `json:"sessionCount"`
+	HeroBytes           int64    `json:"heroBytes"`
+	HeroTotalBytes      int64    `json:"heroTotalBytes"`
+	HeroTotalBytesLabel string   `json:"heroTotalBytesLabel"`
+	HeroPercent         float64  `json:"heroPercent"`
+	HeroHeadline        string   `json:"heroHeadline"`
+	HasTranscriptData   bool     `json:"hasTranscriptData"`
+	BytesSavedCard      Card     `json:"bytesSavedCard"`
+	DollarSavedCard     Card     `json:"dollarSavedCard"`
+	MoreUsageCard       Card     `json:"moreUsageCard"`
+	Bars                []BarRow `json:"bars"`
+	ProjectCount        int      `json:"projectCount"`
+	SessionCount        int      `json:"sessionCount"`
 }
 
 // GetOverview sums the lifetime tally of every project in the registry that
@@ -120,7 +123,6 @@ type overviewTotals struct {
 	BudgetBytesOmitted int64
 	RetiredCalls       int
 	RetiredBytes       int64
-	ProcessedBytes     int64
 
 	TranscriptTokens       int64
 	TranscriptCostUSD      float64
@@ -137,7 +139,6 @@ func (t *overviewTotals) add(o overviewTotals) {
 	t.BudgetBytesOmitted += o.BudgetBytesOmitted
 	t.RetiredCalls += o.RetiredCalls
 	t.RetiredBytes += o.RetiredBytes
-	t.ProcessedBytes += o.ProcessedBytes
 	t.TranscriptTokens += o.TranscriptTokens
 	t.TranscriptCostUSD += o.TranscriptCostUSD
 	t.TranscriptContentBytes += o.TranscriptContentBytes
@@ -152,7 +153,6 @@ func totalsFromLifetime(l *stats.Lifetime) overviewTotals {
 		BudgetBytesOmitted: l.BudgetBytesOmitted,
 		RetiredCalls:       l.RetiredCalls,
 		RetiredBytes:       l.RetiredBytes,
-		ProcessedBytes:     l.ProcessedBytes,
 
 		TranscriptTokens:       l.TranscriptTokens,
 		TranscriptCostUSD:      l.TranscriptCostUSD,
@@ -169,7 +169,6 @@ func totalsFromSession(s *stats.Session) overviewTotals {
 		BudgetBytesOmitted: s.BudgetBytesOmitted,
 		RetiredCalls:       s.RetiredCalls,
 		RetiredBytes:       s.RetiredBytes,
-		ProcessedBytes:     s.ProcessedBytes,
 
 		TranscriptTokens:       s.TranscriptTokens,
 		TranscriptCostUSD:      s.TranscriptCostUSD,
@@ -206,11 +205,13 @@ const (
 
 // barRows builds the suppressed-by-mechanism bar list: one row per
 // mechanism, descending by bytes, fill width relative to the largest
-// mechanism in t (not an absolute 0-100% of processed bytes) — see spec.md
-// §4. A mechanism with zero bytes still gets a row (fill ratio 0) so the
-// list always shows all three, in whatever order this rollup's own numbers
-// produce.
-func barRows(t overviewTotals) []BarRow {
+// mechanism in t (not an absolute 0-100% of total bytes) — see spec.md §4.
+// A mechanism with zero bytes still gets a row (fill ratio 0) so the list
+// always shows all three, in whatever order this rollup's own numbers
+// produce. total is the same real total buildOverview passes to
+// stats.Percent (transcriptContentBytes + suppressed), so each row's
+// percent is directly comparable to — and sums to — the hero figure.
+func barRows(t overviewTotals, total int64) []BarRow {
 	mechanisms := []mechanism{
 		{"Repeat output skipped", dedupTooltip, t.DedupBytes,
 			fmt.Sprintf("%d hit%s", t.DedupHits, plural(t.DedupHits))},
@@ -230,7 +231,7 @@ func barRows(t overviewTotals) []BarRow {
 
 	rows := make([]BarRow, len(mechanisms))
 	for i, m := range mechanisms {
-		pct, ok := stats.PartPercent(m.bytes, t.ProcessedBytes)
+		pct, ok := stats.PartPercent(m.bytes, total)
 		var fillRatio float64
 		if largest > 0 {
 			fillRatio = float64(m.bytes) / float64(largest)
@@ -268,8 +269,9 @@ func barRows(t overviewTotals) []BarRow {
 // a weighted average, not one dominated by a single outlier's token count.
 func buildOverview(t overviewTotals, projectCount, sessionCount int) Overview {
 	suppressed := t.DedupBytes + t.BudgetBytesOmitted + t.RetiredBytes
+	total := t.TranscriptContentBytes + suppressed
 
-	pct, hasPct := stats.Percent(t.DedupBytes, t.BudgetBytesOmitted, t.RetiredBytes, t.ProcessedBytes)
+	pct, hasPct := stats.Percent(t.DedupBytes, t.BudgetBytesOmitted, t.RetiredBytes, t.TranscriptContentBytes)
 
 	heroHeadline := "No data yet"
 	if hasPct {
@@ -304,9 +306,12 @@ func buildOverview(t overviewTotals, projectCount, sessionCount int) Overview {
 	}
 
 	return Overview{
-		HeroBytes:         suppressed,
-		HeroHeadline:      heroHeadline,
-		HasTranscriptData: hasTranscriptData,
+		HeroBytes:           suppressed,
+		HeroTotalBytes:      total,
+		HeroTotalBytesLabel: formatBytes(total),
+		HeroPercent:         pct,
+		HeroHeadline:        heroHeadline,
+		HasTranscriptData:   hasTranscriptData,
 		BytesSavedCard: Card{
 			Label: "Bytes saved", Detail: bytesSavedDetail, Sub: bytesSavedSub,
 		},
@@ -316,7 +321,7 @@ func buildOverview(t overviewTotals, projectCount, sessionCount int) Overview {
 		MoreUsageCard: Card{
 			Label: "Net gains", Detail: moreUsageDetail, Sub: moreUsageSub,
 		},
-		Bars:         barRows(t),
+		Bars:         barRows(t, total),
 		ProjectCount: projectCount,
 		SessionCount: sessionCount,
 	}
@@ -390,7 +395,8 @@ func (a *App) GetProjects() ([]ProjectRow, error) {
 // sessions' stats files are NOT deleted on SessionEnd — only
 // stats.InvalidateSession (SessionStart/PostCompact) removes one, to wipe a
 // resumed/compacted session's stale tally — so a finished session's file
-// (and its ProcessedBytes/suppressed-bytes tally) persists for this to read.
+// (and its suppressed-bytes/transcript-usage tally) persists for this to
+// read.
 type SessionRow struct {
 	SessionID string   `json:"sessionId"`
 	Overview  Overview `json:"overview"`
