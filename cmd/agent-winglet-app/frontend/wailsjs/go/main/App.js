@@ -6,10 +6,6 @@ export function GetOverview() {
   return window['go']['main']['App']['GetOverview']();
 }
 
-export function GetOverviewWindow() {
-  return window['go']['main']['App']['GetOverviewWindow']();
-}
-
 export function GetProjects() {
   return window['go']['main']['App']['GetProjects']();
 }

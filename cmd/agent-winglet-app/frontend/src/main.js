@@ -1,8 +1,6 @@
 import './style.css';
 import { icons } from './icons.js';
-import { GetOverview, GetOverviewWindow, GetProjects, GetSessionStats, GetSettings, SetQuiet } from '../wailsjs/go/main/App';
-
-const WINDOW_DAYS = 7;
+import { GetOverview, GetProjects, GetSessionStats, GetSettings, SetQuiet } from '../wailsjs/go/main/App';
 
 const state = {
   screen: 'overview',
@@ -22,24 +20,53 @@ function navigate(screen) {
   render();
 }
 
-function hero(overview, compact = false) {
+// hero renders the primary figure: the headline percent-saved figure (e.g.
+// "38% saved").
+function hero(overview) {
   return `
-    <div class="hero ${compact ? 'compact' : ''}">
+    <div class="hero">
       <div class="hero-number">${overview.heroHeadline}</div>
-      <div class="hero-label">${overview.heroSubtext}</div>
     </div>`;
 }
 
-function windowBlock(windowOverview) {
-  const n = windowOverview.sessionCount;
+// barList renders the suppressed-by-mechanism bars: a total-bytes header
+// stat above one row per mechanism, ordered (server-side) descending by
+// bytes, fill width relative to the largest mechanism in this rollup.
+function barList(overview) {
+  const rows = overview.bars
+    .map(
+      (bar) => `
+    <div class="bar-row">
+      <div class="bar-row-top">
+        <span class="bar-label">
+          ${bar.label}
+          <span class="info-affordance" tabindex="0">
+            ${icons.info}
+            <span class="tooltip" role="tooltip">${bar.tooltip}</span>
+          </span>
+        </span>
+        <span class="bar-pill">${bar.hasPercent ? `${bar.percent.toFixed(0)}%` : '—'}</span>
+      </div>
+      <div class="bar-track">
+        <div class="bar-fill" style="width: ${(bar.fillRatio * 100).toFixed(1)}%"></div>
+      </div>
+      <div class="bar-row-bottom">
+        <span>${bar.countLabel}</span>
+        <span>${bar.bytesLabel}</span>
+      </div>
+    </div>`
+    )
+    .join('');
+
   return `
-    <div class="subsection-title">Last ${WINDOW_DAYS} days (${n} session${n === 1 ? '' : 's'})</div>
-    ${hero(windowOverview, true)}
-    ${cardGrid(windowOverview)}`;
+    <div class="bar-list">
+      <div class="bar-list-header">Suppressed, by mechanism</div>
+      ${rows}
+    </div>`;
 }
 
-function cardGrid(overview) {
-  const cards = [overview.dedup, overview.budgetTrims, overview.retired];
+function cardRow(overview) {
+  const cards = [overview.bytesSavedCard, overview.dollarSavedCard, overview.moreUsageCard];
   return `
     <div class="card-grid">
       ${cards
@@ -47,23 +74,39 @@ function cardGrid(overview) {
           (c) => `
         <div class="card">
           <div class="card-label">${c.label}</div>
-          <div class="card-count">${c.count}</div>
           <div class="card-detail">${c.detail}</div>
+          ${c.sub ? `<div class="card-sub">${c.sub}</div>` : ''}
         </div>`
         )
         .join('')}
     </div>`;
 }
 
+// statsBlock is the full hierarchy shared by the Overview screen and each
+// Projects-screen row: hero (raw suppressed bytes) -> summary cards (bytes/
+// $/more-usage) -> per-mechanism bars. One function, two call sites, so the
+// layout can never drift between the two.
+function statsBlock(overview) {
+  return `
+    ${hero(overview)}
+    ${cardRow(overview)}
+    ${barList(overview)}`;
+}
+
+// lightweightCardGrid is the compact view used only for per-session rows
+// nested inside an expanded project — just the three cards, no hero/bars/
+// tooltips stacked three levels deep.
+function lightweightCardGrid(overview) {
+  return cardRow(overview);
+}
+
 async function renderOverviewScreen(container) {
   container.innerHTML = `<div class="empty-state">Loading…</div>`;
-  const [o, w] = await Promise.all([GetOverview(), GetOverviewWindow()]);
+  const o = await GetOverview();
   container.innerHTML = `
     <h1 class="screen-title">Overview</h1>
     <p class="screen-subtitle">Lifetime, across ${o.projectCount} project${o.projectCount === 1 ? '' : 's'} and ${o.sessionCount} session${o.sessionCount === 1 ? '' : 's'}.</p>
-    ${hero(o)}
-    ${cardGrid(o)}
-    ${windowBlock(w)}
+    ${statsBlock(o)}
   `;
 }
 
@@ -109,8 +152,7 @@ async function renderProjectsScreen(container) {
         ${statusPill(row.installed)}
       </button>
       <div class="project-row-detail">
-        ${cardGrid(row.overview)}
-        ${windowBlock(row.window)}
+        ${statsBlock(row.overview)}
         <div class="sessions-section" data-sessions="${row.path}"></div>
       </div>
     </div>`
@@ -165,7 +207,7 @@ async function renderSessionsSection(container, projectPath) {
             <span class="project-row-spacer"></span>
             <span class="project-hero-inline">${row.overview.heroHeadline}</span>
           </button>
-          <div class="session-row-detail">${cardGrid(row.overview)}</div>
+          <div class="session-row-detail">${lightweightCardGrid(row.overview)}</div>
         </div>`;
       })
       .join('')}

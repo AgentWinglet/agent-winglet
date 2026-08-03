@@ -14,12 +14,6 @@ import (
 	"github.com/umitkaanusta/agent-winglet/internal/stats"
 )
 
-// windowDays is the size of the "recent" window shown alongside the lifetime
-// tally (ccusage defaults to daily/weekly rather than only all-time; see
-// spec.md's open question on windowing). 7 days, matching ccusage's weekly
-// report.
-const windowDays = 7
-
 // App is the Wails-bound backend. Every method here does the same thing the
 // rest of agent-winglet already does: read the JSON files the hooks and
 // install.sh already write, no daemon, no IPC beyond Wails' own JS<->Go
@@ -38,37 +32,56 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 }
 
-// Card is one stat block: a raw suppressed-content count plus a
-// pre-formatted detail string. Detail is formatted server-side because the
-// three mechanisms don't share a unit — dedup and retirement suppress bytes,
-// budget-trims suppress both lines and bytes (see stats.Session.
-// BudgetBytesOmitted) — so the byte-percentage prefix and the raw
-// supporting detail (hits/trims/calls, lines, bytes) are composed here, once,
-// instead of duplicated in the frontend.
+// Card is one of the three summary cards on the card row: a label, a
+// pre-formatted primary detail string, and an optional secondary line shown
+// beneath it (e.g. a percent under a byte count, or a fixed caption under
+// the net-gains multiplier).
 type Card struct {
 	Label  string `json:"label"`
-	Count  int    `json:"count"`
 	Detail string `json:"detail"`
+	Sub    string `json:"sub"`
 }
 
-// Overview is the Overview screen's data: a percentage-first hero (see
-// stats.Percent) plus the three per-mechanism cards, and how many projects/
-// sessions contributed. HeroBytes is the raw suppressed-byte count (dedup +
-// budget-trim + retire) backing HeroHeadline/HeroSubtext — summing across
-// mechanisms is safe because they're mutually exclusive per tool call:
-// cmd/ledger-hook's handlePostToolUse only ever takes one suppression branch
-// for a given call, never two, so no byte is ever counted twice.
-// HeroHeadline/HeroSubtext are pre-formatted so the frontend never has to
-// duplicate the "no data yet" guard or the stretch-multiplier math.
+// BarRow is one row of the suppressed-by-mechanism bar list (spec.md §4): a
+// label, a hover-tooltip explanation, this mechanism's share of processed
+// bytes (already computed via stats.PartPercent, so the frontend never
+// re-derives it), a fill ratio relative to the largest mechanism in this
+// rollup (so the longest bar reads as ~full width instead of three
+// near-invisible slivers when total suppression is small), and the raw
+// count/unit-noun plus formatted bytes for the row's bottom line — split
+// into their own fields so the frontend never has to parse a composed
+// Detail string to lay out left/right.
+type BarRow struct {
+	Label      string  `json:"label"`
+	Tooltip    string  `json:"tooltip"`
+	Percent    float64 `json:"percent"`
+	HasPercent bool    `json:"hasPercent"`
+	FillRatio  float64 `json:"fillRatio"`
+	CountLabel string  `json:"countLabel"`
+	Bytes      int64   `json:"bytes"`
+	BytesLabel string  `json:"bytesLabel"`
+}
+
+// Overview is the Overview screen's data (and each Projects-row's data —
+// same shape, two call sites). Hierarchy, top to bottom:
+//
+//  1. HeroHeadline — the headline percent-saved figure (e.g. "38% saved"),
+//     the primary claim.
+//  2. Cards — three small summary cards: bytes suppressed (with percent
+//     underneath), a priced dollar estimate (when transcript data exists,
+//     also with percent underneath), and the "~A.Bx" net-gains multiplier
+//     ("with the same plan" underneath).
+//  3. Bars — one row per suppression mechanism, descending by bytes.
 type Overview struct {
-	HeroBytes    int64  `json:"heroBytes"`
-	HeroHeadline string `json:"heroHeadline"`
-	HeroSubtext  string `json:"heroSubtext"`
-	Dedup        Card   `json:"dedup"`
-	BudgetTrims  Card   `json:"budgetTrims"`
-	Retired      Card   `json:"retired"`
-	ProjectCount int    `json:"projectCount"`
-	SessionCount int    `json:"sessionCount"`
+	HeroBytes         int64    `json:"heroBytes"`
+	HeroHeadline      string   `json:"heroHeadline"`
+	HasTranscriptData bool     `json:"hasTranscriptData"`
+	BytesSavedCard    Card     `json:"bytesSavedCard"`
+	DollarSavedCard   Card     `json:"dollarSavedCard"`
+	MoreUsageCard     Card     `json:"moreUsageCard"`
+	Bars              []BarRow `json:"bars"`
+	ProjectCount      int      `json:"projectCount"`
+	SessionCount      int      `json:"sessionCount"`
 }
 
 // GetOverview sums the lifetime tally of every project in the registry that
@@ -95,33 +108,6 @@ func (a *App) GetOverview() (Overview, error) {
 	return buildOverview(total, len(dirs), sessions), nil
 }
 
-// GetOverviewWindow is GetOverview's windowDays-recent counterpart (ccusage's
-// weekly report, applied here): instead of each project's ever-growing
-// lifetime.stats.json, it sums only the per-session stats files whose file
-// modification time falls within the last windowDays — the same files
-// GetSessionStats reads, since completed sessions are never deleted (see
-// SessionRow's doc comment).
-func (a *App) GetOverviewWindow() (Overview, error) {
-	dirs, err := registry.Load()
-	if err != nil {
-		return Overview{}, err
-	}
-
-	since := time.Now().AddDate(0, 0, -windowDays)
-	var total overviewTotals
-	sessions := 0
-	for _, dir := range dirs {
-		t, n, err := windowedTotals(dir, since)
-		if err != nil {
-			return Overview{}, err
-		}
-		total.add(t)
-		sessions += n
-	}
-
-	return buildOverview(total, len(dirs), sessions), nil
-}
-
 // overviewTotals is the minimal common shape buildOverview needs — both
 // stats.Session (one session's tally) and stats.Lifetime (a project or
 // cross-project rollup's tally) share these fields, just without a common
@@ -135,6 +121,10 @@ type overviewTotals struct {
 	RetiredCalls       int
 	RetiredBytes       int64
 	ProcessedBytes     int64
+
+	TranscriptTokens       int64
+	TranscriptCostUSD      float64
+	TranscriptContentBytes int64
 }
 
 // add folds o into t in place, so a caller summing across many projects (or
@@ -148,6 +138,9 @@ func (t *overviewTotals) add(o overviewTotals) {
 	t.RetiredCalls += o.RetiredCalls
 	t.RetiredBytes += o.RetiredBytes
 	t.ProcessedBytes += o.ProcessedBytes
+	t.TranscriptTokens += o.TranscriptTokens
+	t.TranscriptCostUSD += o.TranscriptCostUSD
+	t.TranscriptContentBytes += o.TranscriptContentBytes
 }
 
 func totalsFromLifetime(l *stats.Lifetime) overviewTotals {
@@ -160,6 +153,10 @@ func totalsFromLifetime(l *stats.Lifetime) overviewTotals {
 		RetiredCalls:       l.RetiredCalls,
 		RetiredBytes:       l.RetiredBytes,
 		ProcessedBytes:     l.ProcessedBytes,
+
+		TranscriptTokens:       l.TranscriptTokens,
+		TranscriptCostUSD:      l.TranscriptCostUSD,
+		TranscriptContentBytes: l.TranscriptContentBytes,
 	}
 }
 
@@ -173,6 +170,10 @@ func totalsFromSession(s *stats.Session) overviewTotals {
 		RetiredCalls:       s.RetiredCalls,
 		RetiredBytes:       s.RetiredBytes,
 		ProcessedBytes:     s.ProcessedBytes,
+
+		TranscriptTokens:       s.TranscriptTokens,
+		TranscriptCostUSD:      s.TranscriptCostUSD,
+		TranscriptContentBytes: s.TranscriptContentBytes,
 	}
 }
 
@@ -184,87 +185,141 @@ func overviewFromSession(s *stats.Session, projectCount, sessionCount int) Overv
 	return buildOverview(totalsFromSession(s), projectCount, sessionCount)
 }
 
-// windowedTotals sums every session-stats file in projectDir modified at or
-// after since, returning the summed totals and how many session files
-// contributed. A project with no .claude/agent-winglet directory yet
-// contributes a zero tally and 0 sessions, not an error.
-func windowedTotals(projectDir string, since time.Time) (overviewTotals, int, error) {
-	files, err := listSessionFiles(projectDir)
-	if err != nil {
-		return overviewTotals{}, 0, err
-	}
-
-	var total overviewTotals
-	n := 0
-	for _, f := range files {
-		if f.modTime.Before(since) {
-			continue
-		}
-		s, err := stats.LoadSession(projectDir, f.id)
-		if err != nil {
-			return overviewTotals{}, 0, err
-		}
-		total.add(totalsFromSession(s))
-		n++
-	}
-	return total, n, nil
+// mechanism bundles one suppression mechanism's raw fields for barRows to
+// sort and format uniformly, instead of repeating the same five-argument
+// shape three times inline.
+type mechanism struct {
+	label      string
+	tooltip    string
+	bytes      int64
+	countLabel string
 }
 
-// buildOverview composes the percentage-first hero and the three cards from
-// a totals tally. Percentages are of ProcessedBytes (see stats.Percent/
-// stats.PartPercent) — the original size of every tool response the hook
-// evaluated, whether or not it ended up suppressed. When ProcessedBytes is
-// zero (hook installed, nothing seen yet), every percentage is replaced with
-// "no data yet" rather than a misleading "0%" (0% reads as "this doesn't
-// work," a different claim than "nothing to measure yet" — see spec.md).
+const (
+	dedupTooltip = "When Claude re-runs a shell command it's already run with identical output this session, " +
+		"agent-winglet replaces the repeat with a short reference instead of sending it to the model again."
+	budgetTrimTooltip = "Commands that succeed but print more than 60 lines have their middle section collapsed " +
+		"to a head/tail summary."
+	retireTooltip = "Once a session moves from investigating to editing, earlier read/search/fetch output is " +
+		"assumed to have served its purpose and is archived instead of replayed."
+)
+
+// barRows builds the suppressed-by-mechanism bar list: one row per
+// mechanism, descending by bytes, fill width relative to the largest
+// mechanism in t (not an absolute 0-100% of processed bytes) — see spec.md
+// §4. A mechanism with zero bytes still gets a row (fill ratio 0) so the
+// list always shows all three, in whatever order this rollup's own numbers
+// produce.
+func barRows(t overviewTotals) []BarRow {
+	mechanisms := []mechanism{
+		{"Repeat output skipped", dedupTooltip, t.DedupBytes,
+			fmt.Sprintf("%d hit%s", t.DedupHits, plural(t.DedupHits))},
+		{"Long output trimmed", budgetTrimTooltip, t.BudgetBytesOmitted,
+			fmt.Sprintf("%d trim%s", t.BudgetTrims, plural(t.BudgetTrims))},
+		{"Old investigation output archived", retireTooltip, t.RetiredBytes,
+			fmt.Sprintf("%d call%s", t.RetiredCalls, plural(t.RetiredCalls))},
+	}
+	sort.SliceStable(mechanisms, func(i, j int) bool { return mechanisms[i].bytes > mechanisms[j].bytes })
+
+	var largest int64
+	for _, m := range mechanisms {
+		if m.bytes > largest {
+			largest = m.bytes
+		}
+	}
+
+	rows := make([]BarRow, len(mechanisms))
+	for i, m := range mechanisms {
+		pct, ok := stats.PartPercent(m.bytes, t.ProcessedBytes)
+		var fillRatio float64
+		if largest > 0 {
+			fillRatio = float64(m.bytes) / float64(largest)
+		}
+		rows[i] = BarRow{
+			Label:      m.label,
+			Tooltip:    m.tooltip,
+			Percent:    pct,
+			HasPercent: ok,
+			FillRatio:  fillRatio,
+			CountLabel: m.countLabel,
+			Bytes:      m.bytes,
+			BytesLabel: formatBytes(m.bytes),
+		}
+	}
+	return rows
+}
+
+// buildOverview composes the percent-saved hero, the three summary cards,
+// and the suppressed-by-mechanism bars from a totals tally.
+//
+// HeroHeadline is always the headline percent-saved figure. The dollar card
+// prices the suppressed-byte figure directly at this rollup's own
+// cost-per-byte ratio
+// (TranscriptCostUSD / TranscriptContentBytes, both measured on the
+// "input-side content" unit — see internal/transcript), skipping tokens as
+// an intermediate unit entirely: a token count only makes sense computed
+// from a bytes-per-token ratio local to the session that produced it, and a
+// lifetime/project rollup mixes sessions whose ratios can differ by orders
+// of magnitude (a trivial session that replays a huge cached system prompt
+// for one line of real content has a wildly different bytes-per-token ratio
+// than a content-heavy one) — prone to wild distortion once aggregated.
+// Pricing directly in cost-per-byte sidesteps that: cost and content bytes
+// are summed independently across sessions before dividing, so the ratio is
+// a weighted average, not one dominated by a single outlier's token count.
 func buildOverview(t overviewTotals, projectCount, sessionCount int) Overview {
 	suppressed := t.DedupBytes + t.BudgetBytesOmitted + t.RetiredBytes
 
-	headline := "No data yet"
-	subtext := "Install the hook and run a session to see savings here."
-	if pct, ok := stats.Percent(t.DedupBytes, t.BudgetBytesOmitted, t.RetiredBytes, t.ProcessedBytes); ok {
+	pct, hasPct := stats.Percent(t.DedupBytes, t.BudgetBytesOmitted, t.RetiredBytes, t.ProcessedBytes)
+
+	heroHeadline := "No data yet"
+	if hasPct {
+		heroHeadline = fmt.Sprintf("%.0f%% saved", pct)
+	}
+
+	hasTranscriptData := t.TranscriptContentBytes > 0
+	dollarDetail := "no data yet"
+	dollarSub := ""
+	if hasTranscriptData {
+		costPerByte := t.TranscriptCostUSD / float64(t.TranscriptContentBytes)
+		usdSaved := float64(suppressed) * costPerByte
+		dollarDetail = fmt.Sprintf("$%.2f", usdSaved)
+		if hasPct {
+			dollarSub = fmt.Sprintf("%.0f%%", pct)
+		}
+	}
+
+	moreUsageDetail := "no data yet"
+	moreUsageSub := ""
+	if hasPct {
 		stretch := stats.Stretch(pct)
-		headline = fmt.Sprintf("%.0f%% saved", pct)
-		subtext = fmt.Sprintf("same package, ~%.1fx more headroom — %s of tool output never replayed",
-			stretch, formatBytes(suppressed))
+		moreUsageDetail = fmt.Sprintf("~%.1fx", stretch)
+		moreUsageSub = "with the same plan"
+	}
+
+	bytesSavedDetail := "no data yet"
+	bytesSavedSub := ""
+	if hasPct {
+		bytesSavedDetail = formatBytes(suppressed)
+		bytesSavedSub = fmt.Sprintf("%.0f%%", pct)
 	}
 
 	return Overview{
-		HeroBytes:    suppressed,
-		HeroHeadline: headline,
-		HeroSubtext:  subtext,
-		Dedup: Card{
-			Label: "Repeat output skipped", Count: t.DedupHits,
-			Detail: cardDetail(t.DedupBytes, t.ProcessedBytes,
-				fmt.Sprintf("%d hit%s, %s", t.DedupHits, plural(t.DedupHits), formatBytes(t.DedupBytes))),
+		HeroBytes:         suppressed,
+		HeroHeadline:      heroHeadline,
+		HasTranscriptData: hasTranscriptData,
+		BytesSavedCard: Card{
+			Label: "Bytes saved", Detail: bytesSavedDetail, Sub: bytesSavedSub,
 		},
-		BudgetTrims: Card{
-			Label: "Long output trimmed", Count: t.BudgetTrims,
-			Detail: cardDetail(t.BudgetBytesOmitted, t.ProcessedBytes,
-				fmt.Sprintf("%d trim%s, %d line%s / %s", t.BudgetTrims, plural(t.BudgetTrims),
-					t.BudgetLinesOmitted, plural(t.BudgetLinesOmitted), formatBytes(t.BudgetBytesOmitted))),
+		DollarSavedCard: Card{
+			Label: "Money saved", Detail: dollarDetail, Sub: dollarSub,
 		},
-		Retired: Card{
-			Label: "Old investigation output archived", Count: t.RetiredCalls,
-			Detail: cardDetail(t.RetiredBytes, t.ProcessedBytes,
-				fmt.Sprintf("%d call%s, %s", t.RetiredCalls, plural(t.RetiredCalls), formatBytes(t.RetiredBytes))),
+		MoreUsageCard: Card{
+			Label: "Net gains", Detail: moreUsageDetail, Sub: moreUsageSub,
 		},
+		Bars:         barRows(t),
 		ProjectCount: projectCount,
 		SessionCount: sessionCount,
 	}
-}
-
-// cardDetail prefixes rest with this mechanism's own percentage of
-// processed bytes, e.g. "12% of output — 3 hits, 4.0 KiB". Falls back to
-// rest alone when there's no processed-bytes data yet, same "no data yet"
-// guard as the hero (just omitting the prefix rather than repeating the
-// phrase in every card).
-func cardDetail(mechanismBytes, processedBytes int64, rest string) string {
-	pct, ok := stats.PartPercent(mechanismBytes, processedBytes)
-	if !ok {
-		return rest
-	}
-	return fmt.Sprintf("%.0f%% of output — %s", pct, rest)
 }
 
 func plural(n int) string {
@@ -294,16 +349,14 @@ func formatBytes(n int64) string {
 // basename), whether the hook is actually active for this project right now
 // (not just registry presence — see internal/registry's doc comment) via
 // either the global ~/.claude/settings.json install.sh wires by default, or
-// a legacy/opt-in per-project .claude/settings.json entry, its lifetime
-// tally (Overview), and its windowDays-recent tally (Window) — both broken
-// into the same three cards, same as the Overview screen's lifetime/window
-// pair.
+// a legacy/opt-in per-project .claude/settings.json entry, and its lifetime
+// tally (Overview) — the same shape the Overview screen uses (see spec.md
+// §6), so the frontend renders both with one shared component.
 type ProjectRow struct {
 	Name      string   `json:"name"`
 	Path      string   `json:"path"`
 	Installed bool     `json:"installed"`
 	Overview  Overview `json:"overview"`
-	Window    Overview `json:"window"`
 }
 
 // GetProjects returns one row per registered, still-existing project.
@@ -314,14 +367,9 @@ func (a *App) GetProjects() ([]ProjectRow, error) {
 	}
 
 	globalInstalled := registry.GlobalHookInstalled()
-	since := time.Now().AddDate(0, 0, -windowDays)
 	rows := make([]ProjectRow, 0, len(dirs))
 	for _, dir := range dirs {
 		l, err := stats.LoadLifetime(dir)
-		if err != nil {
-			return nil, err
-		}
-		windowTotals, windowSessions, err := windowedTotals(dir, since)
 		if err != nil {
 			return nil, err
 		}
@@ -330,7 +378,6 @@ func (a *App) GetProjects() ([]ProjectRow, error) {
 			Path:      dir,
 			Installed: globalInstalled || registry.HookInstalled(dir),
 			Overview:  overviewFromLifetime(l, 1),
-			Window:    buildOverview(windowTotals, 1, windowSessions),
 		})
 	}
 	return rows, nil

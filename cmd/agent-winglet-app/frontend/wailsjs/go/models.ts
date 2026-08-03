@@ -1,9 +1,35 @@
 export namespace main {
 	
+	export class BarRow {
+	    label: string;
+	    tooltip: string;
+	    percent: number;
+	    hasPercent: boolean;
+	    fillRatio: number;
+	    countLabel: string;
+	    bytes: number;
+	    bytesLabel: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new BarRow(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.label = source["label"];
+	        this.tooltip = source["tooltip"];
+	        this.percent = source["percent"];
+	        this.hasPercent = source["hasPercent"];
+	        this.fillRatio = source["fillRatio"];
+	        this.countLabel = source["countLabel"];
+	        this.bytes = source["bytes"];
+	        this.bytesLabel = source["bytesLabel"];
+	    }
+	}
 	export class Card {
 	    label: string;
-	    count: number;
 	    detail: string;
+	    sub: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Card(source);
@@ -12,17 +38,18 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.label = source["label"];
-	        this.count = source["count"];
 	        this.detail = source["detail"];
+	        this.sub = source["sub"];
 	    }
 	}
 	export class Overview {
 	    heroBytes: number;
 	    heroHeadline: string;
-	    heroSubtext: string;
-	    dedup: Card;
-	    budgetTrims: Card;
-	    retired: Card;
+	    hasTranscriptData: boolean;
+	    bytesSavedCard: Card;
+	    dollarSavedCard: Card;
+	    moreUsageCard: Card;
+	    bars: BarRow[];
 	    projectCount: number;
 	    sessionCount: number;
 	
@@ -34,10 +61,11 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.heroBytes = source["heroBytes"];
 	        this.heroHeadline = source["heroHeadline"];
-	        this.heroSubtext = source["heroSubtext"];
-	        this.dedup = this.convertValues(source["dedup"], Card);
-	        this.budgetTrims = this.convertValues(source["budgetTrims"], Card);
-	        this.retired = this.convertValues(source["retired"], Card);
+	        this.hasTranscriptData = source["hasTranscriptData"];
+	        this.bytesSavedCard = this.convertValues(source["bytesSavedCard"], Card);
+	        this.dollarSavedCard = this.convertValues(source["dollarSavedCard"], Card);
+	        this.moreUsageCard = this.convertValues(source["moreUsageCard"], Card);
+	        this.bars = this.convertValues(source["bars"], BarRow);
 	        this.projectCount = source["projectCount"];
 	        this.sessionCount = source["sessionCount"];
 	    }
@@ -65,7 +93,6 @@ export namespace main {
 	    path: string;
 	    installed: boolean;
 	    overview: Overview;
-	    window: Overview;
 	
 	    static createFrom(source: any = {}) {
 	        return new ProjectRow(source);
@@ -77,7 +104,6 @@ export namespace main {
 	        this.path = source["path"];
 	        this.installed = source["installed"];
 	        this.overview = this.convertValues(source["overview"], Overview);
-	        this.window = this.convertValues(source["window"], Overview);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

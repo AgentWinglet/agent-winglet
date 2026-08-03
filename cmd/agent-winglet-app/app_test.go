@@ -16,13 +16,21 @@ func TestBuildOverviewNoDataYetWhenNothingProcessed(t *testing.T) {
 	if o.HeroHeadline != "No data yet" {
 		t.Fatalf("HeroHeadline = %q, want %q", o.HeroHeadline, "No data yet")
 	}
-	if strings.Contains(o.Dedup.Detail, "%") || strings.Contains(o.BudgetTrims.Detail, "%") || strings.Contains(o.Retired.Detail, "%") {
-		t.Fatalf("card details should omit a percentage prefix with no processed-bytes data, got dedup=%q trims=%q retired=%q",
-			o.Dedup.Detail, o.BudgetTrims.Detail, o.Retired.Detail)
+	if o.HasTranscriptData {
+		t.Fatalf("expected HasTranscriptData = false with no transcript content bytes, got true")
+	}
+	if o.BytesSavedCard.Detail != "no data yet" || o.DollarSavedCard.Detail != "no data yet" || o.MoreUsageCard.Detail != "no data yet" {
+		t.Fatalf("card details should read 'no data yet' with no processed-bytes data, got bytesSaved=%q dollarSaved=%q moreUsage=%q",
+			o.BytesSavedCard.Detail, o.DollarSavedCard.Detail, o.MoreUsageCard.Detail)
+	}
+	for _, bar := range o.Bars {
+		if bar.HasPercent {
+			t.Fatalf("bar %q should have HasPercent=false with no processed-bytes data, got %+v", bar.Label, bar)
+		}
 	}
 }
 
-func TestBuildOverviewComputesPercentAndStretch(t *testing.T) {
+func TestBuildOverviewComputesBytesAndStretch(t *testing.T) {
 	o := buildOverview(overviewTotals{
 		DedupHits: 1, DedupBytes: 20,
 		BudgetTrims: 1, BudgetLinesOmitted: 5, BudgetBytesOmitted: 10,
@@ -34,20 +42,92 @@ func TestBuildOverviewComputesPercentAndStretch(t *testing.T) {
 	if o.HeroHeadline != "38% saved" {
 		t.Fatalf("HeroHeadline = %q, want %q", o.HeroHeadline, "38% saved")
 	}
-	if !strings.Contains(o.HeroSubtext, "1.6x more headroom") {
-		t.Fatalf("HeroSubtext missing expected stretch multiplier, got %q", o.HeroSubtext)
+	if o.HasTranscriptData {
+		t.Fatalf("expected HasTranscriptData = false with no transcript data seeded, got true")
 	}
-	if !strings.Contains(o.HeroSubtext, "38 B of tool output never replayed") {
-		t.Fatalf("HeroSubtext missing expected suppressed-byte detail, got %q", o.HeroSubtext)
+	if o.HeroBytes != 38 {
+		t.Fatalf("HeroBytes = %d, want 38", o.HeroBytes)
 	}
-	if !strings.HasPrefix(o.Dedup.Detail, "20% of output") {
-		t.Fatalf("Dedup.Detail = %q, want a 20%% of output prefix", o.Dedup.Detail)
+	if o.BytesSavedCard.Detail != "38 B" {
+		t.Fatalf("BytesSavedCard.Detail = %q, want %q", o.BytesSavedCard.Detail, "38 B")
 	}
-	if !strings.HasPrefix(o.BudgetTrims.Detail, "10% of output") {
-		t.Fatalf("BudgetTrims.Detail = %q, want a 10%% of output prefix", o.BudgetTrims.Detail)
+	if o.BytesSavedCard.Sub != "38%" {
+		t.Fatalf("BytesSavedCard.Sub = %q, want %q", o.BytesSavedCard.Sub, "38%")
 	}
-	if !strings.HasPrefix(o.Retired.Detail, "8% of output") {
-		t.Fatalf("Retired.Detail = %q, want an 8%% of output prefix", o.Retired.Detail)
+	if !strings.Contains(o.MoreUsageCard.Detail, "1.6x") {
+		t.Fatalf("MoreUsageCard.Detail missing expected stretch multiplier, got %q", o.MoreUsageCard.Detail)
+	}
+	if o.MoreUsageCard.Sub != "with the same plan" {
+		t.Fatalf("MoreUsageCard.Sub = %q, want %q", o.MoreUsageCard.Sub, "with the same plan")
+	}
+
+	// Bars: dedup(20) > budget(10) > retired(8), descending by bytes.
+	if len(o.Bars) != 3 {
+		t.Fatalf("got %d bars, want 3", len(o.Bars))
+	}
+	if o.Bars[0].Label != "Repeat output skipped" || o.Bars[0].Bytes != 20 {
+		t.Fatalf("Bars[0] = %+v, want dedup with 20 bytes first (descending by bytes)", o.Bars[0])
+	}
+	if o.Bars[1].Label != "Long output trimmed" || o.Bars[1].Bytes != 10 {
+		t.Fatalf("Bars[1] = %+v, want budget-trim with 10 bytes second", o.Bars[1])
+	}
+	if o.Bars[2].Label != "Old investigation output archived" || o.Bars[2].Bytes != 8 {
+		t.Fatalf("Bars[2] = %+v, want retire with 8 bytes third", o.Bars[2])
+	}
+	if o.Bars[0].FillRatio != 1 {
+		t.Fatalf("largest bar's FillRatio = %v, want 1 (fill relative to the largest mechanism)", o.Bars[0].FillRatio)
+	}
+	if !o.Bars[0].HasPercent || o.Bars[0].Percent != 20 {
+		t.Fatalf("Bars[0].Percent = %v/%v, want 20/true", o.Bars[0].Percent, o.Bars[0].HasPercent)
+	}
+}
+
+func TestBuildOverviewWithTranscriptDataPricesDollarCard(t *testing.T) {
+	o := buildOverview(overviewTotals{
+		DedupHits: 1, DedupBytes: 100,
+		ProcessedBytes: 200,
+		// This rollup's transcript usage: $1 cost backed by 4000 content
+		// bytes -> costPerByte = $0.00025/byte.
+		TranscriptCostUSD:      1.0,
+		TranscriptContentBytes: 4000,
+	}, 1, 1)
+
+	if !o.HasTranscriptData {
+		t.Fatalf("expected HasTranscriptData = true when TranscriptContentBytes > 0")
+	}
+	// usdSaved = 100 suppressed bytes * $0.00025/byte = $0.025 -> "$0.03".
+	if o.DollarSavedCard.Detail != "$0.03" {
+		t.Fatalf("DollarSavedCard.Detail = %q, want %q", o.DollarSavedCard.Detail, "$0.03")
+	}
+	// suppressed = 100, ProcessedBytes = 200 -> 50%.
+	if o.DollarSavedCard.Sub != "50%" {
+		t.Fatalf("DollarSavedCard.Sub = %q, want %q", o.DollarSavedCard.Sub, "50%")
+	}
+}
+
+func TestBuildOverviewDollarCardStaysProportionalAcrossOutlierSessions(t *testing.T) {
+	// Regression test: pricing must go through a cost-per-byte ratio
+	// computed from independently-summed cost and content bytes, never
+	// through a per-token intermediate — a lifetime rollup mixing a
+	// content-heavy session with a trivial one that still burned huge
+	// context-replay tokens must not distort the $ estimate by orders of
+	// magnitude (see the manual-verification note this test captures).
+	o := buildOverview(overviewTotals{
+		DedupHits: 1, DedupBytes: 13926, // ~13.6 KiB, matches the observed regression
+		ProcessedBytes:         24084,
+		TranscriptCostUSD:      0.1578,
+		TranscriptContentBytes: 455, // tiny, from a mostly-trivial session
+	}, 1, 1)
+
+	if !o.HasTranscriptData {
+		t.Fatalf("expected HasTranscriptData = true")
+	}
+	// costPerByte = 0.1578/455 ≈ 0.000347 -> usdSaved ≈ 13926*0.000347 ≈ $4.83,
+	// proportional to suppressed bytes and nowhere near the ~2-orders-of-
+	// magnitude-too-high figure the tokens-based math produced.
+	if o.DollarSavedCard.Detail != "$4.83" {
+		t.Fatalf("DollarSavedCard.Detail = %q, want %q (proportional to suppressed bytes, not inflated)",
+			o.DollarSavedCard.Detail, "$4.83")
 	}
 }
 
@@ -83,7 +163,7 @@ func TestGetOverviewSumsAcrossProjects(t *testing.T) {
 		t.Fatalf("HeroBytes = %d, want 30 (10 dedup + 20 retired, summed across projects)", o.HeroBytes)
 	}
 	if o.HeroHeadline == "No data yet" {
-		t.Fatalf("expected computed percentage across projects, got %q", o.HeroHeadline)
+		t.Fatalf("expected a computed hero headline across projects, got %q", o.HeroHeadline)
 	}
 }
 
@@ -136,62 +216,7 @@ func TestGetSessionStatsMissingDirReturnsEmpty(t *testing.T) {
 	}
 }
 
-// seedSessionWithAge writes a session-stats file with DedupBytes/ProcessedBytes
-// set so its contribution to a windowed sum is identifiable, then backdates
-// its mtime by age — the only signal windowedTotals has for "when."
-func seedSessionWithAge(t *testing.T, dir, sessionID string, dedupBytes, processedBytes int64, age time.Duration) {
-	t.Helper()
-	s := &stats.Session{DedupHits: 1, DedupBytes: dedupBytes, ProcessedBytes: processedBytes}
-	if err := stats.SaveSession(dir, sessionID, s); err != nil {
-		t.Fatalf("SaveSession %s errored: %v", sessionID, err)
-	}
-	path := filepath.Join(dir, ".claude", "agent-winglet", sessionID+".stats.json")
-	mtime := time.Now().Add(-age)
-	if err := os.Chtimes(path, mtime, mtime); err != nil {
-		t.Fatalf("Chtimes %s errored: %v", sessionID, err)
-	}
-}
-
-func TestWindowedTotalsExcludesSessionsOlderThanWindow(t *testing.T) {
-	dir := t.TempDir()
-	seedSessionWithAge(t, dir, "sess-recent", 10, 20, 1*time.Hour)
-	seedSessionWithAge(t, dir, "sess-old", 100, 200, (windowDays+1)*24*time.Hour)
-
-	total, n, err := windowedTotals(dir, time.Now().AddDate(0, 0, -windowDays))
-	if err != nil {
-		t.Fatalf("windowedTotals errored: %v", err)
-	}
-	if n != 1 {
-		t.Fatalf("n = %d, want 1 (only the recent session should count)", n)
-	}
-	if total.DedupBytes != 10 || total.ProcessedBytes != 20 {
-		t.Fatalf("totals = %+v, want DedupBytes=10 ProcessedBytes=20 (the old session's 100/200 must be excluded)", total)
-	}
-}
-
-func TestGetOverviewWindowExcludesOldSessions(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	dir := t.TempDir()
-	if err := registry.Register(dir); err != nil {
-		t.Fatalf("Register errored: %v", err)
-	}
-	seedSessionWithAge(t, dir, "sess-recent", 10, 20, 1*time.Hour)
-	seedSessionWithAge(t, dir, "sess-old", 100, 200, (windowDays+1)*24*time.Hour)
-
-	a := NewApp()
-	w, err := a.GetOverviewWindow()
-	if err != nil {
-		t.Fatalf("GetOverviewWindow errored: %v", err)
-	}
-	if w.SessionCount != 1 {
-		t.Fatalf("SessionCount = %d, want 1", w.SessionCount)
-	}
-	if w.HeroBytes != 10 {
-		t.Fatalf("HeroBytes = %d, want 10 (only the recent session's dedup bytes)", w.HeroBytes)
-	}
-}
-
-func TestGetProjectsIncludesWindow(t *testing.T) {
+func TestGetProjectsReturnsLifetimeOverviewPerProject(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	if err := registry.Register(dir); err != nil {
@@ -200,8 +225,6 @@ func TestGetProjectsIncludesWindow(t *testing.T) {
 	if err := stats.SaveLifetime(dir, &stats.Lifetime{Sessions: 2, DedupHits: 2, DedupBytes: 110, ProcessedBytes: 220}); err != nil {
 		t.Fatalf("SaveLifetime errored: %v", err)
 	}
-	seedSessionWithAge(t, dir, "sess-recent", 10, 20, 1*time.Hour)
-	seedSessionWithAge(t, dir, "sess-old", 100, 200, (windowDays+1)*24*time.Hour)
 
 	a := NewApp()
 	rows, err := a.GetProjects()
@@ -214,11 +237,5 @@ func TestGetProjectsIncludesWindow(t *testing.T) {
 	row := rows[0]
 	if row.Overview.HeroBytes != 110 {
 		t.Fatalf("Overview (lifetime) HeroBytes = %d, want 110", row.Overview.HeroBytes)
-	}
-	if row.Window.HeroBytes != 10 {
-		t.Fatalf("Window HeroBytes = %d, want 10 (only the recent session)", row.Window.HeroBytes)
-	}
-	if row.Window.SessionCount != 1 {
-		t.Fatalf("Window.SessionCount = %d, want 1", row.Window.SessionCount)
 	}
 }
