@@ -1,16 +1,15 @@
-// Command agent-winglet-app is the v1 step 3 desktop dashboard: a small
-// cross-platform window (Wails — Go backend, OS-native webview frontend)
-// that shows the savings receipt already computed by cmd/ledger-hook,
-// without the user reading JSON files or hook stdout by hand. See
-// agent-winglet-v1-step3-spec.md for the full design rationale.
+// Command agent-winglet-app is a small cross-platform desktop dashboard
+// (Wails — Go backend, OS-native webview frontend) that shows the savings
+// receipt already computed by cmd/ledger-hook, without the user reading
+// JSON files or hook stdout by hand.
 //
-// No system-tray/menu-bar glance icon in v1: spiking getlantern/systray
-// alongside Wails in the same binary produces a link-time failure on
-// macOS — both packages independently declare an Objective-C class named
-// AppDelegate (systray_darwin.m vs. Wails' internal/frontend/desktop/
-// darwin/AppDelegate.h), which collides as a duplicate symbol. That's the
-// spec's §6 open risk resolving toward its own documented fallback: Dock/
-// taskbar icon only.
+// No system-tray/menu-bar glance icon: spiking getlantern/systray alongside
+// Wails in the same binary produces a link-time failure on macOS — both
+// packages independently declare an Objective-C class named AppDelegate
+// (systray_darwin.m vs. Wails' internal/frontend/desktop/darwin/
+// AppDelegate.h), which collides as a duplicate symbol. Rather than fork
+// and patch one of the two libraries just to rename a class, this ships
+// with a Dock/taskbar icon only.
 package main
 
 import (
@@ -44,8 +43,9 @@ func main() {
 		},
 		Mac: &mac.Options{
 			// TitleBar left at Wails' default (native chrome) rather than a
-			// frameless custom title bar — see this app's design spec §5's
-			// anti-pattern note against hand-drawn traffic-light controls.
+			// frameless custom title bar: a hand-drawn traffic-light window
+			// control reads as fake the moment its inset/spacing doesn't
+			// exactly match the real thing, which isn't worth risking here.
 			About: &mac.AboutInfo{
 				Title:   "Agent Winglet",
 				Message: "Local-only dashboard for agent-winglet's Claude Code hooks.",

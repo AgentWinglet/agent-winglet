@@ -28,16 +28,17 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 }
 
-// Card is one Flighty-style stat block: a raw suppressed-content count plus
-// a pre-formatted detail string. Detail is formatted server-side because the
+// Card is one stat block: a raw suppressed-content count plus a
+// pre-formatted detail string. Detail is formatted server-side because the
 // three mechanisms don't share a unit — dedup and retirement suppress bytes,
 // but internal/stats only ever tracked budget trims by lines omitted, never
-// bytes (see stats.Session.BudgetLinesOmitted) — so "each card shows a byte
-// total" isn't literally true for Budget Trims, and rather than fabricate a
-// byte figure that doesn't exist in the underlying data, this card reports
-// the same "N lines omitted" framing the SessionEnd receipt message already
-// uses. Deliberately never a dollar figure or a "% saved" — master spec
-// §8.2 and this app's own spec §3 both call that out as a non-goal.
+// bytes (see stats.Session.BudgetLinesOmitted) — so a fixed "byte total"
+// field would be a lie for Budget Trims. Rather than fabricate a byte figure
+// that doesn't exist in the underlying data, this card reports the same "N
+// lines omitted" framing the SessionEnd receipt message already uses.
+// Deliberately never a dollar figure or a "% saved": no validated cost or
+// token-savings measurement exists yet, so showing one would misrepresent a
+// raw suppressed-content count as a proven savings claim.
 type Card struct {
 	Label  string `json:"label"`
 	Count  int    `json:"count"`
@@ -45,10 +46,13 @@ type Card struct {
 }
 
 // Overview is the Overview screen's data: the hero number (dedup bytes +
-// retired bytes, summed across every registered project — see this app's
-// spec §11 on why those two are safe to sum) plus the three per-mechanism
-// cards, and how many projects contributed. HeroBytes is the raw count for
-// any future use; HeroDetail is the pre-formatted string the UI renders.
+// retired bytes, summed across every registered project) plus the three
+// per-mechanism cards, and how many projects contributed. Summing dedup and
+// retired bytes is safe because they're mutually exclusive per tool call —
+// cmd/ledger-hook's handlePostToolUse only ever takes the repeat-check
+// branch or the post-boundary retire branch for a given call, never both —
+// so no byte is ever counted twice. HeroBytes is the raw count for any
+// future use; HeroDetail is the pre-formatted string the UI renders.
 type Overview struct {
 	HeroBytes    int64  `json:"heroBytes"`
 	HeroDetail   string `json:"heroDetail"`
@@ -110,8 +114,8 @@ func lifetimeToOverview(l *stats.Lifetime, projectCount int) Overview {
 }
 
 // formatBytes renders a byte count the way the rest of the receipt does —
-// a plain magnitude, never implying a cost or token-savings figure (see
-// Card's doc comment and this app's spec §3).
+// a plain magnitude, never implying a cost or token-savings figure, since no
+// such validated measurement exists yet.
 func formatBytes(n int64) string {
 	const unit = 1024
 	if n < unit {
@@ -160,9 +164,10 @@ func (a *App) GetProjects() ([]ProjectRow, error) {
 	return rows, nil
 }
 
-// Settings is the Settings screen's data: just the quiet-mode toggle (§8.3
-// of this app's spec — no other mechanism has an independently wired
-// on/off switch yet, so no other toggle belongs here for v1).
+// Settings is the Settings screen's data: just the quiet-mode toggle.
+// Dedup, budgeting, retirement, and the compact nudge have no independent
+// on/off switch in cmd/ledger-hook today, so there's nothing else to wire a
+// toggle to yet.
 type Settings struct {
 	Quiet bool `json:"quiet"`
 }

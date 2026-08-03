@@ -1,6 +1,6 @@
-// Sparse, single stroke-weight outline icon set (Lucide-derived) — see the
-// design spec §5's iconography note against mixing icon fonts, inline SVG,
-// and emoji in the same app. Every glyph here shares stroke-width 1.75.
+// Sparse, single stroke-weight outline icon set (Lucide-derived), kept as
+// inline SVG only — no icon font, no emoji mixed in — so every glyph in the
+// app reads as one consistent set. Every glyph here shares stroke-width 1.75.
 
 const wrap = (inner) =>
   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`;

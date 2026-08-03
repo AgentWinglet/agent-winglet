@@ -1,12 +1,12 @@
 name: App build
 
-# Cross-platform CI matrix for the desktop dashboard app (agent-winglet-v1
-# step 3 spec, §9): a real `wails build` per OS, not just `go build ./...`
-# without Wails' desktop/production build tags — that succeeds trivially
-# everywhere since the untagged build swaps in a stub with no native webview,
-# so it wouldn't actually catch a broken build the way this matrix does.
-# Kept separate from ci.yml (which stays fast: Go-only, ubuntu-only) since
-# this job is slower and needs OS-specific system packages.
+# Cross-platform CI matrix for the desktop dashboard app: a real `wails
+# build` per OS, not just `go build ./...` without Wails' desktop/production
+# build tags — that succeeds trivially everywhere since the untagged build
+# swaps in a stub with no native webview, so it wouldn't actually catch a
+# broken build the way this matrix does. Kept separate from ci.yml (which
+# stays fast: Go-only, ubuntu-only) since this job is slower and needs
+# OS-specific system packages.
 
 on:
   push:
@@ -31,10 +31,6 @@ jobs:
         with:
           node-version: "22"
 
-      # See master spec §6's "GNOME systray landmine" note: not relevant here
-      # since v1 ships no tray icon (see this app's spec §6's open risk,
-      # resolved toward the Dock/taskbar-only fallback after the systray
-      # spike found an AppDelegate symbol collision with Wails on macOS).
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |

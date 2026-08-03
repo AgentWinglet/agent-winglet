@@ -38,9 +38,10 @@ right now, not just registry presence), and a Settings screen for the one
 wired toggle today — quiet mode, via `~/.agent-winglet/config.json`
 (`AGENT_WINGLET_QUIET`, if set, still takes precedence for that session).
 
-No system-tray/menu-bar icon in v1 — see `agent-winglet-v1-step3-spec.md`
-§6 for why (a real Wails+`getlantern/systray` link-time conflict on macOS,
-not a design choice). Dock/taskbar icon only.
+No system-tray/menu-bar icon: building `getlantern/systray` alongside Wails
+in the same binary fails at link time on macOS (both declare an Objective-C
+class named `AppDelegate`, which collides as a duplicate symbol) — not a
+design choice. Dock/taskbar icon only.
 
 ```
 make app   # builds cmd/agent-winglet-app into a native .app/.exe/binary
