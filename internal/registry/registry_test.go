@@ -89,6 +89,92 @@ func TestHookInstalledFalseWhenSettingsFileMissing(t *testing.T) {
 	}
 }
 
+func TestRegisterAddsNewProject(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	dir := t.TempDir()
+	if err := Register(dir); err != nil {
+		t.Fatalf("Register errored: %v", err)
+	}
+
+	got, err := Load()
+	if err != nil {
+		t.Fatalf("Load errored: %v", err)
+	}
+	if len(got) != 1 || got[0] != dir {
+		t.Fatalf("expected only %q registered, got %v", dir, got)
+	}
+}
+
+func TestRegisterIsIdempotent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	dir := t.TempDir()
+	if err := Register(dir); err != nil {
+		t.Fatalf("first Register errored: %v", err)
+	}
+	if err := Register(dir); err != nil {
+		t.Fatalf("second Register errored: %v", err)
+	}
+
+	got, err := Load()
+	if err != nil {
+		t.Fatalf("Load errored: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected exactly one entry after registering the same dir twice, got %v", got)
+	}
+}
+
+func TestRegisterPrunesStaleEntriesOnWrite(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	stale := filepath.Join(home, "does-not-exist")
+	writeRegistry(t, home, []string{stale})
+
+	newDir := t.TempDir()
+	if err := Register(newDir); err != nil {
+		t.Fatalf("Register errored: %v", err)
+	}
+
+	got, err := Load()
+	if err != nil {
+		t.Fatalf("Load errored: %v", err)
+	}
+	if len(got) != 1 || got[0] != newDir {
+		t.Fatalf("expected the stale entry pruned and only %q left, got %v", newDir, got)
+	}
+}
+
+func TestGlobalHookInstalledTrueWhenCommandPresent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	claudeDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll errored: %v", err)
+	}
+	settings := `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/Users/x/go/bin/ledger-hook"}]}]}}`
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(settings), 0o644); err != nil {
+		t.Fatalf("WriteFile errored: %v", err)
+	}
+
+	if !GlobalHookInstalled() {
+		t.Fatalf("expected GlobalHookInstalled to be true")
+	}
+}
+
+func TestGlobalHookInstalledFalseWhenMissing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	if GlobalHookInstalled() {
+		t.Fatalf("expected GlobalHookInstalled to be false with no ~/.claude/settings.json")
+	}
+}
+
 func TestLoadCorruptRegistryReturnsEmpty(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/umitkaanusta/agent-winglet/internal/config"
+	"github.com/umitkaanusta/agent-winglet/internal/registry"
 	"github.com/umitkaanusta/agent-winglet/internal/stats"
 )
 
@@ -135,6 +136,7 @@ func TestHandleIgnoresNonBashTools(t *testing.T) {
 }
 
 func TestHandleSessionStartInvalidatesLedger(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	repeatIn := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
 	if _, err := handle(repeatIn); err != nil {
@@ -154,7 +156,25 @@ func TestHandleSessionStartInvalidatesLedger(t *testing.T) {
 	}
 }
 
+func TestHandleSessionStartRegistersProject(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+
+	if _, err := handle(hookInput{SessionID: "sess1", Cwd: dir, HookEventName: "SessionStart"}); err != nil {
+		t.Fatalf("SessionStart handling errored: %v", err)
+	}
+
+	dirs, err := registry.Load()
+	if err != nil {
+		t.Fatalf("registry.Load errored: %v", err)
+	}
+	if len(dirs) != 1 || dirs[0] != dir {
+		t.Fatalf("expected project registered after SessionStart, got %v", dirs)
+	}
+}
+
 func TestHandlePostCompactInvalidatesLedger(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	repeatIn := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
 	if _, err := handle(repeatIn); err != nil {
@@ -365,6 +385,7 @@ func TestHandlePhaseBoundaryIgnoresUnclassifiedTools(t *testing.T) {
 }
 
 func TestHandlePhaseBoundaryResetsOnSessionStart(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 
 	if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
@@ -384,6 +405,7 @@ func TestHandlePhaseBoundaryResetsOnSessionStart(t *testing.T) {
 }
 
 func TestHandlePhaseBoundaryResetsOnPostCompact(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 
 	if _, err := handle(toolCallInput("sess1", dir, "Grep")); err != nil {
@@ -538,6 +560,7 @@ func TestHandleNeverRetiresImplementOrBashCalls(t *testing.T) {
 }
 
 func TestHandleSessionStartInvalidatesRetiredContent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
 		t.Fatalf("seeding investigate call errored: %v", err)
@@ -731,6 +754,7 @@ func TestHandleSessionEndAccumulatesLifetimeAcrossSessions(t *testing.T) {
 }
 
 func TestHandleSessionStartInvalidatesStatsTally(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	repeatIn := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
 	if _, err := handle(repeatIn); err != nil {

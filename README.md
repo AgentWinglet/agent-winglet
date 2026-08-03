@@ -11,20 +11,39 @@ not a cost or token-savings figure (no such measurement exists yet). Set
 `AGENT_WINGLET_QUIET=1` to suppress the message; every underlying mechanism
 stays active either way.
 
-## Install into your own project (v1: Session Ledger)
+## Install (v1: Session Ledger)
 
-From the root of the project you want the hook active in (not from this
-repo):
+Run this once, from anywhere — it doesn't need to be run from inside a
+project:
 
 ```
 curl -fsSL https://raw.githubusercontent.com/umitkaanusta/agent-winglet/main/install.sh | bash
 ```
 
-This runs `go install` to fetch the `ledger-hook` binary and merges the
-hook config into that project's `.claude/settings.json`, without touching
-any existing settings there. It also registers the project's absolute path
-in `~/.agent-winglet/projects.json` (deduped, pruned of stale/deleted
-entries on each run) — see "Desktop app" below for what reads that file.
+This runs `go install` to fetch the `ledger-hook` binary and merges the hook
+config into `~/.claude/settings.json` (Claude Code's user-level settings),
+without touching any existing settings there. Claude Code merges user-level
+hooks with any project-level ones, so this makes the hook active for every
+project's Claude Code sessions from then on — no per-project install step.
+The underlying mechanism was always project-scoped (ledger/stats state
+lives under each project's own `.claude/agent-winglet/`, keyed off the
+session's working directory), so installing once globally doesn't change
+per-project isolation, just where the hook gets registered.
+
+The hook itself registers whichever project it's running in — the first
+time it fires there — into `~/.agent-winglet/projects.json` (deduped,
+pruned of stale/deleted entries on each run), so the desktop app's Projects
+screen fills in as you use Claude Code, without install.sh needing to know
+about every project up front. See "Desktop app" below for what reads that
+file.
+
+Pass `--local` to install into just the current directory's project instead
+(`./.claude/settings.json`), the way this script worked before the hook
+became global by default. **Migration note:** if a project already has a
+per-project install from before, remove its `ledger-hook` entry from that
+project's `.claude/settings.json` after installing globally — running both
+at once fires the hook twice per event for that project and will
+double-count stats and corrupt the ledger's turn tracking.
 
 ## Desktop app
 

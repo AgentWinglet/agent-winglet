@@ -1,11 +1,30 @@
 #!/usr/bin/env bash
-# Installs the agent-winglet Session Ledger hook into the current directory's
-# Claude Code project. Run this from the root of the project you want the
-# hook active in — not from the agent-winglet repo itself.
+# Installs the agent-winglet Session Ledger hook globally, into
+# ~/.claude/settings.json — Claude Code merges user-level hooks with any
+# project-level ones, so this makes the hook active for every project's
+# Claude Code sessions, not just the one you happen to run this from.
+#
+# Pass --local to install into the current directory's project instead
+# (./.claude/settings.json), scoped to just that project, as this script did
+# before the hook became global by default.
+#
+# Migration note: if you previously ran this script's old per-project flow in
+# a project, that project's .claude/settings.json still has its own
+# ledger-hook entry. Once the global hook is installed too, that project's
+# hook fires twice per event (once via the global entry, once via the local
+# one) — remove the old entry from that project's .claude/settings.json to
+# avoid double-counting stats and corrupting the ledger's turn tracking.
 set -euo pipefail
 
 REPO_URL="github.com/umitkaanusta/agent-winglet"
 BINARY_NAME="ledger-hook"
+
+SETTINGS_FILE="${HOME}/.claude/settings.json"
+SCOPE_DESC="globally (~/.claude/settings.json)"
+if [ "${1:-}" = "--local" ]; then
+  SETTINGS_FILE=".claude/settings.json"
+  SCOPE_DESC="for this project only (./.claude/settings.json)"
+fi
 
 if ! command -v go >/dev/null 2>&1; then
   echo "error: go is not installed. Install Go first: https://go.dev/dl/" >&2
@@ -17,7 +36,7 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "Installing ${BINARY_NAME}..."
+echo "Installing ${BINARY_NAME} ${SCOPE_DESC}..."
 go install "${REPO_URL}/cmd/${BINARY_NAME}@latest"
 
 GOBIN="$(go env GOBIN)"
@@ -32,8 +51,7 @@ if [ ! -x "$HOOK_PATH" ]; then
   exit 1
 fi
 
-mkdir -p .claude
-SETTINGS_FILE=".claude/settings.json"
+mkdir -p "$(dirname "$SETTINGS_FILE")"
 if [ ! -f "$SETTINGS_FILE" ]; then
   echo '{}' > "$SETTINGS_FILE"
 fi
@@ -53,36 +71,13 @@ jq --arg cmd "$HOOK_PATH" '
 ' "$SETTINGS_FILE" > "$TMP_FILE"
 mv "$TMP_FILE" "$SETTINGS_FILE"
 
-# Register this project in the global registry so the desktop app (agent-winglet-app)
-# can find every project's lifetime.stats.json without a daemon or IPC — it just
-# reads the same files install.sh and the hooks already write. Flat JSON array of
-# absolute project paths, deduped on install; a project directory that's later
-# moved/deleted is skipped on read and pruned lazily the next time install.sh runs.
-REGISTRY_DIR="${HOME}/.agent-winglet"
-REGISTRY_FILE="${REGISTRY_DIR}/projects.json"
-mkdir -p "$REGISTRY_DIR"
-if [ ! -f "$REGISTRY_FILE" ]; then
-  echo '[]' > "$REGISTRY_FILE"
-fi
-PROJECT_DIR="$(pwd -P)"
-
-# Prune entries whose directory no longer exists (moved/deleted since a
-# previous install.sh run) before adding this one — the lazy-prune point
-# named above. A shell loop, not jq alone, since jq has no filesystem access.
-PRUNED_TMP="$(mktemp)"
-echo '[]' > "$PRUNED_TMP"
-while IFS= read -r existing; do
-  [ -d "$existing" ] || continue
-  jq --arg dir "$existing" '. + [$dir]' "$PRUNED_TMP" > "${PRUNED_TMP}.next"
-  mv "${PRUNED_TMP}.next" "$PRUNED_TMP"
-done < <(jq -r '.[]' "$REGISTRY_FILE")
-
-REGISTRY_TMP="$(mktemp)"
-jq --arg dir "$PROJECT_DIR" 'if index($dir) then . else . + [$dir] end' \
-  "$PRUNED_TMP" > "$REGISTRY_TMP"
-mv "$REGISTRY_TMP" "$REGISTRY_FILE"
-rm -f "$PRUNED_TMP"
+# Unlike before, this script no longer registers a project in
+# ~/.agent-winglet/projects.json itself: with a global install there's no
+# single project directory to register at install time. Instead, the hook
+# binary registers whatever project it's running in the first time it fires
+# there (see cmd/ledger-hook's SessionStart/PostCompact handling and
+# internal/registry.Register) — the desktop app's Projects screen fills in
+# on its own as you use Claude Code in each project.
 
 echo "Installed. Hook binary: ${HOOK_PATH}"
 echo "Updated: ${SETTINGS_FILE}"
-echo "Registered project in: ${REGISTRY_FILE}"
