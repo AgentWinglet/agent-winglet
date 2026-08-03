@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   build:
@@ -14,6 +15,15 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.5"
+
+      - name: Create frontend/dist placeholder
+        # cmd/agent-winglet-app embeds frontend/dist (git-ignored build output)
+        # via go:embed. This job stays Go-only/fast (real frontend build +
+        # webview compile is covered by app-build.yml), so just give the
+        # embed directive a file to satisfy the compiler.
+        run: |
+          mkdir -p cmd/agent-winglet-app/frontend/dist
+          touch cmd/agent-winglet-app/frontend/dist/placeholder
 
       - name: Build
         run: go build ./...
