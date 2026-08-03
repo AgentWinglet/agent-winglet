@@ -678,6 +678,76 @@ func TestHandleSessionEndReportsRetiredCall(t *testing.T) {
 	}
 }
 
+func TestHandleSessionEndReadsTranscriptUsage(t *testing.T) {
+	dir := t.TempDir()
+	repeatIn := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
+	if _, err := handle(repeatIn); err != nil {
+		t.Fatalf("first call errored: %v", err)
+	}
+	if _, err := handle(repeatIn); err != nil {
+		t.Fatalf("repeat call errored: %v", err)
+	}
+
+	transcriptPath := writeTranscriptFixture(t, dir)
+	in := sessionEndInput("sess1", dir)
+	in.TranscriptPath = transcriptPath
+
+	if _, err := handle(in); err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+
+	lifetime, err := stats.LoadLifetime(dir)
+	if err != nil {
+		t.Fatalf("LoadLifetime errored: %v", err)
+	}
+	if lifetime.TranscriptTokens == 0 {
+		t.Fatalf("expected lifetime.TranscriptTokens to be folded in from the transcript, got %+v", lifetime)
+	}
+	if lifetime.TranscriptCostUSD == 0 {
+		t.Fatalf("expected lifetime.TranscriptCostUSD to be nonzero, got %+v", lifetime)
+	}
+}
+
+func TestHandleSessionEndUnreadableTranscriptStillEmitsReceipt(t *testing.T) {
+	dir := t.TempDir()
+	repeatIn := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
+	if _, err := handle(repeatIn); err != nil {
+		t.Fatalf("first call errored: %v", err)
+	}
+	if _, err := handle(repeatIn); err != nil {
+		t.Fatalf("repeat call errored: %v", err)
+	}
+
+	in := sessionEndInput("sess1", dir)
+	in.TranscriptPath = "/does/not/exist.jsonl"
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle errored with an unreadable transcript path: %v", err)
+	}
+	if out == nil || out.SystemMessage == "" {
+		t.Fatalf("expected a receipt even when the transcript can't be read, got %+v", out)
+	}
+
+	lifetime, err := stats.LoadLifetime(dir)
+	if err != nil {
+		t.Fatalf("LoadLifetime errored: %v", err)
+	}
+	if lifetime.TranscriptTokens != 0 {
+		t.Fatalf("expected TranscriptTokens to stay zero for an unreadable transcript, got %d", lifetime.TranscriptTokens)
+	}
+}
+
+func writeTranscriptFixture(t *testing.T, dir string) string {
+	t.Helper()
+	path := dir + "/fixture-transcript.jsonl"
+	line := `{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":100,"output_tokens":50}}}` + "\n"
+	if err := os.WriteFile(path, []byte(line), 0o644); err != nil {
+		t.Fatalf("write transcript fixture: %v", err)
+	}
+	return path
+}
+
 func TestHandleSessionEndRespectsQuietEnvVar(t *testing.T) {
 	dir := t.TempDir()
 	repeatIn := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})

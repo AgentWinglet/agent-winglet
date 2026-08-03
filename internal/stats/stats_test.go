@@ -2,6 +2,8 @@ package stats
 
 import (
 	"testing"
+
+	"github.com/umitkaanusta/agent-winglet/internal/transcript"
 )
 
 func TestLoadMissingSessionReturnsZeroValue(t *testing.T) {
@@ -62,6 +64,23 @@ func TestIsZeroIgnoresProcessedBytes(t *testing.T) {
 	}
 }
 
+func TestSetTranscriptUsageCopiesFields(t *testing.T) {
+	s := &Session{}
+	s.SetTranscriptUsage(transcript.SessionUsage{Tokens: 500, CostUSD: 0.25, ContentBytes: 2000})
+	if s.TranscriptTokens != 500 || s.TranscriptCostUSD != 0.25 || s.TranscriptContentBytes != 2000 {
+		t.Fatalf("got TranscriptTokens=%d TranscriptCostUSD=%v TranscriptContentBytes=%d, want 500/0.25/2000",
+			s.TranscriptTokens, s.TranscriptCostUSD, s.TranscriptContentBytes)
+	}
+}
+
+func TestIsZeroIgnoresTranscriptUsage(t *testing.T) {
+	s := &Session{}
+	s.SetTranscriptUsage(transcript.SessionUsage{Tokens: 500, CostUSD: 0.25, ContentBytes: 2000})
+	if !s.IsZero() {
+		t.Fatalf("a session with only transcript usage set (no mechanism fired) should still report zero")
+	}
+}
+
 func TestPercentReportsNoDataYetWhenNothingProcessed(t *testing.T) {
 	if _, ok := Percent(0, 0, 0, 0); ok {
 		t.Fatalf("Percent with zero processed bytes should report ok=false, not a computed percentage")
@@ -108,6 +127,7 @@ func TestSessionSaveThenLoadRoundTrips(t *testing.T) {
 	s.RecordDedup(10)
 	s.RecordBudgetTrim(5, 50)
 	s.RecordRetire(20)
+	s.SetTranscriptUsage(transcript.SessionUsage{Tokens: 1000, CostUSD: 0.5, ContentBytes: 4000})
 	if err := SaveSession(dir, sessionID, s); err != nil {
 		t.Fatalf("SaveSession failed: %v", err)
 	}
@@ -164,11 +184,13 @@ func TestLifetimeAddAccumulatesAcrossSessions(t *testing.T) {
 
 	s1 := &Session{}
 	s1.RecordDedup(100)
+	s1.SetTranscriptUsage(transcript.SessionUsage{Tokens: 1000, CostUSD: 0.4, ContentBytes: 3000})
 	l.Add(s1)
 
 	s2 := &Session{}
 	s2.RecordDedup(50)
 	s2.RecordRetire(25)
+	s2.SetTranscriptUsage(transcript.SessionUsage{Tokens: 500, CostUSD: 0.1, ContentBytes: 1500})
 	l.Add(s2)
 
 	if l.Sessions != 2 {
@@ -179,6 +201,10 @@ func TestLifetimeAddAccumulatesAcrossSessions(t *testing.T) {
 	}
 	if l.RetiredCalls != 1 || l.RetiredBytes != 25 {
 		t.Fatalf("got RetiredCalls=%d RetiredBytes=%d, want 1/25", l.RetiredCalls, l.RetiredBytes)
+	}
+	if l.TranscriptTokens != 1500 || l.TranscriptCostUSD != 0.5 || l.TranscriptContentBytes != 4500 {
+		t.Fatalf("got TranscriptTokens=%d TranscriptCostUSD=%v TranscriptContentBytes=%d, want 1500/0.5/4500",
+			l.TranscriptTokens, l.TranscriptCostUSD, l.TranscriptContentBytes)
 	}
 }
 
@@ -218,6 +244,7 @@ func TestLifetimeSaveThenLoadRoundTrips(t *testing.T) {
 	l, _ := LoadLifetime(dir)
 	s := &Session{}
 	s.RecordBudgetTrim(15, 150)
+	s.SetTranscriptUsage(transcript.SessionUsage{Tokens: 750, CostUSD: 0.3, ContentBytes: 2250})
 	l.Add(s)
 	if err := SaveLifetime(dir, l); err != nil {
 		t.Fatalf("SaveLifetime failed: %v", err)
@@ -231,4 +258,3 @@ func TestLifetimeSaveThenLoadRoundTrips(t *testing.T) {
 		t.Fatalf("reloaded lifetime = %+v, want %+v", reloaded, l)
 	}
 }
-

@@ -53,6 +53,7 @@ import (
 	"github.com/umitkaanusta/agent-winglet/internal/registry"
 	"github.com/umitkaanusta/agent-winglet/internal/retire"
 	"github.com/umitkaanusta/agent-winglet/internal/stats"
+	"github.com/umitkaanusta/agent-winglet/internal/transcript"
 )
 
 // Output budgeting by outcome: a first-time (non-repeat) command that
@@ -102,12 +103,13 @@ func budgetStdout(stdout string) (budgeted string, omittedLines int, omittedByte
 }
 
 type hookInput struct {
-	SessionID     string          `json:"session_id"`
-	Cwd           string          `json:"cwd"`
-	HookEventName string          `json:"hook_event_name"`
-	ToolName      string          `json:"tool_name"`
-	ToolInput     json.RawMessage `json:"tool_input"`
-	ToolResponse  json.RawMessage `json:"tool_response"`
+	SessionID      string          `json:"session_id"`
+	Cwd            string          `json:"cwd"`
+	HookEventName  string          `json:"hook_event_name"`
+	ToolName       string          `json:"tool_name"`
+	ToolInput      json.RawMessage `json:"tool_input"`
+	ToolResponse   json.RawMessage `json:"tool_response"`
+	TranscriptPath string          `json:"transcript_path"`
 }
 
 type bashOutput struct {
@@ -470,6 +472,14 @@ func handleSessionEnd(in hookInput) (*hookOutput, error) {
 		return nil, nil
 	}
 
+	// Read errors are swallowed (fields stay zero) — the transcript is real
+	// usage data if the read succeeds, and a "no data yet" fallback exists
+	// downstream (see stats.Session.TranscriptTokens' doc comment) for
+	// whenever it doesn't.
+	if usage, err := transcript.ReadSessionUsage(in.TranscriptPath); err == nil {
+		sess.SetTranscriptUsage(usage)
+	}
+
 	lifetime, err := stats.LoadLifetime(in.Cwd)
 	if err != nil {
 		return nil, err
@@ -494,11 +504,19 @@ func handleSessionEnd(in hookInput) (*hookOutput, error) {
 // receiptMessage composes the savings-receipt text. It reports only raw
 // suppressed-content counts (dedup bytes, trimmed lines, retired bytes),
 // framed explicitly as unvalidated — never a cost, token, or usage-cap
-// savings figure, since no such measurement exists yet (the paired-run
-// harness came back inconclusive on the tasks tested so far). That framing
-// is load-bearing, not throat-clearing: a self-reported "this saved you
-// money" claim with no evidence behind it is the exact failure mode this
-// receipt exists to avoid.
+// savings figure, since no such measurement of *total session cost* exists
+// (the paired-run harness came back inconclusive on the tasks tested so
+// far). That framing is load-bearing, not throat-clearing: a self-reported
+// "this saved you money" claim with no evidence behind it is the exact
+// failure mode this receipt exists to avoid.
+//
+// The desktop app's Overview screen does now surface a priced dollar
+// estimate (see stats.Session.TranscriptCostUSD, internal/pricing,
+// internal/transcript) — that's a different, narrower claim: a unit
+// conversion of already-known suppressed bytes into tokens and $ at real
+// rates, not a re-measurement of total billed cost, and it carries its own
+// caveat/tooltip there. This terminal receipt stays bytes-only on purpose —
+// it has no room for that caveat, so it doesn't carry the estimate.
 func receiptMessage(s *stats.Session, l *stats.Lifetime) string {
 	var parts []string
 	if s.DedupHits > 0 {

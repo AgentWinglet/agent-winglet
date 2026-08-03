@@ -20,6 +20,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+
+	"github.com/umitkaanusta/agent-winglet/internal/transcript"
 )
 
 // Session is the running tally of mechanism activity for one session.
@@ -38,6 +40,15 @@ type Session struct {
 	// session that only ever passed output through untouched still grows
 	// this counter, and that alone isn't "a mechanism fired."
 	ProcessedBytes int64 `json:"processedBytes"`
+	// TranscriptTokens, TranscriptCostUSD, and TranscriptContentBytes carry
+	// this session's real transcript-derived usage (see internal/transcript)
+	// — the input-side token total, its priced cost at real per-token
+	// rates, and the raw content-byte size those tokens represent. Same
+	// treatment as ProcessedBytes: real usage data existing isn't "a
+	// mechanism firing," so these are excluded from IsZero.
+	TranscriptTokens       int64   `json:"transcriptTokens"`
+	TranscriptCostUSD      float64 `json:"transcriptCostUsd"`
+	TranscriptContentBytes int64   `json:"transcriptContentBytes"`
 }
 
 // RecordDedup records one ledger repeat-hit that replaced would-be-replayed
@@ -72,6 +83,17 @@ func (s *Session) RecordProcessed(bytes int) {
 	s.ProcessedBytes += int64(bytes)
 }
 
+// SetTranscriptUsage copies a transcript read (see internal/transcript) onto
+// the session. Called once per SessionEnd, after the transcript file has
+// already been fully read — a plain field copy, not an accumulator, since a
+// transcript file's own line-by-line summation already reflects the whole
+// session.
+func (s *Session) SetTranscriptUsage(u transcript.SessionUsage) {
+	s.TranscriptTokens = u.Tokens
+	s.TranscriptCostUSD = u.CostUSD
+	s.TranscriptContentBytes = u.ContentBytes
+}
+
 // IsZero reports whether no mechanism fired this session. ProcessedBytes is
 // deliberately not part of this check — see its field doc comment.
 func (s *Session) IsZero() bool {
@@ -90,6 +112,12 @@ type Lifetime struct {
 	RetiredCalls       int   `json:"retiredCalls"`
 	RetiredBytes       int64 `json:"retiredBytes"`
 	ProcessedBytes     int64 `json:"processedBytes"`
+	// TranscriptTokens/TranscriptCostUSD/TranscriptContentBytes — see
+	// Session's fields of the same name. Folded in Add like every other
+	// field, excluded from IsZero (Lifetime has no IsZero; see Session's).
+	TranscriptTokens       int64   `json:"transcriptTokens"`
+	TranscriptCostUSD      float64 `json:"transcriptCostUsd"`
+	TranscriptContentBytes int64   `json:"transcriptContentBytes"`
 }
 
 // Add folds one session's tally into the lifetime tally and counts that
@@ -105,6 +133,9 @@ func (l *Lifetime) Add(s *Session) {
 	l.RetiredCalls += s.RetiredCalls
 	l.RetiredBytes += s.RetiredBytes
 	l.ProcessedBytes += s.ProcessedBytes
+	l.TranscriptTokens += s.TranscriptTokens
+	l.TranscriptCostUSD += s.TranscriptCostUSD
+	l.TranscriptContentBytes += s.TranscriptContentBytes
 }
 
 // Percent computes winglet_pct = suppressed / processed * 100, where
