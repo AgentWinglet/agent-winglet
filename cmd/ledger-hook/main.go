@@ -18,9 +18,14 @@
 //     retired-content directory, and stats tally so no substitution,
 //     boundary suggestion, retired receipt, or session receipt survives a
 //     restart or compaction (a hard constraint). Also registers the current
-//     project (in.Cwd) in the global ~/.agent-winglet/projects.json registry
-//     (see internal/registry.Register) — the hook installs globally now, so
-//     this is the only place a project gets added to that registry.
+//     project — resolved via internal/projectroot.Resolve(in.Cwd), the git
+//     root rather than the raw cwd, so sessions started from different
+//     subdirectories of the same project collapse into one identity — in the
+//     global ~/.agent-winglet/projects.json registry (see
+//     internal/registry.Register), and best-effort migrates any pre-move-
+//     storage per-cwd state it finds into that project's new global state
+//     dir (see migrateLegacyData). The hook installs globally now, so
+//     SessionStart/PostCompact is the only place a project gets registered.
 //   - SessionEnd: emits a one-time "savings receipt" systemMessage
 //     summarizing what the above mechanisms did this session (see
 //     handleSessionEnd), then folds the session's tally into a lifetime
@@ -45,11 +50,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/umitkaanusta/agent-winglet/internal/config"
 	"github.com/umitkaanusta/agent-winglet/internal/ledger"
 	"github.com/umitkaanusta/agent-winglet/internal/phase"
+	"github.com/umitkaanusta/agent-winglet/internal/projectroot"
 	"github.com/umitkaanusta/agent-winglet/internal/registry"
 	"github.com/umitkaanusta/agent-winglet/internal/retire"
 	"github.com/umitkaanusta/agent-winglet/internal/stats"
@@ -164,30 +171,87 @@ func run() error {
 func handle(in hookInput) (*hookOutput, error) {
 	switch in.HookEventName {
 	case "SessionStart", "PostCompact":
-		if err := ledger.Invalidate(in.Cwd, in.SessionID); err != nil {
+		root := projectroot.Resolve(in.Cwd)
+		migrateLegacyData(in.Cwd, root)
+
+		if err := ledger.Invalidate(root, in.SessionID); err != nil {
 			return nil, err
 		}
-		if err := phase.Invalidate(in.Cwd, in.SessionID); err != nil {
+		if err := phase.Invalidate(root, in.SessionID); err != nil {
 			return nil, err
 		}
-		if err := retire.Invalidate(in.Cwd, in.SessionID); err != nil {
+		if err := retire.Invalidate(root, in.SessionID); err != nil {
 			return nil, err
 		}
-		if err := stats.InvalidateSession(in.Cwd, in.SessionID); err != nil {
+		if err := stats.InvalidateSession(root, in.SessionID); err != nil {
 			return nil, err
 		}
 		// Self-registration: now that the hook installs globally rather than
 		// per-project (see install.sh), there's no install-time moment inside
 		// each project to register it in ~/.agent-winglet/projects.json.
 		// Registering here means the first session the hook ever sees for a
-		// given cwd adds that project to the registry.
-		return nil, registry.Register(in.Cwd)
+		// given project root adds that project to the registry.
+		return nil, registry.Register(root)
 	case "PostToolUse":
 		return handlePostToolUse(in)
 	case "SessionEnd":
 		return handleSessionEnd(in)
 	}
 	return nil, nil
+}
+
+// migrateLegacyData reclaims a pre-move-storage install's per-project state
+// (<cwd>/.claude/agent-winglet/) into the new global location for root. Only
+// lifetime.stats.json has lasting value — everything else in that directory
+// is session-scoped and was already designed to never survive a restart, so
+// losing it mid-upgrade is a non-event. This runs against the raw cwd (not
+// root) on every SessionStart/PostCompact, so each stale per-subdirectory
+// dir left over from the old cwd-keyed layout gets folded in and cleaned up
+// independently, the next time a session happens to start from that
+// particular subdirectory. It merges rather than overwrites, so the order
+// that happens in across multiple old dirs doesn't matter.
+//
+// Best-effort: errors are logged to stderr, never surfaced to the hook's
+// caller, matching this codebase's existing fail-soft convention for state
+// I/O.
+func migrateLegacyData(cwd, root string) {
+	legacyDir := filepath.Join(cwd, ".claude", "agent-winglet")
+	info, err := os.Stat(legacyDir)
+	if err != nil || !info.IsDir() {
+		return
+	}
+
+	legacyLifetimePath := filepath.Join(legacyDir, "lifetime.stats.json")
+	if data, err := os.ReadFile(legacyLifetimePath); err == nil {
+		var old stats.Lifetime
+		if err := json.Unmarshal(data, &old); err != nil {
+			fmt.Fprintln(os.Stderr, "ledger-hook: migration: corrupt legacy lifetime stats, skipping merge:", err)
+		} else {
+			merged, err := stats.LoadLifetime(root)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "ledger-hook: migration: loading new lifetime stats failed:", err)
+			} else {
+				merged.Sessions += old.Sessions
+				merged.DedupHits += old.DedupHits
+				merged.DedupBytes += old.DedupBytes
+				merged.BudgetTrims += old.BudgetTrims
+				merged.BudgetLinesOmitted += old.BudgetLinesOmitted
+				merged.BudgetBytesOmitted += old.BudgetBytesOmitted
+				merged.RetiredCalls += old.RetiredCalls
+				merged.RetiredBytes += old.RetiredBytes
+				merged.TranscriptTokens += old.TranscriptTokens
+				merged.TranscriptCostUSD += old.TranscriptCostUSD
+				merged.TranscriptContentBytes += old.TranscriptContentBytes
+				if err := stats.SaveLifetime(root, merged); err != nil {
+					fmt.Fprintln(os.Stderr, "ledger-hook: migration: saving merged lifetime stats failed:", err)
+				}
+			}
+		}
+	}
+
+	if err := os.RemoveAll(legacyDir); err != nil {
+		fmt.Fprintln(os.Stderr, "ledger-hook: migration: removing legacy dir failed:", err)
+	}
 }
 
 // investigateTools and implementTools classify a PostToolUse tool_name for
@@ -232,19 +296,19 @@ var implementTools = map[string]bool{
 // processing, never an earlier one, so already-replayed investigate output
 // can't be rewritten after the fact — only investigate calls made after the
 // boundary crossing can be.
-func handlePhaseBoundary(in hookInput) (out *hookOutput, pastBoundary bool, err error) {
+func handlePhaseBoundary(in hookInput, root string) (out *hookOutput, pastBoundary bool, err error) {
 	isInvestigate := investigateTools[in.ToolName]
 	isImplement := implementTools[in.ToolName]
 	if !isInvestigate && !isImplement {
 		return nil, false, nil
 	}
 
-	st, err := phase.Load(in.Cwd, in.SessionID)
+	st, err := phase.Load(root, in.SessionID)
 	if err != nil {
 		return nil, false, err
 	}
 	crossed := st.Observe(isInvestigate, isImplement)
-	if err := phase.Save(in.Cwd, in.SessionID, st); err != nil {
+	if err := phase.Save(root, in.SessionID, st); err != nil {
 		return nil, false, err
 	}
 	pastBoundary = st.Suggested
@@ -306,8 +370,8 @@ func investigateKey(toolInput json.RawMessage) string {
 // archived to disk and replaced with a compact receipt, instead of
 // replaying it in full. Called only when in.ToolName is investigate-
 // classified and the boundary has already been crossed.
-func handleRetireInvestigate(in hookInput) (*hookOutput, error) {
-	path, err := retire.Store(in.Cwd, in.SessionID, in.ToolResponse)
+func handleRetireInvestigate(in hookInput, root string) (*hookOutput, error) {
+	path, err := retire.Store(root, in.SessionID, in.ToolResponse)
 	if err != nil {
 		return nil, err
 	}
@@ -317,7 +381,7 @@ func handleRetireInvestigate(in hookInput) (*hookOutput, error) {
 		"[agent-winglet] investigate output retired post-boundary (%s %s, %d bytes) — full content at %s",
 		in.ToolName, key, n, path,
 	)
-	if err := recordStat(in.Cwd, in.SessionID, func(s *stats.Session) {
+	if err := recordStat(root, in.SessionID, func(s *stats.Session) {
 		s.RecordRetire(n)
 	}); err != nil {
 		return nil, err
@@ -331,17 +395,19 @@ func handleRetireInvestigate(in hookInput) (*hookOutput, error) {
 // recordStat loads the session's stats tally, applies mutate, and saves it
 // back — the same load/mutate/save shape as the ledger and phase call sites
 // already use, just with the stats package's own state instead.
-func recordStat(cwd, sessionID string, mutate func(*stats.Session)) error {
-	s, err := stats.LoadSession(cwd, sessionID)
+func recordStat(projectDir, sessionID string, mutate func(*stats.Session)) error {
+	s, err := stats.LoadSession(projectDir, sessionID)
 	if err != nil {
 		return err
 	}
 	mutate(s)
-	return stats.SaveSession(cwd, sessionID, s)
+	return stats.SaveSession(projectDir, sessionID, s)
 }
 
 func handlePostToolUse(in hookInput) (*hookOutput, error) {
-	out, pastBoundary, err := handlePhaseBoundary(in)
+	root := projectroot.Resolve(in.Cwd)
+
+	out, pastBoundary, err := handlePhaseBoundary(in, root)
 	if err != nil {
 		return nil, err
 	}
@@ -349,7 +415,7 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 		return out, nil
 	}
 	if investigateTools[in.ToolName] && pastBoundary {
-		return handleRetireInvestigate(in)
+		return handleRetireInvestigate(in, root)
 	}
 
 	if in.ToolName != "Bash" {
@@ -380,7 +446,7 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 
 	key := "Bash:" + input.Command
 
-	st, err := ledger.Load(in.Cwd, in.SessionID)
+	st, err := ledger.Load(root, in.SessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -389,7 +455,7 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 
 	repeatOfTurn, isRepeat := st.Check(key, response.Stdout)
 	if !isRepeat {
-		if err := ledger.Save(in.Cwd, in.SessionID, st); err != nil {
+		if err := ledger.Save(root, in.SessionID, st); err != nil {
 			return nil, err
 		}
 		budgeted, omittedLines, omittedBytes, ok := budgetStdout(response.Stdout)
@@ -398,7 +464,7 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 			// to record.
 			return nil, nil
 		}
-		if err := recordStat(in.Cwd, in.SessionID, func(s *stats.Session) {
+		if err := recordStat(root, in.SessionID, func(s *stats.Session) {
 			s.RecordBudgetTrim(omittedLines, omittedBytes)
 		}); err != nil {
 			return nil, err
@@ -415,10 +481,10 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 		HookEventName:     "PostToolUse",
 		UpdatedToolOutput: bashOutput{Stdout: receipt},
 	}}
-	if err := ledger.Save(in.Cwd, in.SessionID, st); err != nil {
+	if err := ledger.Save(root, in.SessionID, st); err != nil {
 		return nil, err
 	}
-	if err := recordStat(in.Cwd, in.SessionID, func(s *stats.Session) {
+	if err := recordStat(root, in.SessionID, func(s *stats.Session) {
 		s.RecordDedup(processedBytes)
 	}); err != nil {
 		return nil, err
@@ -458,7 +524,9 @@ func quiet() bool {
 // session's tally is folded into the lifetime tally either way once it's
 // non-zero, even when AGENT_WINGLET_QUIET suppresses the message itself.
 func handleSessionEnd(in hookInput) (*hookOutput, error) {
-	sess, err := stats.LoadSession(in.Cwd, in.SessionID)
+	root := projectroot.Resolve(in.Cwd)
+
+	sess, err := stats.LoadSession(root, in.SessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -478,16 +546,16 @@ func handleSessionEnd(in hookInput) (*hookOutput, error) {
 	// this file back later for the per-session breakdown, and without this
 	// write it would always see zero transcript data even for a completed
 	// session.
-	if err := stats.SaveSession(in.Cwd, in.SessionID, sess); err != nil {
+	if err := stats.SaveSession(root, in.SessionID, sess); err != nil {
 		return nil, err
 	}
 
-	lifetime, err := stats.LoadLifetime(in.Cwd)
+	lifetime, err := stats.LoadLifetime(root)
 	if err != nil {
 		return nil, err
 	}
 	lifetime.Add(sess)
-	if err := stats.SaveLifetime(in.Cwd, lifetime); err != nil {
+	if err := stats.SaveLifetime(root, lifetime); err != nil {
 		return nil, err
 	}
 

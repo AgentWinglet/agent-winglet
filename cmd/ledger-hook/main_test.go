@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -10,6 +11,27 @@ import (
 	"github.com/umitkaanusta/agent-winglet/internal/registry"
 	"github.com/umitkaanusta/agent-winglet/internal/stats"
 )
+
+// TestMain isolates HOME for the whole test binary: every state package this
+// hook drives (ledger/phase/retire/stats via internal/statedir, plus
+// registry/config) now resolves under $HOME rather than under the projectDir
+// callers pass in, so without this every test in this file would read/write
+// the real developer machine's ~/.agent-winglet on every run. Individual
+// tests that assert on registry/config content still call their own
+// t.Setenv("HOME", ...) for per-test isolation from each other; that
+// per-test override wins for the duration of that test, same as it always
+// has — this just supplies a safe default for tests that don't need that.
+func TestMain(m *testing.M) {
+	home, err := os.MkdirTemp("", "agent-winglet-hook-test-home")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "TestMain: MkdirTemp failed:", err)
+		os.Exit(1)
+	}
+	os.Setenv("HOME", home)
+	code := m.Run()
+	os.RemoveAll(home)
+	os.Exit(code)
+}
 
 func linesOfStdout(n int) string {
 	lines := make([]string, n)
