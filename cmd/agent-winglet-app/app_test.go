@@ -34,6 +34,46 @@ func TestBuildOverviewNoDataYetWhenNothingProcessed(t *testing.T) {
 	}
 }
 
+// TestBuildOverviewShowsLiveActivityBeforeTranscriptIsReadable is the
+// in-progress-session case: dedup/budget/retire have fired (as they do live,
+// on every PostToolUse) but TranscriptContentBytes is still zero, exactly
+// like every session looks for its entire duration until SessionEnd. Before
+// this test existed, this state was indistinguishable from
+// TestBuildOverviewNoDataYetWhenNothingProcessed — a running session with
+// real suppression activity rendered identically to one that had done
+// nothing at all.
+func TestBuildOverviewShowsLiveActivityBeforeTranscriptIsReadable(t *testing.T) {
+	o := buildOverview(overviewTotals{
+		BudgetTrims: 9, BudgetLinesOmitted: 1947, BudgetBytesOmitted: 93983,
+	}, 1, 1)
+
+	if o.HasTranscriptData {
+		t.Fatalf("expected HasTranscriptData = false with no transcript content bytes, got true")
+	}
+	if !o.HasActivity {
+		t.Fatalf("expected HasActivity = true with nonzero suppressed bytes")
+	}
+	if o.HeroHeadline == "No data yet" {
+		t.Fatalf("HeroHeadline = %q, want it to reflect the real suppressed bytes instead of hiding them", o.HeroHeadline)
+	}
+	if !strings.Contains(o.HeroHeadline, "suppressed so far") {
+		t.Fatalf("HeroHeadline = %q, want it to mention suppressed bytes so far", o.HeroHeadline)
+	}
+	if o.BytesSavedCard.Detail == "no data yet" {
+		t.Fatalf("BytesSavedCard.Detail should show real suppressed bytes once a mechanism has fired, got %q", o.BytesSavedCard.Detail)
+	}
+	// Tokens/dollars genuinely need the completed transcript's cost-per-token
+	// rate — those two staying "no data yet" mid-session is correct, not a
+	// regression of this fix.
+	if o.TokensSavedCard.Detail != "no data yet" || o.DollarSavedCard.Detail != "no data yet" {
+		t.Fatalf("TokensSavedCard/DollarSavedCard should still read 'no data yet' without transcript data, got tokens=%q dollar=%q",
+			o.TokensSavedCard.Detail, o.DollarSavedCard.Detail)
+	}
+	if o.HeroUsageDetail == "no data yet" || o.HeroUsageDetail == "" {
+		t.Fatalf("HeroUsageDetail = %q, want an explanation that percent saved is pending, not a blank/generic placeholder", o.HeroUsageDetail)
+	}
+}
+
 func TestBuildOverviewComputesBytesAndStretch(t *testing.T) {
 	o := buildOverview(overviewTotals{
 		DedupHits: 1, DedupBytes: 20,
@@ -189,6 +229,85 @@ func TestGetOverviewSumsAcrossProjects(t *testing.T) {
 	}
 	if o.HeroHeadline == "No data yet" {
 		t.Fatalf("expected a computed hero headline across projects, got %q", o.HeroHeadline)
+	}
+}
+
+// TestGetOverviewIncludesLiveInProgressSessions is the regression test for
+// the bug report this fix addresses: Overview only ever reflected
+// lifetime.stats.json, which only gets updated once a session ends — so a
+// currently-running session (however active) never moved the Overview
+// screen's numbers no matter how fast the frontend polled it. An Ended
+// session file must NOT be double-counted (it's already inside lifetime).
+func TestGetOverviewIncludesLiveInProgressSessions(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	if err := registry.Register(dir); err != nil {
+		t.Fatalf("Register errored: %v", err)
+	}
+
+	l := &stats.Lifetime{Sessions: 1, DedupHits: 1, DedupBytes: 10, TranscriptContentBytes: 100}
+	if err := stats.SaveLifetime(dir, l); err != nil {
+		t.Fatalf("SaveLifetime errored: %v", err)
+	}
+
+	// A finished session, already folded into lifetime above (Ended=true) —
+	// its numbers must not be added a second time.
+	ended := &stats.Session{DedupHits: 1, DedupBytes: 10, Ended: true}
+	if err := stats.SaveSession(dir, "sess-ended", ended); err != nil {
+		t.Fatalf("SaveSession ended errored: %v", err)
+	}
+
+	// A still-running session — not yet folded into lifetime (Ended=false,
+	// the zero value). Its numbers must show up on top of lifetime.
+	live := &stats.Session{BudgetTrims: 3, BudgetBytesOmitted: 900}
+	if err := stats.SaveSession(dir, "sess-live", live); err != nil {
+		t.Fatalf("SaveSession live errored: %v", err)
+	}
+
+	a := NewApp()
+	o, err := a.GetOverview()
+	if err != nil {
+		t.Fatalf("GetOverview errored: %v", err)
+	}
+	// 10 (lifetime dedup) + 900 (live session's budget trim) = 910; the
+	// ended session's 10 bytes must not be counted again.
+	if o.HeroBytes != 910 {
+		t.Fatalf("HeroBytes = %d, want 910 (lifetime's 10 + the live session's 900, ended session not double-counted)", o.HeroBytes)
+	}
+	if o.SessionCount != 2 {
+		t.Fatalf("SessionCount = %d, want 2 (1 lifetime session + 1 live in-progress session)", o.SessionCount)
+	}
+}
+
+// TestGetProjectsIncludesLiveInProgressSessions is GetProjects' counterpart
+// to TestGetOverviewIncludesLiveInProgressSessions — same bug, same fix,
+// different call site.
+func TestGetProjectsIncludesLiveInProgressSessions(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	if err := registry.Register(dir); err != nil {
+		t.Fatalf("Register errored: %v", err)
+	}
+
+	l := &stats.Lifetime{Sessions: 1, RetiredCalls: 1, RetiredBytes: 5}
+	if err := stats.SaveLifetime(dir, l); err != nil {
+		t.Fatalf("SaveLifetime errored: %v", err)
+	}
+	live := &stats.Session{DedupHits: 2, DedupBytes: 40}
+	if err := stats.SaveSession(dir, "sess-live", live); err != nil {
+		t.Fatalf("SaveSession live errored: %v", err)
+	}
+
+	a := NewApp()
+	rows, err := a.GetProjects()
+	if err != nil {
+		t.Fatalf("GetProjects errored: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	if rows[0].Overview.HeroBytes != 45 {
+		t.Fatalf("HeroBytes = %d, want 45 (lifetime's 5 retired + the live session's 40 deduped)", rows[0].Overview.HeroBytes)
 	}
 }
 

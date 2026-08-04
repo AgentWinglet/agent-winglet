@@ -51,6 +51,7 @@ export namespace main {
 	    heroUsageDetail: string;
 	    heroUsageSub: string;
 	    hasTranscriptData: boolean;
+	    hasActivity: boolean;
 	    bytesSavedCard: Card;
 	    tokensSavedCard: Card;
 	    dollarSavedCard: Card;
@@ -72,6 +73,7 @@ export namespace main {
 	        this.heroUsageDetail = source["heroUsageDetail"];
 	        this.heroUsageSub = source["heroUsageSub"];
 	        this.hasTranscriptData = source["hasTranscriptData"];
+	        this.hasActivity = source["hasActivity"];
 	        this.bytesSavedCard = this.convertValues(source["bytesSavedCard"], Card);
 	        this.tokensSavedCard = this.convertValues(source["tokensSavedCard"], Card);
 	        this.dollarSavedCard = this.convertValues(source["dollarSavedCard"], Card);

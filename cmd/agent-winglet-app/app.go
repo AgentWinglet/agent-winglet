@@ -77,26 +77,38 @@ type BarRow struct {
 //     a fourth card restating it would just repeat the hero line.
 //  3. Bars — one row per suppression mechanism, descending by bytes.
 type Overview struct {
-	HeroBytes           int64    `json:"heroBytes"`
-	HeroTotalBytes      int64    `json:"heroTotalBytes"`
-	HeroTotalBytesLabel string   `json:"heroTotalBytesLabel"`
-	HeroPercent         float64  `json:"heroPercent"`
-	HeroHeadline        string   `json:"heroHeadline"`
-	HeroUsageDetail     string   `json:"heroUsageDetail"`
-	HeroUsageSub        string   `json:"heroUsageSub"`
-	HasTranscriptData   bool     `json:"hasTranscriptData"`
-	BytesSavedCard      Card     `json:"bytesSavedCard"`
-	TokensSavedCard     Card     `json:"tokensSavedCard"`
-	DollarSavedCard     Card     `json:"dollarSavedCard"`
-	Bars                []BarRow `json:"bars"`
-	ProjectCount        int      `json:"projectCount"`
-	SessionCount        int      `json:"sessionCount"`
+	HeroBytes           int64   `json:"heroBytes"`
+	HeroTotalBytes      int64   `json:"heroTotalBytes"`
+	HeroTotalBytesLabel string  `json:"heroTotalBytesLabel"`
+	HeroPercent         float64 `json:"heroPercent"`
+	HeroHeadline        string  `json:"heroHeadline"`
+	HeroUsageDetail     string  `json:"heroUsageDetail"`
+	HeroUsageSub        string  `json:"heroUsageSub"`
+	HasTranscriptData   bool    `json:"hasTranscriptData"`
+	// HasActivity is true the moment any mechanism (dedup/budget-trim/retire)
+	// has fired, independent of HasTranscriptData. Suppressed-byte totals
+	// need nothing but the hook's own live-written stats file; the percent-
+	// saved figure additionally needs this session's transcript, which is
+	// only read once, at SessionEnd (see internal/transcript and
+	// cmd/ledger-hook's handleSessionEnd). Without this split, a session
+	// that's still running always renders identically to a session that
+	// never did anything — real, live, moment-to-moment suppression data was
+	// being discarded for the entire lifetime of every in-progress session.
+	HasActivity     bool     `json:"hasActivity"`
+	BytesSavedCard  Card     `json:"bytesSavedCard"`
+	TokensSavedCard Card     `json:"tokensSavedCard"`
+	DollarSavedCard Card     `json:"dollarSavedCard"`
+	Bars            []BarRow `json:"bars"`
+	ProjectCount    int      `json:"projectCount"`
+	SessionCount    int      `json:"sessionCount"`
 }
 
 // GetOverview sums the lifetime tally of every project in the registry that
-// still exists on disk. A project whose lifetime.stats.json is missing
-// (hook installed but never fired yet) contributes a zero tally, not an
-// error.
+// still exists on disk, plus every project's still-in-progress sessions on
+// top (see liveSessionTotals) — otherwise this screen would only ever move
+// once a session ends, no matter how fast the frontend polls it. A project
+// whose lifetime.stats.json is missing (hook installed but never fired yet)
+// contributes a zero lifetime tally, not an error.
 func (a *App) GetOverview() (Overview, error) {
 	dirs, err := registry.Load()
 	if err != nil {
@@ -112,6 +124,13 @@ func (a *App) GetOverview() (Overview, error) {
 		}
 		total.add(totalsFromLifetime(l))
 		sessions += l.Sessions
+
+		live, liveCount, err := liveSessionTotals(dir)
+		if err != nil {
+			return Overview{}, err
+		}
+		total.add(live)
+		sessions += liveCount
 	}
 
 	return buildOverview(total, len(dirs), sessions), nil
@@ -180,10 +199,6 @@ func totalsFromSession(s *stats.Session) overviewTotals {
 		TranscriptCostUSD:      s.TranscriptCostUSD,
 		TranscriptContentBytes: s.TranscriptContentBytes,
 	}
-}
-
-func overviewFromLifetime(l *stats.Lifetime, projectCount int) Overview {
-	return buildOverview(totalsFromLifetime(l), projectCount, l.Sessions)
 }
 
 func overviewFromSession(s *stats.Session, projectCount, sessionCount int) Overview {
@@ -280,12 +295,23 @@ func barRows(t overviewTotals, total int64) []BarRow {
 func buildOverview(t overviewTotals, projectCount, sessionCount int) Overview {
 	suppressed := t.DedupBytes + t.BudgetBytesOmitted + t.RetiredBytes
 	total := t.TranscriptContentBytes + suppressed
+	hasActivity := suppressed > 0
 
 	pct, hasPct := stats.Percent(t.DedupBytes, t.BudgetBytesOmitted, t.RetiredBytes, t.TranscriptContentBytes)
 
+	// heroHeadline has three states, not two: real percent (transcript read,
+	// at SessionEnd), real-but-partial activity (a mechanism has already
+	// fired this session, but the transcript isn't readable yet), or
+	// genuinely nothing (a session that hasn't done anything). Collapsing
+	// the middle state into "No data yet" is what made a live, in-progress
+	// session look identical to an untouched one for its entire duration —
+	// see HasActivity's doc comment.
 	heroHeadline := "No data yet"
-	if hasPct {
+	switch {
+	case hasPct:
 		heroHeadline = fmt.Sprintf("%.0f%% saved", pct)
+	case hasActivity:
+		heroHeadline = fmt.Sprintf("%s suppressed so far", formatBytes(suppressed))
 	}
 
 	hasTranscriptData := t.TranscriptContentBytes > 0
@@ -307,17 +333,26 @@ func buildOverview(t overviewTotals, projectCount, sessionCount int) Overview {
 	// percent rather than a bare "Ax" multiplier with no unit. stats.Stretch
 	// gives that runway as a ratio of 1 (e.g. 1.6129), so subtracting 100
 	// after scaling to a percent yields "how much more," not "how much
-	// total."
+	// total." Tokens/dollars genuinely require the completed transcript
+	// (a cost-per-token rate derived from it), so those two cards stay "no
+	// data yet" through an in-progress session — that's an honest gap, not
+	// the same bug as the headline hiding data it already has.
 	heroUsageDetail := "no data yet"
 	heroUsageSub := ""
-	if hasPct {
+	switch {
+	case hasPct:
 		extraPercent := stats.Stretch(pct)*100 - 100
 		heroUsageDetail = fmt.Sprintf("~%.0f%% more usage", extraPercent)
 		heroUsageSub = "with the same plan"
+	case hasActivity:
+		heroUsageDetail = "% saved lands once this session ends"
 	}
 
+	// BytesSavedCard needs nothing but suppressed, which is already known
+	// live — it does not need the completed transcript the way tokens/
+	// dollars do, so it shouldn't wait for one either.
 	bytesSavedDetail := "no data yet"
-	if hasPct {
+	if hasActivity {
 		bytesSavedDetail = formatBytes(suppressed)
 	}
 
@@ -330,6 +365,7 @@ func buildOverview(t overviewTotals, projectCount, sessionCount int) Overview {
 		HeroUsageDetail:     heroUsageDetail,
 		HeroUsageSub:        heroUsageSub,
 		HasTranscriptData:   hasTranscriptData,
+		HasActivity:         hasActivity,
 		BytesSavedCard: Card{
 			Label: "Bytes saved", Detail: bytesSavedDetail,
 		},
@@ -399,7 +435,10 @@ type ProjectRow struct {
 	Overview  Overview `json:"overview"`
 }
 
-// GetProjects returns one row per registered, still-existing project.
+// GetProjects returns one row per registered, still-existing project. Each
+// row's Overview is lifetime plus that project's still-in-progress sessions
+// (see liveSessionTotals) — same reasoning as GetOverview: without this, a
+// project row would only ever move once a session inside it ends.
 func (a *App) GetProjects() ([]ProjectRow, error) {
 	dirs, err := registry.Load()
 	if err != nil {
@@ -413,11 +452,18 @@ func (a *App) GetProjects() ([]ProjectRow, error) {
 		if err != nil {
 			return nil, err
 		}
+		live, liveCount, err := liveSessionTotals(dir)
+		if err != nil {
+			return nil, err
+		}
+		total := totalsFromLifetime(l)
+		total.add(live)
+
 		rows = append(rows, ProjectRow{
 			Name:      filepath.Base(dir),
 			Path:      dir,
 			Installed: globalInstalled || registry.HookInstalled(dir),
-			Overview:  overviewFromLifetime(l, 1),
+			Overview:  buildOverview(total, 1, l.Sessions+liveCount),
 		})
 	}
 	return rows, nil
@@ -480,6 +526,38 @@ func listSessionFiles(projectDir string) ([]sessionFileInfo, error) {
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].modTime.After(files[j].modTime) })
 	return files, nil
+}
+
+// liveSessionTotals sums every still-on-disk session file for projectDir
+// that hasn't been folded into lifetime.stats.json yet (stats.Session.Ended
+// == false) — i.e., every session still in progress right now. Overview and
+// Projects add this on top of the lifetime rollup so both screens move live
+// as an open session runs, instead of only ever reflecting sessions that
+// have already ended (see stats.Session.Ended's doc comment for why Ended
+// is what keeps this from double-counting a session lifetime already
+// counted). A session file that fails to load is skipped, not fatal — same
+// fail-soft convention listSessionFiles itself follows for a missing state
+// dir.
+func liveSessionTotals(projectDir string) (overviewTotals, int, error) {
+	files, err := listSessionFiles(projectDir)
+	if err != nil {
+		return overviewTotals{}, 0, err
+	}
+
+	var total overviewTotals
+	count := 0
+	for _, f := range files {
+		s, err := stats.LoadSession(projectDir, f.id)
+		if err != nil {
+			return overviewTotals{}, 0, err
+		}
+		if s.Ended {
+			continue
+		}
+		total.add(totalsFromSession(s))
+		count++
+	}
+	return total, count, nil
 }
 
 // GetSessionStats returns one row per session-stats file still on disk for
