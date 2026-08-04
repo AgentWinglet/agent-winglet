@@ -26,6 +26,16 @@
 //     storage per-cwd state it finds into that project's new global state
 //     dir (see migrateLegacyData). The hook installs globally now, so
 //     SessionStart/PostCompact is the only place a project gets registered.
+//   - Stop: records the transcript-usage delta since the last recorded
+//     offset, the same call PostToolUse makes (see recordTranscriptDelta),
+//     so a session that never calls a tool — pure chat, no Bash/Read/Edit/
+//     etc. — still gets a stats file written after its first turn instead of
+//     only at SessionEnd. Without this, such a session had no stats file on
+//     disk at all until SessionEnd fired; if the process crashed or was
+//     force-quit before then, its usage was silently excluded from every
+//     project/overall total, even though it consumed real tokens. Stop fires
+//     after every turn (not just the last one), so this closes that gap for
+//     all but the final, still-in-flight turn.
 //   - SessionEnd: emits a one-time "savings receipt" systemMessage
 //     summarizing what the above mechanisms did this session, plus the
 //     project's lifetime total — computed fresh across every session file on
@@ -203,6 +213,8 @@ func handle(in hookInput) (*hookOutput, error) {
 		return nil, registry.Register(root)
 	case "PostToolUse":
 		return handlePostToolUse(in)
+	case "Stop":
+		return nil, recordTranscriptDelta(projectroot.Resolve(in.Cwd), in)
 	case "SessionEnd":
 		return handleSessionEnd(in)
 	}
@@ -458,10 +470,14 @@ func recordStat(projectDir, sessionID string, mutate func(*stats.Session)) error
 // session's last recorded offset and folds it in — the incremental
 // counterpart to handleSessionEnd's one-shot full read. Bounded to new
 // content only (transcript.ReadSessionUsageFrom), so running this on every
-// PostToolUse costs O(this call's new lines), not O(the whole transcript so
-// far) — the latter would make hook latency grow with session length, in a
-// tool whose entire purpose is cutting round-trip cost, not adding to it.
-// No-ops (cheaply) when nothing new has landed since the last call.
+// PostToolUse/Stop costs O(this call's new lines), not O(the whole
+// transcript so far) — the latter would make hook latency grow with session
+// length, in a tool whose entire purpose is cutting round-trip cost, not
+// adding to it. No-ops (cheaply) when nothing new has landed since the last
+// call. Called from both PostToolUse (every tool call) and Stop (every
+// turn, including tool-free ones) so a session's stats file exists and
+// stays current even if it never calls a tool — see the package doc's Stop
+// entry.
 func recordTranscriptDelta(projectDir string, in hookInput) error {
 	s, err := stats.LoadSession(projectDir, in.SessionID)
 	if err != nil {
@@ -623,8 +639,12 @@ func handleSessionEnd(in hookInput) (*hookOutput, error) {
 	// offset-based one PostToolUse uses — see recordTranscriptDelta) is the
 	// authoritative reconciliation pass: it overwrites whatever got
 	// accumulated turn-by-turn with one clean read of the whole final file.
-	if usage, err := transcript.ReadSessionUsage(in.TranscriptPath); err == nil {
-		sess.SetTranscriptUsage(usage)
+	// The offset it also returns must be persisted right along with the
+	// usage totals (see SetTranscriptUsage) so a later resume of this same
+	// session_id picks its incremental reads back up from here, not from
+	// whatever stale offset the last PostToolUse/Stop call left behind.
+	if usage, offset, err := transcript.ReadSessionUsageWithOffset(in.TranscriptPath); err == nil {
+		sess.SetTranscriptUsage(usage, offset)
 	}
 
 	// A session worth folding into lifetime is one with either suppression

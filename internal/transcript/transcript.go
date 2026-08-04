@@ -88,27 +88,58 @@ type usageBlock struct {
 // for a corrupt state file: a session-end hook shouldn't fail just because
 // it can't price this session's savings.
 func ReadSessionUsage(path string) (SessionUsage, error) {
+	u, _, err := ReadSessionUsageWithOffset(path)
+	return u, err
+}
+
+// ReadSessionUsageWithOffset is ReadSessionUsage's counterpart for callers
+// that need to keep an incremental reader's offset in sync with a full
+// read — namely cmd/ledger-hook's handleSessionEnd, whose full reconciliation
+// pass overwrites stats.Session's transcript totals via SetTranscriptUsage.
+// Without also advancing TranscriptOffset to match, a session resumed later
+// (same session_id, transcript file kept growing) would have its next
+// incremental read (see ReadSessionUsageFrom, driven by PostToolUse/Stop)
+// start from the stale pre-SessionEnd offset and re-add everything between
+// that offset and end-of-file at SessionEnd time — content this full read
+// already counted once. Returning the exact byte count consumed here, and
+// having the caller persist it as the new TranscriptOffset, closes that gap.
+//
+// Reads the whole file in one pass via bufio.Reader.ReadBytes rather than
+// bufio.Scanner (unlike the old implementation, this has no fixed max-line
+// size, and a read error mid-file no longer discards everything accumulated
+// before it — both strict improvements, not just a byproduct of tracking
+// offset). A final line with no trailing newline (the transcript writer
+// still mid-write) is still counted and its bytes still added to the
+// returned offset, matching ReadSessionUsage's existing "no next call to
+// hand an unfinished line to, so count whatever's there" behavior — this is
+// the one-shot reconciliation pass, not the incremental one that must leave
+// partial lines for a later call (see ReadSessionUsageFrom's doc comment).
+func ReadSessionUsageWithOffset(path string) (SessionUsage, int64, error) {
 	var u SessionUsage
 	if path == "" {
-		return u, nil
+		return u, 0, nil
 	}
 
 	f, err := os.Open(path)
 	if err != nil {
-		return SessionUsage{}, nil
+		return SessionUsage{}, 0, nil
 	}
 	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
-	for scanner.Scan() {
-		accumulateLine(scanner.Bytes(), &u)
-	}
-	if err := scanner.Err(); err != nil {
-		return SessionUsage{}, nil
+	reader := bufio.NewReaderSize(f, 64*1024)
+	var pos int64
+	for {
+		line, err := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			accumulateLine(line, &u)
+			pos += int64(len(line))
+		}
+		if err != nil {
+			break
+		}
 	}
 
-	return u, nil
+	return u, pos, nil
 }
 
 // accumulateLine parses one JSONL transcript line and folds it into u, the

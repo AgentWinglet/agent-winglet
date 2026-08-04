@@ -80,15 +80,28 @@ func (s *Session) RecordRetire(bytes int) {
 	s.RetiredBytes += int64(bytes)
 }
 
-// SetTranscriptUsage copies a transcript read (see internal/transcript) onto
-// the session. Called once per SessionEnd, after the transcript file has
-// already been fully read — a plain field copy, not an accumulator, since a
-// transcript file's own line-by-line summation already reflects the whole
-// session.
-func (s *Session) SetTranscriptUsage(u transcript.SessionUsage) {
+// SetTranscriptUsage copies a transcript read (see
+// transcript.ReadSessionUsageWithOffset) onto the session. Called once per
+// SessionEnd, after the transcript file has already been fully read — a
+// plain field copy, not an accumulator, since a transcript file's own
+// line-by-line summation already reflects the whole session.
+//
+// offset must be the exact byte count that read consumed (what
+// ReadSessionUsageWithOffset returns alongside u), and is stored onto
+// TranscriptOffset right along with the usage totals it priced. Skipping
+// this used to leave TranscriptOffset stuck at whatever the last
+// AddTranscriptUsage call (PostToolUse/Stop, mid-session) left it — fine
+// while the session kept running, but wrong the moment it later got
+// resumed (same session_id, transcript file kept growing): the next
+// AddTranscriptUsage would resume from that stale offset and re-add
+// everything between it and SessionEnd's end-of-file, double-counting
+// content this full read already priced once. Keeping the two in the same
+// call makes that pairing impossible to break by accident.
+func (s *Session) SetTranscriptUsage(u transcript.SessionUsage, offset int64) {
 	s.TranscriptTokens = u.Tokens
 	s.TranscriptCostUSD = u.CostUSD
 	s.TranscriptContentBytes = u.ContentBytes
+	s.TranscriptOffset = offset
 }
 
 // AddTranscriptUsage folds one incremental transcript.ReadSessionUsageFrom
@@ -235,20 +248,53 @@ func SaveSession(projectDir, sessionID string, s *Session) error {
 	return saveJSON(p, s)
 }
 
-// InvalidateSession deletes the session tally. Called on SessionStart and
-// PostCompact, same as ledger.Invalidate/phase.Invalidate/retire.Invalidate,
-// so a resumed or compacted session doesn't report a receipt describing
-// activity from a part of the session that's now gone.
+// InvalidateSession resets the session's mechanism counters (dedup,
+// budget-trim, retire). Called on SessionStart and PostCompact, same as
+// ledger.Invalidate/phase.Invalidate/retire.Invalidate, so a resumed or
+// compacted session doesn't report a receipt describing activity from a
+// part of the session that's now gone.
+//
+// The transcript-usage fields (TranscriptTokens, TranscriptCostUSD,
+// TranscriptContentBytes, TranscriptOffset) are deliberately left alone:
+// unlike the mechanism counters, they're not tied to ledger/phase state that
+// a compact invalidates — they're a running total of real usage that already
+// happened and stays true regardless of a later compact. This used to
+// os.Remove the whole file, which self-healed once SessionEnd's full
+// transcript re-read landed later — but if the process crashed or was
+// force-quit between the compact and SessionEnd, that delete was
+// destructive: the pre-compact usage was wiped from disk with nothing yet
+// written to replace it, so it was gone for good. Resetting the mechanism
+// fields in place instead of deleting the file removes that window.
+//
+// If resetting the mechanism counters leaves the session entirely zero
+// (including transcript usage — true for a session with no recorded
+// transcript activity yet), the file is still removed rather than left
+// behind as an empty husk, matching the old behavior for that case.
 func InvalidateSession(projectDir, sessionID string) error {
 	p, err := sessionPath(projectDir, sessionID)
 	if err != nil {
 		return err
 	}
-	err = os.Remove(p)
-	if os.IsNotExist(err) {
-		return nil
+	var s Session
+	if err := loadJSON(p, &s); err != nil {
+		return err
 	}
-	return err
+	s.DedupHits = 0
+	s.DedupBytes = 0
+	s.BudgetTrims = 0
+	s.BudgetLinesOmitted = 0
+	s.BudgetBytesOmitted = 0
+	s.RetiredCalls = 0
+	s.RetiredBytes = 0
+
+	if s.TranscriptTokens == 0 && s.TranscriptCostUSD == 0 && s.TranscriptContentBytes == 0 {
+		err := os.Remove(p)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return saveJSON(p, &s)
 }
 
 // SessionFile identifies one on-disk session-stats file and its

@@ -480,10 +480,11 @@ func (a *App) GetProjects() ([]ProjectRow, error) {
 // <sessionID>.stats.json file, using the same percentage-first Overview
 // shape as the project/lifetime rollup. This only works because completed
 // sessions' stats files are NOT deleted on SessionEnd — only
-// stats.InvalidateSession (SessionStart/PostCompact) removes one, to wipe a
-// resumed/compacted session's stale tally — so a finished session's file
-// (and its suppressed-bytes/transcript-usage tally) persists for this to
-// read.
+// stats.InvalidateSession (SessionStart/PostCompact) touches one, to wipe a
+// resumed/compacted session's stale dedup/budget/retire tally while
+// preserving its real transcript-usage figures (and removing the file only
+// if nothing worth keeping is left) — so a finished session's file (and its
+// suppressed-bytes/transcript-usage tally) persists for this to read.
 type SessionRow struct {
 	SessionID string   `json:"sessionId"`
 	Overview  Overview `json:"overview"`

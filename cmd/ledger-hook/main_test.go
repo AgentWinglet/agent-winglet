@@ -763,6 +763,169 @@ func TestHandlePostToolUseTracksTranscriptUsageLive(t *testing.T) {
 	}
 }
 
+// TestHandleSessionEndThenResumeDoesNotDoubleCountTranscriptUsage is the
+// regression test for the bug SetTranscriptUsage's offset parameter fixes:
+// SessionEnd's full reconciliation read used to overwrite TranscriptTokens
+// without also advancing TranscriptOffset, so a session resumed afterward
+// (same session_id, transcript file still on disk and still growing) would
+// have its next PostToolUse re-read from the stale, pre-SessionEnd offset —
+// re-adding content SessionEnd's full read had already counted once.
+//
+// The bug only shows up when the transcript grows *between* the last
+// incremental read and SessionEnd's full read — otherwise the stale offset
+// happens to already sit at end-of-file and there's nothing for a resume to
+// re-read. So this appends a line straight to disk (no PostToolUse call in
+// between, modeling content that landed after the last incremental read but
+// before the session ended) before firing SessionEnd, then simulates a
+// resume (SessionStart on the same session_id) and one more PostToolUse
+// with yet another line appended — and asserts the post-resume total is
+// SessionEnd's total plus only that last line, never SessionEnd's total
+// plus the pre-SessionEnd tail a second time on top of it.
+func TestHandleSessionEndThenResumeDoesNotDoubleCountTranscriptUsage(t *testing.T) {
+	dir := t.TempDir()
+	transcriptPath := writeTranscriptFixture(t, dir)
+
+	live := bashInput(t, dir, "sess1", "echo one", bashOutput{Stdout: "one\n"})
+	live.TranscriptPath = transcriptPath
+	if _, err := handle(live); err != nil {
+		t.Fatalf("live PostToolUse call errored: %v", err)
+	}
+
+	appendLine := func(tokens int) {
+		t.Helper()
+		f, err := os.OpenFile(transcriptPath, os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			t.Fatalf("OpenFile for append errored: %v", err)
+		}
+		line := fmt.Sprintf(`{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":%d,"output_tokens":0}}}`, tokens) + "\n"
+		if _, err := f.WriteString(line); err != nil {
+			t.Fatalf("append WriteString errored: %v", err)
+		}
+		f.Close()
+	}
+
+	// Lands after the last incremental read but before SessionEnd — no
+	// PostToolUse/Stop call sees it until SessionEnd's full reconciliation
+	// read does.
+	appendLine(30)
+
+	se := sessionEndInput("sess1", dir)
+	se.TranscriptPath = transcriptPath
+	if _, err := handle(se); err != nil {
+		t.Fatalf("SessionEnd call errored: %v", err)
+	}
+	afterEnd, err := stats.LoadSession(dir, "sess1")
+	if err != nil {
+		t.Fatalf("LoadSession after SessionEnd errored: %v", err)
+	}
+	if afterEnd.TranscriptTokens != 130 { // 100 from the fixture + the 30 appended above
+		t.Fatalf("TranscriptTokens after SessionEnd = %d, want 130", afterEnd.TranscriptTokens)
+	}
+
+	// Simulate resuming the same session: SessionStart fires again for the
+	// same session_id, then the transcript grows further and another
+	// PostToolUse call lands.
+	if _, err := handle(hookInput{SessionID: "sess1", Cwd: dir, HookEventName: "SessionStart"}); err != nil {
+		t.Fatalf("resume SessionStart call errored: %v", err)
+	}
+	appendLine(40)
+
+	resumed := bashInput(t, dir, "sess1", "echo two", bashOutput{Stdout: "two\n"})
+	resumed.TranscriptPath = transcriptPath
+	if _, err := handle(resumed); err != nil {
+		t.Fatalf("post-resume PostToolUse call errored: %v", err)
+	}
+
+	afterResume, err := stats.LoadSession(dir, "sess1")
+	if err != nil {
+		t.Fatalf("LoadSession after resume errored: %v", err)
+	}
+	if afterResume.TranscriptTokens != afterEnd.TranscriptTokens+40 {
+		t.Fatalf("TranscriptTokens after resume = %d, want %d (SessionEnd's %d plus only the newly appended line's 40 tokens — a stale offset would double-count the pre-SessionEnd 30-token tail on top of this)",
+			afterResume.TranscriptTokens, afterEnd.TranscriptTokens+40, afterEnd.TranscriptTokens)
+	}
+}
+
+// TestHandleStopTracksTranscriptUsageForToolFreeSession is the regression
+// test for the gap Stop closes: a session that never calls a tool (pure
+// chat) used to have no stats file at all until SessionEnd — PostToolUse
+// never fires to create one, so a crash or force-quit before SessionEnd
+// meant the session's real token usage was silently excluded from every
+// project/overall total. This asserts a bare Stop call, with no preceding
+// PostToolUse, already persists nonzero transcript usage.
+func TestHandleStopTracksTranscriptUsageForToolFreeSession(t *testing.T) {
+	dir := t.TempDir()
+	transcriptPath := writeTranscriptFixture(t, dir)
+
+	in := hookInput{
+		SessionID:      "sess1",
+		Cwd:            dir,
+		HookEventName:  "Stop",
+		TranscriptPath: transcriptPath,
+	}
+	if _, err := handle(in); err != nil {
+		t.Fatalf("Stop handling errored: %v", err)
+	}
+
+	sess, err := stats.LoadSession(dir, "sess1")
+	if err != nil {
+		t.Fatalf("LoadSession errored: %v", err)
+	}
+	if sess.TranscriptTokens == 0 || sess.TranscriptCostUSD == 0 || sess.TranscriptContentBytes == 0 {
+		t.Fatalf("expected nonzero transcript usage after a bare Stop call (no tool calls this session), got %+v", sess)
+	}
+}
+
+// TestHandlePostCompactSurvivesCrashBeforeSessionEnd is the end-to-end
+// regression test for the second half of the same bug report Stop fixes:
+// PostCompact used to wipe the whole session-stats file, relying on
+// SessionEnd's later full transcript re-read to restore it — fine as long
+// as SessionEnd actually fires, but a crash or force-quit between the
+// compact and SessionEnd meant it never did, permanently losing the
+// pre-compact usage. This drives a real turn (accruing transcript usage via
+// Stop), fires PostCompact, and then simulates a crash by calling
+// SumProject directly instead of ever calling SessionEnd — the pre-compact
+// usage must still be there.
+func TestHandlePostCompactSurvivesCrashBeforeSessionEnd(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	transcriptPath := writeTranscriptFixture(t, dir)
+
+	stopIn := hookInput{
+		SessionID:      "sess1",
+		Cwd:            dir,
+		HookEventName:  "Stop",
+		TranscriptPath: transcriptPath,
+	}
+	if _, err := handle(stopIn); err != nil {
+		t.Fatalf("Stop handling errored: %v", err)
+	}
+
+	preCompact, err := stats.LoadSession(dir, "sess1")
+	if err != nil {
+		t.Fatalf("LoadSession before compact errored: %v", err)
+	}
+	if preCompact.TranscriptTokens == 0 {
+		t.Fatalf("expected nonzero transcript usage before compact, got %+v", preCompact)
+	}
+
+	if _, err := handle(hookInput{SessionID: "sess1", Cwd: dir, HookEventName: "PostCompact"}); err != nil {
+		t.Fatalf("PostCompact handling errored: %v", err)
+	}
+
+	// No further hook call — this is the simulated crash: SessionEnd never
+	// fires, so nothing re-reads the transcript from scratch to restore
+	// what PostCompact just touched.
+	rollup, err := stats.SumProject(dir)
+	if err != nil {
+		t.Fatalf("SumProject errored: %v", err)
+	}
+	if rollup.TranscriptTokens != preCompact.TranscriptTokens {
+		t.Fatalf("pre-compact transcript usage lost after a simulated crash: rollup=%+v, want TranscriptTokens=%d",
+			rollup, preCompact.TranscriptTokens)
+	}
+}
+
 func TestHandleSessionEndReadsTranscriptUsage(t *testing.T) {
 	dir := t.TempDir()
 	repeatIn := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
