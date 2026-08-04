@@ -57,6 +57,20 @@ func TestSetTranscriptUsageCopiesFields(t *testing.T) {
 	}
 }
 
+func TestAddTranscriptUsageAccumulatesAndAdvancesOffset(t *testing.T) {
+	s := &Session{}
+	s.AddTranscriptUsage(transcript.SessionUsage{Tokens: 100, CostUSD: 0.01, ContentBytes: 400}, 500)
+	s.AddTranscriptUsage(transcript.SessionUsage{Tokens: 50, CostUSD: 0.005, ContentBytes: 200}, 900)
+
+	if s.TranscriptTokens != 150 || s.TranscriptCostUSD != 0.015 || s.TranscriptContentBytes != 600 {
+		t.Fatalf("got TranscriptTokens=%d TranscriptCostUSD=%v TranscriptContentBytes=%d, want 150/0.015/600 (deltas must sum, not overwrite)",
+			s.TranscriptTokens, s.TranscriptCostUSD, s.TranscriptContentBytes)
+	}
+	if s.TranscriptOffset != 900 {
+		t.Fatalf("TranscriptOffset = %d, want 900 (should track the latest call's offset, not sum)", s.TranscriptOffset)
+	}
+}
+
 func TestIsZeroIgnoresTranscriptUsage(t *testing.T) {
 	s := &Session{}
 	s.SetTranscriptUsage(transcript.SessionUsage{Tokens: 500, CostUSD: 0.25, ContentBytes: 2000})

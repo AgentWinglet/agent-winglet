@@ -44,6 +44,22 @@ type Session struct {
 	TranscriptTokens       int64   `json:"transcriptTokens"`
 	TranscriptCostUSD      float64 `json:"transcriptCostUsd"`
 	TranscriptContentBytes int64   `json:"transcriptContentBytes"`
+	// TranscriptOffset is the transcript byte offset already folded into the
+	// three fields above via AddTranscriptUsage — purely internal
+	// bookkeeping for PostToolUse's incremental reads (see
+	// transcript.ReadSessionUsageFrom), never surfaced to the desktop app.
+	// Persisted here (not in a separate file) so it travels with the same
+	// load/mutate/save cycle every other per-session field already uses.
+	TranscriptOffset int64 `json:"transcriptOffset"`
+	// Ended is set once, by handleSessionEnd, right before this session's
+	// tally is folded into Lifetime. It's how the desktop app tells "this
+	// session's numbers are already counted in lifetime.stats.json" apart
+	// from "this session is still running, add its file's numbers on top of
+	// lifetime for the live view" — without it, summing lifetime plus every
+	// on-disk session file (session files are never deleted; see
+	// cmd/agent-winglet-app's GetSessionStats) would double-count every
+	// session once it ends.
+	Ended bool `json:"ended"`
 }
 
 // RecordDedup records one ledger repeat-hit that replaced would-be-replayed
@@ -81,6 +97,19 @@ func (s *Session) SetTranscriptUsage(u transcript.SessionUsage) {
 	s.TranscriptContentBytes = u.ContentBytes
 }
 
+// AddTranscriptUsage folds one incremental transcript.ReadSessionUsageFrom
+// delta onto the running total and advances TranscriptOffset past it — the
+// PostToolUse-time counterpart to SetTranscriptUsage's SessionEnd-time
+// one-shot copy. Called on every PostToolUse (see cmd/ledger-hook's
+// handlePostToolUse), so the desktop app's tokens/$ figures move live
+// instead of staying at zero until the session ends.
+func (s *Session) AddTranscriptUsage(delta transcript.SessionUsage, newOffset int64) {
+	s.TranscriptTokens += delta.Tokens
+	s.TranscriptCostUSD += delta.CostUSD
+	s.TranscriptContentBytes += delta.ContentBytes
+	s.TranscriptOffset = newOffset
+}
+
 // IsZero reports whether no mechanism fired this session. Transcript usage
 // is deliberately not part of this check — see TranscriptTokens' doc
 // comment.
@@ -108,8 +137,9 @@ type Lifetime struct {
 }
 
 // Add folds one session's tally into the lifetime tally and counts that
-// session toward Sessions. Callers only call this for a session whose tally
-// is non-zero (see the SessionEnd handler's zero-activity rule).
+// session toward Sessions. Callers only call this for a session with either
+// suppression activity or real transcript usage — never for a session with
+// neither (see the SessionEnd handler's fold-worthiness rule).
 func (l *Lifetime) Add(s *Session) {
 	l.Sessions++
 	l.DedupHits += s.DedupHits

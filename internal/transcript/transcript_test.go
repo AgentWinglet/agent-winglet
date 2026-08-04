@@ -133,6 +133,111 @@ func TestReadSessionUsageManyTurnsDontInflateTokensOrCost(t *testing.T) {
 	}
 }
 
+// TestReadSessionUsageFromAccumulatesAcrossCalls is the shape PostToolUse
+// actually uses it in: read from offset 0 (nothing yet), some lines get
+// appended (simulating the transcript growing between tool calls), read
+// again from the returned offset. The second call's delta must cover only
+// the newly appended lines, not the whole file again — that's the entire
+// point of tracking offset instead of calling ReadSessionUsage repeatedly.
+func TestReadSessionUsageFromAccumulatesAcrossCalls(t *testing.T) {
+	line1 := `{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":10,"output_tokens":0}}}`
+	path := writeFixture(t, []string{line1})
+
+	u1, offset1, err := ReadSessionUsageFrom(path, 0)
+	if err != nil {
+		t.Fatalf("first ReadSessionUsageFrom errored: %v", err)
+	}
+	if u1.Tokens != 10 {
+		t.Fatalf("first delta Tokens = %d, want 10", u1.Tokens)
+	}
+	if offset1 == 0 {
+		t.Fatalf("offset1 should advance past the first line, got 0")
+	}
+
+	// Nothing new since offset1: delta should be zero and offset unchanged.
+	u2, offset2, err := ReadSessionUsageFrom(path, offset1)
+	if err != nil {
+		t.Fatalf("second ReadSessionUsageFrom (no new data) errored: %v", err)
+	}
+	if u2 != (SessionUsage{}) {
+		t.Fatalf("expected a zero delta with nothing new appended, got %+v", u2)
+	}
+	if offset2 != offset1 {
+		t.Fatalf("offset should not move when nothing new was read: offset1=%d offset2=%d", offset1, offset2)
+	}
+
+	// Append a second line (simulating the transcript growing between tool
+	// calls) and read again from offset1 — the delta must cover only the
+	// new line.
+	line2 := `{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":25,"output_tokens":0}}}`
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("OpenFile for append errored: %v", err)
+	}
+	if _, err := f.WriteString(line2 + "\n"); err != nil {
+		t.Fatalf("append WriteString errored: %v", err)
+	}
+	f.Close()
+
+	u3, offset3, err := ReadSessionUsageFrom(path, offset1)
+	if err != nil {
+		t.Fatalf("third ReadSessionUsageFrom errored: %v", err)
+	}
+	if u3.Tokens != 25 {
+		t.Fatalf("third delta Tokens = %d, want 25 (only the newly appended line)", u3.Tokens)
+	}
+	if offset3 <= offset1 {
+		t.Fatalf("offset3 (%d) should advance past offset1 (%d)", offset3, offset1)
+	}
+}
+
+// TestReadSessionUsageFromDoesNotConsumePartialFinalLine is the concurrency
+// case this function exists to handle safely: Claude Code can still be
+// mid-write on the transcript's last line when a hook runs. A naive
+// line-splitter would either error on invalid JSON (fine, fail-soft) but
+// then advance the offset past the torn bytes anyway, permanently losing
+// that line's usage once the writer finishes it — this must not happen.
+func TestReadSessionUsageFromDoesNotConsumePartialFinalLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "transcript.jsonl")
+	complete := `{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":10,"output_tokens":0}}}` + "\n"
+	partial := `{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tok` // no trailing newline: write in progress
+	if err := os.WriteFile(path, []byte(complete+partial), 0o644); err != nil {
+		t.Fatalf("WriteFile errored: %v", err)
+	}
+
+	u, offset, err := ReadSessionUsageFrom(path, 0)
+	if err != nil {
+		t.Fatalf("ReadSessionUsageFrom errored: %v", err)
+	}
+	if u.Tokens != 10 {
+		t.Fatalf("Tokens = %d, want 10 (only the complete line should count)", u.Tokens)
+	}
+	if want := int64(len(complete)); offset != want {
+		t.Fatalf("offset = %d, want %d (must stop exactly at the end of the last complete line, not consume the partial one)",
+			offset, want)
+	}
+
+	// Simulate the writer finishing that line later: append the rest plus a
+	// newline, then read again from the offset returned above. The
+	// previously-partial line must now be read whole, not skipped.
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("OpenFile for append errored: %v", err)
+	}
+	if _, err := f.WriteString(`ens":15,"output_tokens":0}}}` + "\n"); err != nil {
+		t.Fatalf("append WriteString errored: %v", err)
+	}
+	f.Close()
+
+	u2, _, err := ReadSessionUsageFrom(path, offset)
+	if err != nil {
+		t.Fatalf("follow-up ReadSessionUsageFrom errored: %v", err)
+	}
+	if u2.Tokens != 15 {
+		t.Fatalf("Tokens = %d, want 15 (the completed line should be read whole once finished, not lost)", u2.Tokens)
+	}
+}
+
 func TestReadSessionUsageMixedModelsUseEachLinesOwnRate(t *testing.T) {
 	opus := `{"type":"assistant","message":{"model":"claude-opus-5","usage":{"input_tokens":100,"output_tokens":0}}}`
 	sonnet := `{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":100,"output_tokens":0}}}`
