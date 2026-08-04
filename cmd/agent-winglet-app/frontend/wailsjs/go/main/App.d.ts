@@ -4,10 +4,8 @@ import {main} from '../models';
 
 export function GetOverview():Promise<main.Overview>;
 
+export function GetPlatform():Promise<string>;
+
 export function GetProjects():Promise<Array<main.ProjectRow>>;
 
 export function GetSessionStats(arg1:string):Promise<Array<main.SessionRow>>;
-
-export function GetSettings():Promise<main.Settings>;
-
-export function SetQuiet(arg1:boolean):Promise<void>;

@@ -1,6 +1,6 @@
 import './style.css';
 import { icons } from './icons.js';
-import { GetOverview, GetProjects, GetSessionStats, GetSettings, SetQuiet } from '../wailsjs/go/main/App';
+import { GetOverview, GetPlatform, GetProjects, GetSessionStats } from '../wailsjs/go/main/App';
 
 const state = {
   screen: 'overview',
@@ -37,10 +37,93 @@ function startPolling(fn) {
   pollTimer = setInterval(fn, REFRESH_INTERVAL_MS);
 }
 
+// A poll-driven container.innerHTML replace tears down and recreates every
+// element inside it, even on a tick where nothing actually changed — which,
+// among other things, kills whatever the mouse is currently hovering (e.g. a
+// card's info tooltip), so it flickers shut once a second instead of staying
+// put while read. renderIfChanged skips that rebuild whenever data
+// JSON-matches what's already on screen for key, so a hovered tooltip is
+// only ever disturbed by a poll tick that has real new data to show — never
+// by an idle one. Anything the draw should also react to (e.g. which rows
+// are expanded) must be folded into data, since only data is compared.
+const lastRender = new Map();
+function renderIfChanged(key, data, draw) {
+  const snapshot = JSON.stringify(data);
+  if (lastRender.get(key) === snapshot) return;
+  lastRender.set(key, snapshot);
+  draw();
+}
+
 function navigate(screen) {
   stopPolling();
   state.screen = screen;
   render();
+}
+
+// Stamps data-os on <body> so CSS can scope the sidebar's title-bar inset
+// (macOS's traffic lights need a taller dead zone than Windows/GNOME
+// title bars do) and gate mac-only vibrancy without sniffing the user
+// agent, which the three platforms' WebViews don't distinguish reliably.
+// Runs in parallel with the first render rather than blocking on it — the
+// CSS falls back to the mac inset by default, so a frame or two before this
+// IPC round-trip resolves isn't visually disruptive.
+async function initPlatform() {
+  try {
+    document.body.dataset.os = await GetPlatform();
+  } catch {
+    // Falls back to the default (mac) inset baked into style.css.
+  }
+}
+
+const prefersReducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// animateHeroEntrance plays the once-per-screen-load hero motion: the
+// ring sweeps from 0 to its value, the percent figure counts up alongside
+// it, and the mechanism bars beneath fill in staggered ~50ms apart. Called
+// only from the Overview screen's first render for a given navigate() —
+// never from a poll tick, which would replay this every second and turn a
+// live-updating ring into a strobe (see loadOverview's animate flag).
+function animateHeroEntrance(container, hasPct, percent) {
+  if (prefersReducedMotion()) return;
+
+  const ringFill = container.querySelector('.hero-ring-fill');
+  const figure = container.querySelector('.hero-ring-figure');
+  if (ringFill) {
+    const svg = ringFill.closest('svg');
+    const circumference = parseFloat(svg.dataset.circumference);
+    const targetOffset = ringFill.style.strokeDashoffset;
+    ringFill.style.transition = 'none';
+    ringFill.style.strokeDashoffset = String(circumference);
+    void ringFill.getBoundingClientRect(); // force reflow so the reset above commits before re-enabling the transition
+    requestAnimationFrame(() => {
+      ringFill.style.transition = '';
+      ringFill.style.strokeDashoffset = targetOffset;
+    });
+  }
+
+  if (figure && hasPct) {
+    const target = Math.round(Math.min(100, Math.max(0, percent)));
+    const duration = 500;
+    const start = performance.now();
+    figure.textContent = '0%';
+    requestAnimationFrame(function tick(now) {
+      const t = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      figure.textContent = `${Math.round(eased * target)}%`;
+      if (t < 1) requestAnimationFrame(tick);
+    });
+  }
+
+  container.querySelectorAll('.bar-fill').forEach((el, i) => {
+    const targetWidth = el.style.width;
+    el.style.transition = 'none';
+    el.style.width = '0%';
+    void el.getBoundingClientRect();
+    setTimeout(() => {
+      el.style.transition = '';
+      el.style.width = targetWidth;
+    }, i * 50);
+  });
 }
 
 // Replacing a container's innerHTML on every poll tick can reset its scroll
@@ -66,37 +149,45 @@ function withPreservedScroll(el, mutate) {
   });
 }
 
-// hero renders the primary figure: the headline percent-saved figure (e.g.
-// "38% saved"), a one-line restatement of that same figure as extra runway
-// ("→ ~61% more usage with the same plan") — the actual claim agent-winglet
-// makes — and, once real transcript data exists to size it against, a bytes
-// bar showing suppressed bytes against the real total (transcript content
-// bytes + suppressed) — the same total the headline percent itself is
-// computed from, so the fill width and the number always agree.
-function hero(overview) {
-  // hasTranscriptData gates the bytes bar (it needs a real total, which only
-  // exists once the transcript's been read at SessionEnd) but must not gate
-  // the usage-detail line too — hasActivity alone is enough to explain why
-  // the number above it isn't a percent yet, and that explanation is exactly
-  // what an in-progress session most needs to show instead of going silent.
-  const showUsageLine = overview.hasTranscriptData || overview.hasActivity;
+// heroRing renders the signature radial ring: a quiet 360° track plus
+// an accent fill sized to heroPercent, with the percent figure centered
+// inside it — the ring *is* the number's reading, not a separate element
+// next to a bar. hasTranscriptData (== hasPct server-side, see stats.Percent
+// and buildOverview in app.go) gates whether there's a real percent to show
+// yet; before that, the track renders empty rather than guessing.
+function heroRing(overview) {
+  const hasPct = overview.hasTranscriptData;
+  const percent = hasPct ? Math.min(100, Math.max(0, overview.heroPercent)) : 0;
+  const r = 54;
+  const circumference = 2 * Math.PI * r;
+  const offset = circumference - (percent / 100) * circumference;
   return `
-    <div class="hero">
-      <div class="hero-number">${overview.heroHeadline}</div>
-      ${showUsageLine ? `<div class="hero-usage">${overview.hasTranscriptData ? '→ ' : ''}${overview.heroUsageDetail} ${overview.heroUsageSub}</div>` : ''}
-      ${overview.hasTranscriptData ? heroBar(overview) : ''}
+    <div class="hero-ring-wrap">
+      <svg class="hero-ring" viewBox="0 0 128 128" data-circumference="${circumference.toFixed(2)}">
+        <circle class="hero-ring-track" cx="64" cy="64" r="${r}"></circle>
+        <circle class="hero-ring-fill" cx="64" cy="64" r="${r}" style="stroke-dasharray: ${circumference.toFixed(2)}; stroke-dashoffset: ${offset.toFixed(2)}"></circle>
+      </svg>
+      <div class="hero-ring-figure">${hasPct ? `${Math.round(percent)}%` : '—'}</div>
     </div>`;
 }
 
-function heroBar(overview) {
+// hero renders the primary figure: the signature ring beside the
+// headline percent-saved text (e.g. "38% saved") and a one-line restatement
+// of that same figure as extra runway ("→ ~61% more usage with the same
+// plan") — the actual claim agent-winglet makes.
+function hero(overview) {
+  // hasTranscriptData gates the ring's real percent (it needs the completed
+  // transcript, only read at SessionEnd) but must not gate the usage-detail
+  // line too — hasActivity alone is enough to explain why the number isn't a
+  // percent yet, and that explanation is exactly what an in-progress session
+  // most needs to show instead of going silent.
+  const showUsageLine = overview.hasTranscriptData || overview.hasActivity;
   return `
-    <div class="hero-bar">
-      <div class="hero-bar-track">
-        <div class="hero-bar-fill" style="width: ${Math.min(100, overview.heroPercent).toFixed(1)}%"></div>
-      </div>
-      <div class="hero-bar-labels">
-        <span>${overview.bytesSavedCard.detail} saved</span>
-        <span>${overview.heroTotalBytesLabel} total</span>
+    <div class="hero">
+      ${heroRing(overview)}
+      <div class="hero-body">
+        <div class="hero-number">${overview.heroHeadline}</div>
+        ${showUsageLine ? `<div class="hero-usage">${overview.hasTranscriptData ? '→ ' : ''}${overview.heroUsageDetail} ${overview.heroUsageSub}</div>` : ''}
       </div>
     </div>`;
 }
@@ -145,7 +236,13 @@ function cardRow(overview) {
         .map(
           (c) => `
         <div class="card">
-          <div class="card-label">${c.label}</div>
+          <div class="card-label">
+            ${c.label}
+            <span class="info-affordance" tabindex="0">
+              ${icons.info}
+              <span class="tooltip" role="tooltip">${c.tooltip}</span>
+            </span>
+          </div>
           <div class="card-detail">${c.detail}</div>
           ${c.sub ? `<div class="card-sub">${c.sub}</div>` : ''}
         </div>`
@@ -169,32 +266,56 @@ function statsBlock(overview) {
     ${barList(overview)}`;
 }
 
-async function loadOverview(container) {
+// animate is only true on a screen's first render (see renderOverviewScreen)
+// — poll ticks pass nothing, so the entrance sweep/count-up/stagger
+// plays once per navigate(), not every second.
+async function loadOverview(container, { animate = false } = {}) {
   const o = await GetOverview();
   // Guard against a poll tick landing after the user has already navigated
   // away — GetOverview is async, so a stale response could otherwise clobber
   // whatever screen is now showing.
   if (state.screen !== 'overview') return;
-  withPreservedScroll(container, () => {
-    container.innerHTML = `
-      <h1 class="screen-title">Overview</h1>
-      <p class="screen-subtitle">Lifetime, across ${o.projectCount} project${o.projectCount === 1 ? '' : 's'} and ${o.sessionCount} session${o.sessionCount === 1 ? '' : 's'}.</p>
-      ${statsBlock(o)}
-    `;
+  renderIfChanged('overview', o, () => {
+    withPreservedScroll(container, () => {
+      container.innerHTML = `
+        <h1 class="screen-title">Overview</h1>
+        ${statsBlock(o)}
+      `;
+    });
+    if (animate) animateHeroEntrance(container, o.hasTranscriptData, o.heroPercent);
   });
 }
 
 async function renderOverviewScreen(container) {
+  // Cleared so the first render after (re)entering this screen always draws
+  // — otherwise, revisiting with unchanged data would compare equal to
+  // whatever was last cached and leave the "Loading…" placeholder above stuck
+  // on screen forever.
+  lastRender.delete('overview');
   container.innerHTML = `<div class="empty-state">Loading…</div>`;
-  await loadOverview(container);
+  await loadOverview(container, { animate: true });
   startPolling(() => loadOverview(container));
 }
 
-function statusPill(installed) {
-  if (installed) {
-    return `<span class="status-pill active">${icons.checkCircle} Installed</span>`;
+// heroInline renders the compact one-line summary shown on every collapsed
+// expander (a project row or a session row): the percent-saved headline,
+// the raw bytes behind it in parentheses, and the same figure reframed as
+// extra usage runway — the one line that has to justify expanding the row,
+// so it carries the same three numbers the expanded statsBlock leads with
+// rather than a status readout unrelated to savings. Before the transcript
+// is read (see Overview.HasTranscriptData), pct/bytes/runway aren't
+// comparable numbers yet, so this falls back to the plain heroHeadline
+// ("No data yet" / "X suppressed so far") instead of parenthesizing a
+// figure that doesn't mean anything yet.
+function heroInline(overview) {
+  if (!overview.hasTranscriptData) {
+    return `<span class="hero-inline">${overview.heroHeadline}</span>`;
   }
-  return `<span class="status-pill stale">${icons.circle} Not wired in</span>`;
+  return `
+    <span class="hero-inline">
+      ${overview.heroHeadline} <span class="hero-inline-bytes">(${overview.bytesSavedCard.detail})</span>
+      <span class="hero-inline-usage">${overview.heroUsageDetail}</span>
+    </span>`;
 }
 
 // loadProjects fetches and renders the Projects screen's rows. Used both for
@@ -222,68 +343,73 @@ async function loadProjects(container) {
   if (state.screen !== 'projects') return;
 
   if (!rows || rows.length === 0) {
-    withPreservedScroll(container, () => {
-      container.innerHTML = `
-        <h1 class="screen-title">Projects</h1>
-        <p class="screen-subtitle">Projects with the agent-winglet hook installed.</p>
-        <div class="empty-state">No projects registered yet — the hook installs globally; a project is added automatically the first time Claude Code starts a session in it.</div>
-      `;
+    renderIfChanged('projects', { empty: true }, () => {
+      withPreservedScroll(container, () => {
+        container.innerHTML = `
+          <h1 class="screen-title">Projects</h1>
+          <p class="screen-subtitle">Projects with the agent-winglet hook installed.</p>
+          <div class="empty-state">No projects registered yet — the hook installs globally; a project is added automatically the first time Claude Code starts a session in it.</div>
+        `;
+      });
     });
     return;
   }
 
-  withPreservedScroll(container, () => {
-    container.innerHTML = `
-      <h1 class="screen-title">Projects</h1>
-      <p class="screen-subtitle">${rows.length} registered project${rows.length === 1 ? '' : 's'}.</p>
-      <div id="project-list"></div>
-    `;
+  // expanded is folded into the compared data so toggling a row forces a
+  // redraw even when the rows themselves haven't changed since the last
+  // poll tick — see renderIfChanged's own doc comment.
+  renderIfChanged('projects', { rows, expanded: [...state.expanded].sort() }, () => {
+    withPreservedScroll(container, () => {
+      container.innerHTML = `
+        <h1 class="screen-title">Projects</h1>
+        <div id="project-list"></div>
+      `;
 
-    const list = container.querySelector('#project-list');
-    list.innerHTML = rows
-      .map((row) => {
-        const cachedSessions = state.sessionsByProject.get(row.path);
-        const seeded = state.expanded.has(row.path) && cachedSessions ? sessionsSectionMarkup(row.path, cachedSessions) : '';
-        return `
-      <div class="project-row ${state.expanded.has(row.path) ? 'expanded' : ''}" data-path="${row.path}">
-        <button class="project-row-header" data-toggle="${row.path}">
-          <span class="project-row-chevron">${icons.chevron}</span>
-          <div>
-            <div class="project-name">${row.name}</div>
-            <div class="project-path">${row.path}</div>
+      const list = container.querySelector('#project-list');
+      list.innerHTML = rows
+        .map((row) => {
+          const cachedSessions = state.sessionsByProject.get(row.path);
+          const seeded = state.expanded.has(row.path) && cachedSessions ? sessionsSectionMarkup(row.path, cachedSessions) : '';
+          return `
+        <div class="project-row ${state.expanded.has(row.path) ? 'expanded' : ''}" data-path="${row.path}">
+          <button class="project-row-header" data-toggle="${row.path}">
+            <span class="project-row-chevron">${icons.chevron}</span>
+            <div>
+              <div class="project-name">${row.name}</div>
+              <div class="project-path">${row.path}</div>
+            </div>
+            <span class="project-row-spacer"></span>
+            ${heroInline(row.overview)}
+          </button>
+          <div class="project-row-detail">
+            ${statsBlock(row.overview)}
+            <div class="sessions-section" data-sessions="${row.path}">${seeded}</div>
           </div>
-          <span class="project-row-spacer"></span>
-          <span class="project-hero-inline">${row.overview.heroHeadline}</span>
-          ${statusPill(row.installed)}
-        </button>
-        <div class="project-row-detail">
-          ${statsBlock(row.overview)}
-          <div class="sessions-section" data-sessions="${row.path}">${seeded}</div>
-        </div>
-      </div>`;
-      })
-      .join('');
+        </div>`;
+        })
+        .join('');
 
-    list.querySelectorAll('[data-toggle]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const path = btn.getAttribute('data-toggle');
-        if (state.expanded.has(path)) {
-          state.expanded.delete(path);
-        } else {
-          state.expanded.add(path);
-        }
-        loadProjects(container);
+      list.querySelectorAll('[data-toggle]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const path = btn.getAttribute('data-toggle');
+          if (state.expanded.has(path)) {
+            state.expanded.delete(path);
+          } else {
+            state.expanded.add(path);
+          }
+          loadProjects(container);
+        });
       });
-    });
 
-    // Wire the toggle handlers for whatever session rows were just seeded
-    // from cache above — renderSessionsSection (called below, once its own
-    // fetch resolves) re-wires these again once it swaps in fresh data, same
-    // as it always has.
-    for (const row of rows) {
-      const target = list.querySelector(`[data-sessions="${CSS.escape(row.path)}"]`);
-      if (target) wireSessionToggles(container, target, row.path);
-    }
+      // Wire the toggle handlers for whatever session rows were just seeded
+      // from cache above — renderSessionsSection (called below, once its own
+      // fetch resolves) re-wires these again once it swaps in fresh data, same
+      // as it always has.
+      for (const row of rows) {
+        const target = list.querySelector(`[data-sessions="${CSS.escape(row.path)}"]`);
+        if (target) wireSessionToggles(container, target, row.path);
+      }
+    });
   });
 
   for (const row of rows) {
@@ -294,6 +420,8 @@ async function loadProjects(container) {
 }
 
 async function renderProjectsScreen(container) {
+  // See renderOverviewScreen's identical reset for why this can't be skipped.
+  lastRender.delete('projects');
   container.innerHTML = `<div class="empty-state">Loading…</div>`;
   await loadProjects(container);
   startPolling(() => loadProjects(container));
@@ -320,7 +448,7 @@ function sessionsSectionMarkup(projectPath, sessions) {
             <span class="project-row-chevron">${icons.chevron}</span>
             <span class="session-id">${row.sessionId}</span>
             <span class="project-row-spacer"></span>
-            <span class="project-hero-inline">${row.overview.heroHeadline}</span>
+            ${heroInline(row.overview)}
           </button>
           <div class="session-row-detail">${statsBlock(row.overview)}</div>
         </div>`;
@@ -369,38 +497,23 @@ async function renderSessionsSection(container, projectPath) {
   const target = container.querySelector(`[data-sessions="${CSS.escape(projectPath)}"]`);
   if (!target) return;
 
-  withPreservedScroll(container, () => {
-    target.innerHTML = sessionsSectionMarkup(projectPath, sessions);
-    wireSessionToggles(container, target, projectPath);
+  // expandedHere is folded into the compared data so expanding/collapsing an
+  // individual session row forces a redraw even when its stats haven't moved
+  // since the last poll tick — see renderIfChanged's own doc comment.
+  const expandedHere = sessions.map((s) => `${projectPath}::${s.sessionId}`).filter((key) => state.expandedSessions.has(key));
+  renderIfChanged(`sessions:${projectPath}`, { sessions, expandedHere }, () => {
+    withPreservedScroll(container, () => {
+      target.innerHTML = sessionsSectionMarkup(projectPath, sessions);
+      wireSessionToggles(container, target, projectPath);
+    });
   });
 }
 
-async function renderSettingsScreen(container) {
-  container.innerHTML = `<div class="empty-state">Loading…</div>`;
-  const settings = await GetSettings();
-
+function renderSettingsScreen(container) {
   container.innerHTML = `
     <h1 class="screen-title">Settings</h1>
-    <p class="screen-subtitle">Only the levers that actually have a wired backend today.</p>
-    <div class="settings-row">
-      <div>
-        <div class="settings-row-label">Quiet mode</div>
-        <div class="settings-row-desc">Suppresses the end-of-session savings receipt message. Every mechanism (dedup, budgeting, retirement, the compact nudge) keeps running either way.</div>
-      </div>
-      <button class="toggle ${settings.quiet ? 'on' : ''}" id="quiet-toggle" aria-pressed="${settings.quiet}">
-        <span class="toggle-knob"></span>
-      </button>
-    </div>
-    <p class="settings-note">This writes ~/.agent-winglet/config.json. AGENT_WINGLET_QUIET, if set in a terminal session's environment, still takes precedence over this toggle for that session.</p>
+    <div class="empty-state">Nothing to configure yet.</div>
   `;
-
-  container.querySelector('#quiet-toggle').addEventListener('click', async (e) => {
-    const btn = e.currentTarget;
-    const next = !btn.classList.contains('on');
-    btn.classList.toggle('on', next);
-    btn.setAttribute('aria-pressed', String(next));
-    await SetQuiet(next);
-  });
 }
 
 function renderMain(container) {
@@ -434,4 +547,5 @@ function render() {
   renderMain(app.querySelector('#main'));
 }
 
+initPlatform();
 render();

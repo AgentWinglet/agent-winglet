@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	goruntime "runtime"
 	"sort"
 
-	"github.com/umitkaanusta/agent-winglet/internal/config"
 	"github.com/umitkaanusta/agent-winglet/internal/registry"
 	"github.com/umitkaanusta/agent-winglet/internal/stats"
 )
@@ -29,17 +29,28 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 }
 
-// Card is one of the three summary cards on the card row: a label, a
-// pre-formatted primary detail string, and an optional secondary line shown
-// beneath it (e.g. a percent under a byte count, or a fixed caption under
-// the net-gains multiplier).
-type Card struct {
-	Label  string `json:"label"`
-	Detail string `json:"detail"`
-	Sub    string `json:"sub"`
+// GetPlatform returns the Go-side runtime.GOOS ("darwin", "windows", or
+// "linux") so the frontend can scope OS-specific chrome (the sidebar's
+// traffic-light inset padding, mac-only vibrancy) via a data-os attribute
+// instead of sniffing the user agent, which WebView2/WebKitGTK/WKWebView
+// don't distinguish reliably.
+func (a *App) GetPlatform() string {
+	return goruntime.GOOS
 }
 
-// BarRow is one row of the suppressed-by-mechanism bar list (spec.md §4): a
+// Card is one of the three summary cards on the card row: a label, a
+// hover-tooltip explaining how that figure is derived (real measurement vs.
+// estimate, and from what), a pre-formatted primary detail string, and an
+// optional secondary line shown beneath it (e.g. a percent under a byte
+// count, or a fixed caption under the net-gains multiplier).
+type Card struct {
+	Label   string `json:"label"`
+	Tooltip string `json:"tooltip"`
+	Detail  string `json:"detail"`
+	Sub     string `json:"sub"`
+}
+
+// BarRow is one row of the suppressed-by-mechanism bar list: a
 // label, a hover-tooltip explanation, this mechanism's share of processed
 // bytes (already computed via stats.PartPercent, so the frontend never
 // re-derives it), a fill ratio relative to the largest mechanism in this
@@ -214,11 +225,20 @@ const (
 		"to a head/tail summary."
 	retireTooltip = "Once a session moves from investigating to editing, earlier read/search/fetch output is " +
 		"assumed to have served its purpose and is archived instead of replayed."
+
+	bytesSavedTooltip = "This is a real measurement, not an estimate. It is the size of the tool output " +
+		"(command results, file reads, search results) that agent-winglet removed from the model's context."
+	tokensSavedTooltip = "This is an estimate. It applies the percent saved above to the real token count " +
+		"from the transcript."
+	moneySavedTooltip = "Based on official API usage rates for the model in this session. Cache-read tokens " +
+		"and output tokens are excluded."
 )
 
 // barRows builds the suppressed-by-mechanism bar list: one row per
 // mechanism, descending by bytes, fill width relative to the largest
-// mechanism in t (not an absolute 0-100% of total bytes) — see spec.md §4.
+// mechanism in t (not an absolute 0-100% of total bytes) — otherwise a
+// session dominated by one mechanism would render the other two as
+// imperceptible slivers instead of comparable bars.
 // A mechanism with zero bytes still gets a row (fill ratio 0) so the list
 // always shows all three, in whatever order this rollup's own numbers
 // produce. total is the same real total buildOverview passes to
@@ -359,13 +379,13 @@ func buildOverview(t overviewTotals, projectCount, sessionCount int) Overview {
 		HasTranscriptData:   hasTranscriptData,
 		HasActivity:         hasActivity,
 		BytesSavedCard: Card{
-			Label: "Bytes saved", Detail: bytesSavedDetail,
+			Label: "Bytes saved", Tooltip: bytesSavedTooltip, Detail: bytesSavedDetail,
 		},
 		TokensSavedCard: Card{
-			Label: "Tokens saved", Detail: tokensSavedDetail,
+			Label: "Tokens saved", Tooltip: tokensSavedTooltip, Detail: tokensSavedDetail,
 		},
 		DollarSavedCard: Card{
-			Label: "Money saved", Detail: dollarDetail,
+			Label: "Money saved", Tooltip: moneySavedTooltip, Detail: dollarDetail,
 		},
 		Bars:         barRows(t, total),
 		ProjectCount: projectCount,
@@ -418,8 +438,8 @@ func formatBytes(n int64) string {
 // (not just registry presence — see internal/registry's doc comment) via
 // either the global ~/.claude/settings.json install.sh wires by default, or
 // a legacy/opt-in per-project .claude/settings.json entry, and its lifetime
-// tally (Overview) — the same shape the Overview screen uses (see spec.md
-// §6), so the frontend renders both with one shared component.
+// tally (Overview) — the same shape the Overview screen uses, so the
+// frontend renders both with one shared component.
 type ProjectRow struct {
 	Name      string   `json:"name"`
 	Path      string   `json:"path"`
@@ -489,30 +509,4 @@ func (a *App) GetSessionStats(projectDir string) ([]SessionRow, error) {
 		})
 	}
 	return rows, nil
-}
-
-// Settings is the Settings screen's data: just the quiet-mode toggle.
-// Dedup, budgeting, retirement, and the compact nudge have no independent
-// on/off switch in cmd/ledger-hook today, so there's nothing else to wire a
-// toggle to yet.
-type Settings struct {
-	Quiet bool `json:"quiet"`
-}
-
-func (a *App) GetSettings() (Settings, error) {
-	cfg, err := config.Load()
-	if err != nil {
-		return Settings{}, err
-	}
-	return Settings{Quiet: cfg.Quiet}, nil
-}
-
-// SetQuiet writes the config-file quiet-mode toggle. This only affects the
-// SessionEnd receipt message; every underlying mechanism (dedup, budgeting,
-// retirement, the compact nudge) stays fully active either way — see
-// cmd/ledger-hook's quiet() doc comment for why a config file exists
-// alongside AGENT_WINGLET_QUIET (the env var still wins when set, for a
-// terminal-launched session this app's toggle can't reach).
-func (a *App) SetQuiet(quiet bool) error {
-	return config.Save(&config.Config{Quiet: quiet})
 }

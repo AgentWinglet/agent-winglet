@@ -50,6 +50,12 @@ func main() {
 				Title:   "Agent Winglet",
 				Message: "Local-only dashboard for agent-winglet's Claude Code hooks.",
 			},
+			// Lets the sidebar's backdrop-filter blur (style.css, gated on
+			// data-os="darwin") show real desktop vibrancy behind it instead
+			// of just a translucent solid color. Windows/Linux are
+			// unaffected: this is a Mac-only option, and the CSS blur it
+			// enables is itself gated to data-os=darwin.
+			WindowIsTranslucent: true,
 		},
 	})
 	if err != nil {

@@ -28,6 +28,7 @@ export namespace main {
 	}
 	export class Card {
 	    label: string;
+	    tooltip: string;
 	    detail: string;
 	    sub: string;
 	
@@ -38,6 +39,7 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.label = source["label"];
+	        this.tooltip = source["tooltip"];
 	        this.detail = source["detail"];
 	        this.sub = source["sub"];
 	    }
@@ -167,18 +169,6 @@ export namespace main {
 		    }
 		    return a;
 		}
-	}
-	export class Settings {
-	    quiet: boolean;
-	
-	    static createFrom(source: any = {}) {
-	        return new Settings(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.quiet = source["quiet"];
-	    }
 	}
 
 }
