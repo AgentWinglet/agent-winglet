@@ -700,6 +700,64 @@ func TestHandleSessionEndReportsRetiredCall(t *testing.T) {
 	}
 }
 
+// TestHandlePostToolUseTracksTranscriptUsageLive is the regression test for
+// the bug report this fix addresses: a session's transcript-derived usage
+// (tokens/cost/content bytes — what the desktop app's %-saved and $-saved
+// figures are computed from) used to only ever get read once, at
+// SessionEnd, which meant an in-progress session always looked identical to
+// an untouched one no matter how long it ran or how fast the app polled.
+// This asserts the per-session stats file already carries real, nonzero
+// transcript usage mid-session — before any SessionEnd call — and that a
+// second PostToolUse call after the transcript grows further adds to that
+// total rather than losing or re-double-counting the first call's data.
+func TestHandlePostToolUseTracksTranscriptUsageLive(t *testing.T) {
+	dir := t.TempDir()
+	transcriptPath := writeTranscriptFixture(t, dir)
+
+	first := bashInput(t, dir, "sess1", "echo one", bashOutput{Stdout: "one\n"})
+	first.TranscriptPath = transcriptPath
+	if _, err := handle(first); err != nil {
+		t.Fatalf("first call errored: %v", err)
+	}
+
+	sess, err := stats.LoadSession(dir, "sess1")
+	if err != nil {
+		t.Fatalf("LoadSession errored: %v", err)
+	}
+	if sess.TranscriptTokens == 0 || sess.TranscriptCostUSD == 0 || sess.TranscriptContentBytes == 0 {
+		t.Fatalf("expected nonzero transcript usage after a single PostToolUse call, mid-session (no SessionEnd yet), got %+v", sess)
+	}
+	firstTokens := sess.TranscriptTokens
+
+	// Simulate the transcript growing between tool calls (another assistant
+	// turn lands) and a second PostToolUse call — the delta must add on top
+	// of the first call's total, not replace or double-count it.
+	f, err := os.OpenFile(transcriptPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("OpenFile for append errored: %v", err)
+	}
+	extraLine := `{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":40,"output_tokens":10}}}` + "\n"
+	if _, err := f.WriteString(extraLine); err != nil {
+		t.Fatalf("append WriteString errored: %v", err)
+	}
+	f.Close()
+
+	second := bashInput(t, dir, "sess1", "echo two", bashOutput{Stdout: "two\n"})
+	second.TranscriptPath = transcriptPath
+	if _, err := handle(second); err != nil {
+		t.Fatalf("second call errored: %v", err)
+	}
+
+	sess2, err := stats.LoadSession(dir, "sess1")
+	if err != nil {
+		t.Fatalf("second LoadSession errored: %v", err)
+	}
+	if sess2.TranscriptTokens != firstTokens+40 {
+		t.Fatalf("TranscriptTokens after second call = %d, want %d (first call's %d + the new line's 40 input tokens)",
+			sess2.TranscriptTokens, firstTokens+40, firstTokens)
+	}
+}
+
 func TestHandleSessionEndReadsTranscriptUsage(t *testing.T) {
 	dir := t.TempDir()
 	repeatIn := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
@@ -739,6 +797,74 @@ func TestHandleSessionEndReadsTranscriptUsage(t *testing.T) {
 	}
 	if sess.TranscriptContentBytes == 0 {
 		t.Fatalf("expected the per-session file's TranscriptContentBytes to be persisted, got %+v", sess)
+	}
+}
+
+// TestHandleSessionEndFoldsTranscriptOnlySessionIntoLifetimeSilently covers
+// the session shape that used to fall through the cracks entirely: no Bash
+// calls at all (a Read-only/Edit-only session), so dedup/budget/retire never
+// fire and IsZero() stays true throughout — but PostToolUse still tracked
+// real transcript usage live (see recordTranscriptDelta, unconditional on
+// tool name). Before this fix, IsZero() gated the entire SessionEnd fold, so
+// this session's real transcript data was silently dropped: never folded
+// into lifetime, never marked Ended, and — most visibly — would have kept
+// getting summed as "still live" by the desktop app's Overview/Projects
+// rollup forever, even after the session was long gone. It should now fold
+// into lifetime and get marked Ended, while still emitting no receipt (a
+// suppression-activity report with nothing to report stays silent).
+func TestHandleSessionEndFoldsTranscriptOnlySessionIntoLifetimeSilently(t *testing.T) {
+	dir := t.TempDir()
+	readIn := hookInput{
+		SessionID:      "sess1",
+		Cwd:            dir,
+		HookEventName:  "PostToolUse",
+		ToolName:       "Read",
+		ToolInput:      json.RawMessage(`{"file_path":"/tmp/f"}`),
+		ToolResponse:   json.RawMessage(`{"type":"text","file":{"content":"x"}}`),
+		TranscriptPath: writeTranscriptFixture(t, dir),
+	}
+	if _, err := handle(readIn); err != nil {
+		t.Fatalf("Read call errored: %v", err)
+	}
+
+	sessBeforeEnd, err := stats.LoadSession(dir, "sess1")
+	if err != nil {
+		t.Fatalf("LoadSession errored: %v", err)
+	}
+	if !sessBeforeEnd.IsZero() {
+		t.Fatalf("expected IsZero()=true (no Bash dedup/trim/retire fired), got %+v", sessBeforeEnd)
+	}
+	if sessBeforeEnd.TranscriptContentBytes == 0 {
+		t.Fatalf("expected live transcript tracking to have recorded real usage from the Read call, got %+v", sessBeforeEnd)
+	}
+
+	in := sessionEndInput("sess1", dir)
+	in.TranscriptPath = readIn.TranscriptPath
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("SessionEnd handle errored: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("a transcript-only session (no suppression activity) should still emit no receipt, got %+v", out)
+	}
+
+	sess, err := stats.LoadSession(dir, "sess1")
+	if err != nil {
+		t.Fatalf("LoadSession after SessionEnd errored: %v", err)
+	}
+	if !sess.Ended {
+		t.Fatalf("expected Ended=true after SessionEnd, so the app's live rollup stops double-adding this session")
+	}
+
+	lifetime, err := stats.LoadLifetime(dir)
+	if err != nil {
+		t.Fatalf("LoadLifetime errored: %v", err)
+	}
+	if lifetime.Sessions != 1 {
+		t.Fatalf("Sessions = %d, want 1 (a transcript-only session should still count toward lifetime.Sessions)", lifetime.Sessions)
+	}
+	if lifetime.TranscriptContentBytes == 0 {
+		t.Fatalf("expected the transcript-only session's usage to be folded into lifetime, got %+v", lifetime)
 	}
 }
 

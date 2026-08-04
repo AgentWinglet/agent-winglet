@@ -404,8 +404,41 @@ func recordStat(projectDir, sessionID string, mutate func(*stats.Session)) error
 	return stats.SaveSession(projectDir, sessionID, s)
 }
 
+// recordTranscriptDelta reads whatever the transcript gained since this
+// session's last recorded offset and folds it in — the incremental
+// counterpart to handleSessionEnd's one-shot full read. Bounded to new
+// content only (transcript.ReadSessionUsageFrom), so running this on every
+// PostToolUse costs O(this call's new lines), not O(the whole transcript so
+// far) — the latter would make hook latency grow with session length, in a
+// tool whose entire purpose is cutting round-trip cost, not adding to it.
+// No-ops (cheaply) when nothing new has landed since the last call.
+func recordTranscriptDelta(projectDir string, in hookInput) error {
+	s, err := stats.LoadSession(projectDir, in.SessionID)
+	if err != nil {
+		return err
+	}
+	delta, newOffset, err := transcript.ReadSessionUsageFrom(in.TranscriptPath, s.TranscriptOffset)
+	if err != nil {
+		return err
+	}
+	if newOffset == s.TranscriptOffset {
+		return nil
+	}
+	s.AddTranscriptUsage(delta, newOffset)
+	return stats.SaveSession(projectDir, in.SessionID, s)
+}
+
 func handlePostToolUse(in hookInput) (*hookOutput, error) {
 	root := projectroot.Resolve(in.Cwd)
+
+	// Live transcript-usage tracking runs unconditionally, before any of the
+	// tool-specific branches below (several of which return early) — the
+	// transcript grows on every tool call, not just the ones a mechanism
+	// below fires on, so this can't be folded into any single branch's
+	// early return without under-counting the calls that take other paths.
+	if err := recordTranscriptDelta(root, in); err != nil {
+		return nil, err
+	}
 
 	out, pastBoundary, err := handlePhaseBoundary(in, root)
 	if err != nil {
@@ -530,22 +563,42 @@ func handleSessionEnd(in hookInput) (*hookOutput, error) {
 	if err != nil {
 		return nil, err
 	}
-	if sess.IsZero() {
-		return nil, nil
-	}
+	hadMechanismActivity := !sess.IsZero()
 
 	// Read errors are swallowed (fields stay zero) — the transcript is real
 	// usage data if the read succeeds, and a "no data yet" fallback exists
 	// downstream (see stats.Session.TranscriptTokens' doc comment) for
-	// whenever it doesn't.
+	// whenever it doesn't. This full re-read (as opposed to the incremental,
+	// offset-based one PostToolUse uses — see recordTranscriptDelta) is the
+	// authoritative reconciliation pass: it overwrites whatever got
+	// accumulated turn-by-turn with one clean read of the whole final file.
 	if usage, err := transcript.ReadSessionUsage(in.TranscriptPath); err == nil {
 		sess.SetTranscriptUsage(usage)
 	}
-	// Persist the transcript usage onto the per-session file too, not just
-	// the in-memory copy folded into lifetime below — GetSessionStats reads
-	// this file back later for the per-session breakdown, and without this
-	// write it would always see zero transcript data even for a completed
-	// session.
+
+	// A session worth folding into lifetime is one with either suppression
+	// activity or real transcript usage — not just the former. Before
+	// PostToolUse tracked transcript usage live, "no mechanism fired" and
+	// "nothing worth recording" were the same condition; they no longer are
+	// — a session that only read/edited files (no Bash dedup/trim, no
+	// post-boundary retire) still has a real, nonzero transcriptContentBytes
+	// figure the desktop app's live Overview/Projects rollup needs.
+	if !hadMechanismActivity && sess.TranscriptContentBytes == 0 {
+		return nil, nil
+	}
+
+	// Ended marks this session as already counted in lifetime.stats.json —
+	// the desktop app's live rollup (cmd/agent-winglet-app) adds any
+	// still-on-disk session file that ISN'T Ended on top of lifetime, so
+	// without this flag a finished session would get summed twice: once via
+	// lifetime, once via its still-present (session files are never
+	// deleted) stats file.
+	sess.Ended = true
+	// Persist onto the per-session file too, not just the in-memory copy
+	// folded into lifetime below — GetSessionStats reads this file back
+	// later for the per-session breakdown, and without this write it would
+	// always see zero transcript data (and Ended=false) even for a
+	// completed session.
 	if err := stats.SaveSession(root, in.SessionID, sess); err != nil {
 		return nil, err
 	}
@@ -559,7 +612,11 @@ func handleSessionEnd(in hookInput) (*hookOutput, error) {
 		return nil, err
 	}
 
-	if quiet() {
+	// The printed receipt stays gated on suppression activity specifically
+	// — "0 things suppressed" is noise even when real transcript pricing
+	// data exists to report (see receiptMessage's doc comment: it's a
+	// suppression report, not a general usage report).
+	if quiet() || !hadMechanismActivity {
 		return nil, nil
 	}
 
