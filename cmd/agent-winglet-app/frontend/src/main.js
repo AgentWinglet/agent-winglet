@@ -279,7 +279,6 @@ async function loadOverview(container, { animate = false } = {}) {
     withPreservedScroll(container, () => {
       container.innerHTML = `
         <h1 class="screen-title">Overview</h1>
-        <p class="screen-subtitle">Lifetime, across ${o.projectCount} project${o.projectCount === 1 ? '' : 's'} and ${o.sessionCount} session${o.sessionCount === 1 ? '' : 's'}.</p>
         ${statsBlock(o)}
       `;
     });
@@ -298,11 +297,25 @@ async function renderOverviewScreen(container) {
   startPolling(() => loadOverview(container));
 }
 
-function statusPill(installed) {
-  if (installed) {
-    return `<span class="status-pill active">${icons.checkCircle} Installed</span>`;
+// heroInline renders the compact one-line summary shown on every collapsed
+// expander (a project row or a session row): the percent-saved headline,
+// the raw bytes behind it in parentheses, and the same figure reframed as
+// extra usage runway — the one line that has to justify expanding the row,
+// so it carries the same three numbers the expanded statsBlock leads with
+// rather than a status readout unrelated to savings. Before the transcript
+// is read (see Overview.HasTranscriptData), pct/bytes/runway aren't
+// comparable numbers yet, so this falls back to the plain heroHeadline
+// ("No data yet" / "X suppressed so far") instead of parenthesizing a
+// figure that doesn't mean anything yet.
+function heroInline(overview) {
+  if (!overview.hasTranscriptData) {
+    return `<span class="hero-inline">${overview.heroHeadline}</span>`;
   }
-  return `<span class="status-pill stale">${icons.circle} Not wired in</span>`;
+  return `
+    <span class="hero-inline">
+      ${overview.heroHeadline} <span class="hero-inline-bytes">(${overview.bytesSavedCard.detail})</span>
+      <span class="hero-inline-usage">${overview.heroUsageDetail}</span>
+    </span>`;
 }
 
 // loadProjects fetches and renders the Projects screen's rows. Used both for
@@ -349,7 +362,6 @@ async function loadProjects(container) {
     withPreservedScroll(container, () => {
       container.innerHTML = `
         <h1 class="screen-title">Projects</h1>
-        <p class="screen-subtitle">${rows.length} registered project${rows.length === 1 ? '' : 's'}.</p>
         <div id="project-list"></div>
       `;
 
@@ -367,8 +379,7 @@ async function loadProjects(container) {
               <div class="project-path">${row.path}</div>
             </div>
             <span class="project-row-spacer"></span>
-            <span class="project-hero-inline">${row.overview.heroHeadline}</span>
-            ${statusPill(row.installed)}
+            ${heroInline(row.overview)}
           </button>
           <div class="project-row-detail">
             ${statsBlock(row.overview)}
@@ -437,7 +448,7 @@ function sessionsSectionMarkup(projectPath, sessions) {
             <span class="project-row-chevron">${icons.chevron}</span>
             <span class="session-id">${row.sessionId}</span>
             <span class="project-row-spacer"></span>
-            <span class="project-hero-inline">${row.overview.heroHeadline}</span>
+            ${heroInline(row.overview)}
           </button>
           <div class="session-row-detail">${statsBlock(row.overview)}</div>
         </div>`;

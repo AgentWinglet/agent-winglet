@@ -469,33 +469,6 @@ body {
   margin-top: 4px;
 }
 
-/* --- Status pill --- */
-
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11px;
-  font-weight: 600;
-  padding: 3px 8px;
-  border-radius: 100px;
-}
-
-.status-pill svg {
-  width: 11px;
-  height: 11px;
-}
-
-.status-pill.active {
-  color: var(--accent);
-  background: var(--accent-bg);
-}
-
-.status-pill.stale {
-  color: var(--muted);
-  background: var(--muted-bg);
-}
-
 /* --- Projects list --- */
 
 .project-row {
@@ -549,11 +522,23 @@ body {
   flex: 1;
 }
 
-.project-hero-inline {
+.hero-inline {
   font-family: var(--font-display);
   font-weight: 500;
   font-size: 12px;
+  color: var(--text-primary);
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.hero-inline-bytes {
   color: var(--text-secondary);
+}
+
+.hero-inline-usage {
+  color: var(--accent);
+  font-weight: 600;
+  margin-left: 4px;
 }
 
 .project-row-detail {
