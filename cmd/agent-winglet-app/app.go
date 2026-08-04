@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	goruntime "runtime"
 	"sort"
 
 	"github.com/umitkaanusta/agent-winglet/internal/config"
@@ -29,6 +30,15 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 }
 
+// GetPlatform returns the Go-side runtime.GOOS ("darwin", "windows", or
+// "linux") so the frontend can scope OS-specific chrome (the sidebar's
+// traffic-light inset padding, mac-only vibrancy) via a data-os attribute
+// instead of sniffing the user agent, which WebView2/WebKitGTK/WKWebView
+// don't distinguish reliably.
+func (a *App) GetPlatform() string {
+	return goruntime.GOOS
+}
+
 // Card is one of the three summary cards on the card row: a label, a
 // pre-formatted primary detail string, and an optional secondary line shown
 // beneath it (e.g. a percent under a byte count, or a fixed caption under
@@ -39,7 +49,7 @@ type Card struct {
 	Sub    string `json:"sub"`
 }
 
-// BarRow is one row of the suppressed-by-mechanism bar list (spec.md §4): a
+// BarRow is one row of the suppressed-by-mechanism bar list: a
 // label, a hover-tooltip explanation, this mechanism's share of processed
 // bytes (already computed via stats.PartPercent, so the frontend never
 // re-derives it), a fill ratio relative to the largest mechanism in this
@@ -218,7 +228,9 @@ const (
 
 // barRows builds the suppressed-by-mechanism bar list: one row per
 // mechanism, descending by bytes, fill width relative to the largest
-// mechanism in t (not an absolute 0-100% of total bytes) — see spec.md §4.
+// mechanism in t (not an absolute 0-100% of total bytes) — otherwise a
+// session dominated by one mechanism would render the other two as
+// imperceptible slivers instead of comparable bars.
 // A mechanism with zero bytes still gets a row (fill ratio 0) so the list
 // always shows all three, in whatever order this rollup's own numbers
 // produce. total is the same real total buildOverview passes to
@@ -418,8 +430,8 @@ func formatBytes(n int64) string {
 // (not just registry presence — see internal/registry's doc comment) via
 // either the global ~/.claude/settings.json install.sh wires by default, or
 // a legacy/opt-in per-project .claude/settings.json entry, and its lifetime
-// tally (Overview) — the same shape the Overview screen uses (see spec.md
-// §6), so the frontend renders both with one shared component.
+// tally (Overview) — the same shape the Overview screen uses, so the
+// frontend renders both with one shared component.
 type ProjectRow struct {
 	Name      string   `json:"name"`
 	Path      string   `json:"path"`

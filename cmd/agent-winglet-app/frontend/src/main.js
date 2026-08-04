@@ -1,6 +1,6 @@
 import './style.css';
 import { icons } from './icons.js';
-import { GetOverview, GetProjects, GetSessionStats, GetSettings, SetQuiet } from '../wailsjs/go/main/App';
+import { GetOverview, GetPlatform, GetProjects, GetSessionStats, GetSettings, SetQuiet } from '../wailsjs/go/main/App';
 
 const state = {
   screen: 'overview',
@@ -43,6 +43,72 @@ function navigate(screen) {
   render();
 }
 
+// Stamps data-os on <body> so CSS can scope the sidebar's title-bar inset
+// (macOS's traffic lights need a taller dead zone than Windows/GNOME
+// title bars do) and gate mac-only vibrancy without sniffing the user
+// agent, which the three platforms' WebViews don't distinguish reliably.
+// Runs in parallel with the first render rather than blocking on it — the
+// CSS falls back to the mac inset by default, so a frame or two before this
+// IPC round-trip resolves isn't visually disruptive.
+async function initPlatform() {
+  try {
+    document.body.dataset.os = await GetPlatform();
+  } catch {
+    // Falls back to the default (mac) inset baked into style.css.
+  }
+}
+
+const prefersReducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// animateHeroEntrance plays the once-per-screen-load hero motion: the
+// ring sweeps from 0 to its value, the percent figure counts up alongside
+// it, and the mechanism bars beneath fill in staggered ~50ms apart. Called
+// only from the Overview screen's first render for a given navigate() —
+// never from a poll tick, which would replay this every second and turn a
+// live-updating ring into a strobe (see loadOverview's animate flag).
+function animateHeroEntrance(container, hasPct, percent) {
+  if (prefersReducedMotion()) return;
+
+  const ringFill = container.querySelector('.hero-ring-fill');
+  const figure = container.querySelector('.hero-ring-figure');
+  if (ringFill) {
+    const svg = ringFill.closest('svg');
+    const circumference = parseFloat(svg.dataset.circumference);
+    const targetOffset = ringFill.style.strokeDashoffset;
+    ringFill.style.transition = 'none';
+    ringFill.style.strokeDashoffset = String(circumference);
+    void ringFill.getBoundingClientRect(); // force reflow so the reset above commits before re-enabling the transition
+    requestAnimationFrame(() => {
+      ringFill.style.transition = '';
+      ringFill.style.strokeDashoffset = targetOffset;
+    });
+  }
+
+  if (figure && hasPct) {
+    const target = Math.round(Math.min(100, Math.max(0, percent)));
+    const duration = 500;
+    const start = performance.now();
+    figure.textContent = '0%';
+    requestAnimationFrame(function tick(now) {
+      const t = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      figure.textContent = `${Math.round(eased * target)}%`;
+      if (t < 1) requestAnimationFrame(tick);
+    });
+  }
+
+  container.querySelectorAll('.bar-fill').forEach((el, i) => {
+    const targetWidth = el.style.width;
+    el.style.transition = 'none';
+    el.style.width = '0%';
+    void el.getBoundingClientRect();
+    setTimeout(() => {
+      el.style.transition = '';
+      el.style.width = targetWidth;
+    }, i * 50);
+  });
+}
+
 // Replacing a container's innerHTML on every poll tick can reset its scroll
 // position back to the top in a WebView, even though nothing about where
 // you were looking actually changed — jarring specifically on screens
@@ -66,37 +132,45 @@ function withPreservedScroll(el, mutate) {
   });
 }
 
-// hero renders the primary figure: the headline percent-saved figure (e.g.
-// "38% saved"), a one-line restatement of that same figure as extra runway
-// ("→ ~61% more usage with the same plan") — the actual claim agent-winglet
-// makes — and, once real transcript data exists to size it against, a bytes
-// bar showing suppressed bytes against the real total (transcript content
-// bytes + suppressed) — the same total the headline percent itself is
-// computed from, so the fill width and the number always agree.
-function hero(overview) {
-  // hasTranscriptData gates the bytes bar (it needs a real total, which only
-  // exists once the transcript's been read at SessionEnd) but must not gate
-  // the usage-detail line too — hasActivity alone is enough to explain why
-  // the number above it isn't a percent yet, and that explanation is exactly
-  // what an in-progress session most needs to show instead of going silent.
-  const showUsageLine = overview.hasTranscriptData || overview.hasActivity;
+// heroRing renders the signature radial ring: a quiet 360° track plus
+// an accent fill sized to heroPercent, with the percent figure centered
+// inside it — the ring *is* the number's reading, not a separate element
+// next to a bar. hasTranscriptData (== hasPct server-side, see stats.Percent
+// and buildOverview in app.go) gates whether there's a real percent to show
+// yet; before that, the track renders empty rather than guessing.
+function heroRing(overview) {
+  const hasPct = overview.hasTranscriptData;
+  const percent = hasPct ? Math.min(100, Math.max(0, overview.heroPercent)) : 0;
+  const r = 54;
+  const circumference = 2 * Math.PI * r;
+  const offset = circumference - (percent / 100) * circumference;
   return `
-    <div class="hero">
-      <div class="hero-number">${overview.heroHeadline}</div>
-      ${showUsageLine ? `<div class="hero-usage">${overview.hasTranscriptData ? '→ ' : ''}${overview.heroUsageDetail} ${overview.heroUsageSub}</div>` : ''}
-      ${overview.hasTranscriptData ? heroBar(overview) : ''}
+    <div class="hero-ring-wrap">
+      <svg class="hero-ring" viewBox="0 0 128 128" data-circumference="${circumference.toFixed(2)}">
+        <circle class="hero-ring-track" cx="64" cy="64" r="${r}"></circle>
+        <circle class="hero-ring-fill" cx="64" cy="64" r="${r}" style="stroke-dasharray: ${circumference.toFixed(2)}; stroke-dashoffset: ${offset.toFixed(2)}"></circle>
+      </svg>
+      <div class="hero-ring-figure">${hasPct ? `${Math.round(percent)}%` : '—'}</div>
     </div>`;
 }
 
-function heroBar(overview) {
+// hero renders the primary figure: the signature ring beside the
+// headline percent-saved text (e.g. "38% saved") and a one-line restatement
+// of that same figure as extra runway ("→ ~61% more usage with the same
+// plan") — the actual claim agent-winglet makes.
+function hero(overview) {
+  // hasTranscriptData gates the ring's real percent (it needs the completed
+  // transcript, only read at SessionEnd) but must not gate the usage-detail
+  // line too — hasActivity alone is enough to explain why the number isn't a
+  // percent yet, and that explanation is exactly what an in-progress session
+  // most needs to show instead of going silent.
+  const showUsageLine = overview.hasTranscriptData || overview.hasActivity;
   return `
-    <div class="hero-bar">
-      <div class="hero-bar-track">
-        <div class="hero-bar-fill" style="width: ${Math.min(100, overview.heroPercent).toFixed(1)}%"></div>
-      </div>
-      <div class="hero-bar-labels">
-        <span>${overview.bytesSavedCard.detail} saved</span>
-        <span>${overview.heroTotalBytesLabel} total</span>
+    <div class="hero">
+      ${heroRing(overview)}
+      <div class="hero-body">
+        <div class="hero-number">${overview.heroHeadline}</div>
+        ${showUsageLine ? `<div class="hero-usage">${overview.hasTranscriptData ? '→ ' : ''}${overview.heroUsageDetail} ${overview.heroUsageSub}</div>` : ''}
       </div>
     </div>`;
 }
@@ -169,7 +243,10 @@ function statsBlock(overview) {
     ${barList(overview)}`;
 }
 
-async function loadOverview(container) {
+// animate is only true on a screen's first render (see renderOverviewScreen)
+// — poll ticks pass nothing, so the entrance sweep/count-up/stagger
+// plays once per navigate(), not every second.
+async function loadOverview(container, { animate = false } = {}) {
   const o = await GetOverview();
   // Guard against a poll tick landing after the user has already navigated
   // away — GetOverview is async, so a stale response could otherwise clobber
@@ -182,11 +259,12 @@ async function loadOverview(container) {
       ${statsBlock(o)}
     `;
   });
+  if (animate) animateHeroEntrance(container, o.hasTranscriptData, o.heroPercent);
 }
 
 async function renderOverviewScreen(container) {
   container.innerHTML = `<div class="empty-state">Loading…</div>`;
-  await loadOverview(container);
+  await loadOverview(container, { animate: true });
   startPolling(() => loadOverview(container));
 }
 
@@ -434,4 +512,5 @@ function render() {
   renderMain(app.querySelector('#main'));
 }
 
+initPlatform();
 render();

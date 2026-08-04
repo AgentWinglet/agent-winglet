@@ -1,6 +1,6 @@
 :root {
   --font-ui: -apple-system, "SF Pro Text", "Segoe UI", "Ubuntu", system-ui, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Consolas", monospace;
+  --font-display: var(--font-ui);
 
   --bg: #f5f5f7;
   --bg-elevated: #ffffff;
@@ -11,28 +11,48 @@
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 4px 12px rgba(0, 0, 0, 0.05);
   --accent: #1f9d55;
   --accent-bg: rgba(31, 157, 85, 0.12);
+  --accent-glow: 0 0 10px rgba(31, 157, 85, 0.2);
+  --accent-glow-bg: rgba(31, 157, 85, 0.05);
   --muted: #8e8e93;
   --muted-bg: rgba(142, 142, 147, 0.12);
   --hairline: rgba(0, 0, 0, 0.08);
   --nav-active-bg: rgba(0, 0, 0, 0.06);
+
+  /* macOS traffic-light inset; overridden per data-os below */
+  --titlebar-inset: 44px;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #1c1c1e;
-    --bg-elevated: #2c2c2e;
-    --sidebar-bg: #18181a;
+    --bg: #111113;
+    --bg-elevated: #1a1a1d;
+    --sidebar-bg: #0e0e10;
     --text-primary: #f5f5f7;
     --text-secondary: #98989d;
     --border: rgba(255, 255, 255, 0.08);
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.35);
-    --accent: #35d76e;
-    --accent-bg: rgba(53, 215, 110, 0.16);
+    --accent: #3fe08a;
+    --accent-bg: rgba(63, 224, 138, 0.16);
+    --accent-glow: 0 0 10px rgba(63, 224, 138, 0.3);
+    --accent-glow-bg: rgba(63, 224, 138, 0.07);
     --muted: #8e8e93;
     --muted-bg: rgba(142, 142, 147, 0.18);
-    --hairline: rgba(255, 255, 255, 0.1);
+    --hairline: rgba(255, 255, 255, 0.08);
     --nav-active-bg: rgba(255, 255, 255, 0.08);
   }
+}
+
+/* Per-OS title-bar inset: only macOS's native traffic lights need a
+   dead zone this tall — Windows/GNOME title bars are shorter, and using the
+   mac value there either wastes space or clips under nothing at all. Falls
+   back to the mac value (via --titlebar-inset's own default above) until
+   GetPlatform() resolves and main.js stamps data-os on <body>. */
+body[data-os="windows"] {
+  --titlebar-inset: 20px;
+}
+
+body[data-os="linux"] {
+  --titlebar-inset: 16px;
 }
 
 * {
@@ -64,18 +84,35 @@ body {
   flex-shrink: 0;
   background: var(--sidebar-bg);
   border-right: 1px solid var(--hairline);
-  padding: 44px 12px 16px;
+  padding: var(--titlebar-inset) 12px 16px;
   display: flex;
   flex-direction: column;
   -webkit-app-region: drag;
+  position: relative;
+}
+
+/* Vibrancy, progressive enhancement only: macOS gets a true native
+   blur material over the transparent window (see mac.Options in main.go);
+   Windows/Linux keep the solid --sidebar-bg fill above, never a broken or
+   unsupported blur. */
+@supports (backdrop-filter: blur(1px)) {
+  body[data-os="darwin"] .sidebar {
+    background: color-mix(in srgb, var(--sidebar-bg) 78%, transparent);
+    backdrop-filter: blur(20px) saturate(1.4);
+    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  }
 }
 
 .sidebar-title {
-  font-size: 13px;
-  font-weight: 600;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 500;
   color: var(--text-secondary);
-  padding: 0 10px 12px;
-  letter-spacing: 0.01em;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0 10px 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--hairline);
 }
 
 .nav {
@@ -86,10 +123,11 @@ body {
 }
 
 .nav-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 7px 10px;
+  padding: 7px 10px 7px 13px;
   border-radius: 7px;
   color: var(--text-primary);
   font-size: 13px;
@@ -101,19 +139,42 @@ body {
   font-family: inherit;
 }
 
+.nav-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 2px;
+  height: 0;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: var(--accent-glow);
+  transform: translateY(-50%);
+  transition: height 0.15s ease;
+}
+
 .nav-item svg {
   width: 16px;
   height: 16px;
   flex-shrink: 0;
   color: var(--text-secondary);
+  transition: color 0.15s ease;
 }
 
 .nav-item:hover {
   background: var(--nav-active-bg);
 }
 
+.nav-item:hover svg {
+  color: var(--text-primary);
+}
+
 .nav-item.active {
-  background: var(--nav-active-bg);
+  background: color-mix(in srgb, var(--nav-active-bg) 55%, transparent);
+}
+
+.nav-item.active::before {
+  height: 16px;
 }
 
 .nav-item.active svg {
@@ -126,11 +187,16 @@ body {
   flex: 1;
   overflow-y: auto;
   padding: 40px 40px 32px;
+  position: relative;
+  background-image: radial-gradient(ellipse 560px 300px at 8% -8%, var(--accent-glow-bg), transparent 70%);
+  background-repeat: no-repeat;
 }
 
 .screen-title {
-  font-size: 20px;
-  font-weight: 700;
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
   margin: 0 0 4px;
 }
 
@@ -144,49 +210,73 @@ body {
 
 .hero {
   margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+.hero-ring-wrap {
+  position: relative;
+  width: 128px;
+  height: 128px;
+  flex-shrink: 0;
+}
+
+.hero-ring {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+
+.hero-ring-track {
+  fill: none;
+  stroke: var(--muted-bg);
+  stroke-width: 9;
+}
+
+.hero-ring-fill {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 9;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 6px rgba(63, 224, 138, 0.25));
+  transition: stroke-dashoffset 0.6s ease-out;
+}
+
+.hero-ring-figure {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 26px;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  padding: 0 12px;
+}
+
+.hero-body {
+  min-width: 0;
+  flex: 1;
 }
 
 .hero-number {
-  font-family: var(--font-mono);
-  font-weight: 700;
+  font-family: var(--font-display);
+  font-weight: 600;
   font-size: 44px;
   line-height: 1.1;
   letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
 }
 
 .hero-usage {
-  font-family: var(--font-mono);
-  font-weight: 600;
+  font-family: var(--font-display);
+  font-weight: 500;
   font-size: 15px;
   color: var(--accent);
-  margin-top: 6px;
-}
-
-.hero-bar {
-  margin-top: 16px;
-}
-
-.hero-bar-track {
-  height: 10px;
-  border-radius: 100px;
-  background: var(--muted-bg);
-  overflow: hidden;
-}
-
-.hero-bar-fill {
-  height: 100%;
-  border-radius: 100px;
-  background: var(--accent);
-  transition: width 0.2s ease;
-}
-
-.hero-bar-labels {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-secondary);
   margin-top: 6px;
 }
 
@@ -231,9 +321,9 @@ body {
 }
 
 .bar-pill {
-  font-family: var(--font-mono);
+  font-family: var(--font-display);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--accent);
   background: var(--accent-bg);
   padding: 2px 8px;
@@ -258,7 +348,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-family: var(--font-mono);
+  font-family: var(--font-display);
+  font-weight: 500;
   font-size: 11px;
   color: var(--text-secondary);
   margin-top: 6px;
@@ -317,7 +408,7 @@ body {
 
 .card-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: 1.6fr 1fr 1fr;
   gap: 14px;
   margin-bottom: 8px;
 }
@@ -326,11 +417,19 @@ body {
   .card-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .card-grid .card:first-child {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 380px) {
   .card-grid {
     grid-template-columns: 1fr;
+  }
+
+  .card-grid .card:first-child {
+    grid-column: auto;
   }
 }
 
@@ -340,6 +439,10 @@ body {
   box-shadow: var(--shadow);
   padding: 18px 20px;
   min-width: 0;
+}
+
+.card-grid .card:first-child {
+  border-top: 1px solid rgba(63, 224, 138, 0.35);
 }
 
 .card-label {
@@ -352,14 +455,19 @@ body {
 }
 
 .card-detail {
-  font-family: var(--font-mono);
-  font-weight: 700;
+  font-family: var(--font-display);
+  font-weight: 600;
   font-size: 16px;
   color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.card-grid .card:first-child .card-detail {
+  font-size: 22px;
 }
 
 .card-sub {
-  font-family: var(--font-mono);
+  font-family: var(--font-display);
   font-weight: 500;
   font-size: 12px;
   color: var(--text-secondary);
@@ -435,7 +543,8 @@ body {
 }
 
 .project-path {
-  font-family: var(--font-mono);
+  font-family: var(--font-display);
+  font-weight: 500;
   font-size: 11px;
   color: var(--text-secondary);
   margin-top: 1px;
@@ -446,7 +555,8 @@ body {
 }
 
 .project-hero-inline {
-  font-family: var(--font-mono);
+  font-family: var(--font-display);
+  font-weight: 500;
   font-size: 12px;
   color: var(--text-secondary);
 }
@@ -521,7 +631,8 @@ body {
 }
 
 .session-id {
-  font-family: var(--font-mono);
+  font-family: var(--font-display);
+  font-weight: 500;
   font-size: 11px;
   color: var(--text-secondary);
 }
@@ -570,10 +681,12 @@ body {
   cursor: default;
   flex-shrink: 0;
   padding: 0;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
 }
 
 .toggle.on {
   background: var(--accent);
+  box-shadow: var(--accent-glow);
 }
 
 .toggle-knob {
@@ -598,4 +711,19 @@ body {
   max-width: 480px;
   margin-top: 12px;
   line-height: 1.5;
+}
+
+/* --- Motion --- */
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-ring-fill,
+  .bar-fill,
+  .nav-item::before,
+  .toggle,
+  .toggle-knob,
+  .project-row-chevron,
+  .nav-item svg,
+  .info-affordance .tooltip {
+    transition: none !important;
+  }
 }

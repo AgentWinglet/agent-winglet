@@ -6,6 +6,10 @@ export function GetOverview() {
   return window['go']['main']['App']['GetOverview']();
 }
 
+export function GetPlatform() {
+  return window['go']['main']['App']['GetPlatform']();
+}
+
 export function GetProjects() {
   return window['go']['main']['App']['GetProjects']();
 }
