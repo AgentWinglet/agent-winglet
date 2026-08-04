@@ -1,13 +1,14 @@
 // Package config reads/writes the single global (not per-project) config
 // file at ~/.agent-winglet/config.json. Today it holds exactly one setting:
-// Quiet, the config-file counterpart to AGENT_WINGLET_QUIET.
+// Quiet, the config-file counterpart to AGENT_WINGLET_QUIET. Quiet defaults
+// to true (see Load) — the savings receipt is suppressed out of the box, and
+// AGENT_WINGLET_QUIET=0 remains the way to opt back into it for a terminal
+// session.
 //
-// The env var exists because the original savings receipt only needed to be
-// silenceable per-invocation. A GUI toggle can't set an env var for a
-// terminal-launched Claude Code session — different process tree, no shared
-// env — so it needs a file both the hook binary and the app can read/write.
-// The env var still takes precedence when set, for backward compatibility:
-// see Quiet's doc comment.
+// The env var predates this file and exists because the original savings
+// receipt only needed to be silenceable per-invocation. This file exists so
+// the default can still be overridden by hand-editing
+// ~/.agent-winglet/config.json ("quiet": false) even without an env var.
 package config
 
 import (
@@ -31,15 +32,18 @@ func path() (string, error) {
 	return filepath.Join(home, ".agent-winglet", "config.json"), nil
 }
 
-// Load reads the global config, returning a zero-value Config (Quiet: false)
-// if the file doesn't exist yet or is corrupt — same fallback behavior as
-// internal/stats.loadJSON.
+// Load reads the global config, defaulting to Config{Quiet: true} if the
+// file doesn't exist yet or is corrupt — same fallback behavior as
+// internal/stats.loadJSON, except the fallback value is quiet-by-default
+// rather than the zero value. An explicit "quiet": false in the file still
+// overrides this default, since json.Unmarshal sets the field from the file
+// when present.
 func Load() (*Config, error) {
 	p, err := path()
 	if err != nil {
 		return nil, err
 	}
-	var c Config
+	c := Config{Quiet: true}
 	data, err := os.ReadFile(p)
 	if os.IsNotExist(err) {
 		return &c, nil
@@ -48,7 +52,7 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if err := json.Unmarshal(data, &c); err != nil {
-		return &Config{}, nil
+		return &Config{Quiet: true}, nil
 	}
 	return &c, nil
 }

@@ -17,11 +17,3 @@ export function GetProjects() {
 export function GetSessionStats(arg1) {
   return window['go']['main']['App']['GetSessionStats'](arg1);
 }
-
-export function GetSettings() {
-  return window['go']['main']['App']['GetSettings']();
-}
-
-export function SetQuiet(arg1) {
-  return window['go']['main']['App']['SetQuiet'](arg1);
-}

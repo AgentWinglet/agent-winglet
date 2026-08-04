@@ -1,6 +1,6 @@
 import './style.css';
 import { icons } from './icons.js';
-import { GetOverview, GetPlatform, GetProjects, GetSessionStats, GetSettings, SetQuiet } from '../wailsjs/go/main/App';
+import { GetOverview, GetPlatform, GetProjects, GetSessionStats } from '../wailsjs/go/main/App';
 
 const state = {
   screen: 'overview',
@@ -498,32 +498,11 @@ async function renderSessionsSection(container, projectPath) {
   });
 }
 
-async function renderSettingsScreen(container) {
-  container.innerHTML = `<div class="empty-state">Loading…</div>`;
-  const settings = await GetSettings();
-
+function renderSettingsScreen(container) {
   container.innerHTML = `
     <h1 class="screen-title">Settings</h1>
-    <p class="screen-subtitle">Only the levers that actually have a wired backend today.</p>
-    <div class="settings-row">
-      <div>
-        <div class="settings-row-label">Quiet mode</div>
-        <div class="settings-row-desc">Suppresses the end-of-session savings receipt message. Every mechanism (dedup, budgeting, retirement, the compact nudge) keeps running either way.</div>
-      </div>
-      <button class="toggle ${settings.quiet ? 'on' : ''}" id="quiet-toggle" aria-pressed="${settings.quiet}">
-        <span class="toggle-knob"></span>
-      </button>
-    </div>
-    <p class="settings-note">This writes ~/.agent-winglet/config.json. AGENT_WINGLET_QUIET, if set in a terminal session's environment, still takes precedence over this toggle for that session.</p>
+    <div class="empty-state">Nothing to configure yet.</div>
   `;
-
-  container.querySelector('#quiet-toggle').addEventListener('click', async (e) => {
-    const btn = e.currentTarget;
-    const next = !btn.classList.contains('on');
-    btn.classList.toggle('on', next);
-    btn.setAttribute('aria-pressed', String(next));
-    await SetQuiet(next);
-  });
 }
 
 function renderMain(container) {

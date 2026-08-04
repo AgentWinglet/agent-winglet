@@ -7,7 +7,6 @@ import (
 	goruntime "runtime"
 	"sort"
 
-	"github.com/umitkaanusta/agent-winglet/internal/config"
 	"github.com/umitkaanusta/agent-winglet/internal/registry"
 	"github.com/umitkaanusta/agent-winglet/internal/stats"
 )
@@ -512,28 +511,3 @@ func (a *App) GetSessionStats(projectDir string) ([]SessionRow, error) {
 	return rows, nil
 }
 
-// Settings is the Settings screen's data: just the quiet-mode toggle.
-// Dedup, budgeting, retirement, and the compact nudge have no independent
-// on/off switch in cmd/ledger-hook today, so there's nothing else to wire a
-// toggle to yet.
-type Settings struct {
-	Quiet bool `json:"quiet"`
-}
-
-func (a *App) GetSettings() (Settings, error) {
-	cfg, err := config.Load()
-	if err != nil {
-		return Settings{}, err
-	}
-	return Settings{Quiet: cfg.Quiet}, nil
-}
-
-// SetQuiet writes the config-file quiet-mode toggle. This only affects the
-// SessionEnd receipt message; every underlying mechanism (dedup, budgeting,
-// retirement, the compact nudge) stays fully active either way — see
-// cmd/ledger-hook's quiet() doc comment for why a config file exists
-// alongside AGENT_WINGLET_QUIET (the env var still wins when set, for a
-// terminal-launched session this app's toggle can't reach).
-func (a *App) SetQuiet(quiet bool) error {
-	return config.Save(&config.Config{Quiet: quiet})
-}

@@ -640,6 +640,7 @@ func TestHandleSessionEndZeroActivityEmitsNothing(t *testing.T) {
 }
 
 func TestHandleSessionEndReportsDedupHit(t *testing.T) {
+	t.Setenv(quietEnvVar, "0")
 	dir := t.TempDir()
 	repeatIn := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
 	if _, err := handle(repeatIn); err != nil {
@@ -665,6 +666,7 @@ func TestHandleSessionEndReportsDedupHit(t *testing.T) {
 }
 
 func TestHandleSessionEndReportsBudgetTrim(t *testing.T) {
+	t.Setenv(quietEnvVar, "0")
 	dir := t.TempDir()
 	longOutput := linesOfStdout(budgetLineThreshold + 1)
 	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
@@ -682,6 +684,7 @@ func TestHandleSessionEndReportsBudgetTrim(t *testing.T) {
 }
 
 func TestHandleSessionEndReportsRetiredCall(t *testing.T) {
+	t.Setenv(quietEnvVar, "0")
 	dir := t.TempDir()
 	if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
 		t.Fatalf("seeding investigate call errored: %v", err)
@@ -872,6 +875,7 @@ func TestHandleSessionEndPersistsTranscriptOnlySession(t *testing.T) {
 }
 
 func TestHandleSessionEndUnreadableTranscriptStillEmitsReceipt(t *testing.T) {
+	t.Setenv(quietEnvVar, "0")
 	dir := t.TempDir()
 	repeatIn := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
 	if _, err := handle(repeatIn); err != nil {
@@ -959,6 +963,7 @@ func TestHandleSessionEndStillPersistsSessionWhenQuiet(t *testing.T) {
 }
 
 func TestHandleSessionEndAccumulatesLifetimeAcrossSessions(t *testing.T) {
+	t.Setenv(quietEnvVar, "0")
 	dir := t.TempDir()
 
 	sess1 := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
@@ -1033,6 +1038,30 @@ func TestHandleSessionEndRespectsQuietConfigFile(t *testing.T) {
 	}
 	if out != nil {
 		t.Fatalf("config-file Quiet=true should suppress the receipt message, got %+v", out)
+	}
+}
+
+func TestHandleSessionEndConfigFileCanOptOutOfDefaultQuiet(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	repeatIn := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
+	if _, err := handle(repeatIn); err != nil {
+		t.Fatalf("first call errored: %v", err)
+	}
+	if _, err := handle(repeatIn); err != nil {
+		t.Fatalf("repeat call errored: %v", err)
+	}
+
+	if err := config.Save(&config.Config{Quiet: false}); err != nil {
+		t.Fatalf("config.Save errored: %v", err)
+	}
+
+	out, err := handle(sessionEndInput("sess1", dir))
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	if out == nil || out.SystemMessage == "" {
+		t.Fatalf("config-file Quiet=false should opt back into the receipt despite the default, got %+v", out)
 	}
 }
 
