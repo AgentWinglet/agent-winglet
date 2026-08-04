@@ -235,20 +235,53 @@ func SaveSession(projectDir, sessionID string, s *Session) error {
 	return saveJSON(p, s)
 }
 
-// InvalidateSession deletes the session tally. Called on SessionStart and
-// PostCompact, same as ledger.Invalidate/phase.Invalidate/retire.Invalidate,
-// so a resumed or compacted session doesn't report a receipt describing
-// activity from a part of the session that's now gone.
+// InvalidateSession resets the session's mechanism counters (dedup,
+// budget-trim, retire). Called on SessionStart and PostCompact, same as
+// ledger.Invalidate/phase.Invalidate/retire.Invalidate, so a resumed or
+// compacted session doesn't report a receipt describing activity from a
+// part of the session that's now gone.
+//
+// The transcript-usage fields (TranscriptTokens, TranscriptCostUSD,
+// TranscriptContentBytes, TranscriptOffset) are deliberately left alone:
+// unlike the mechanism counters, they're not tied to ledger/phase state that
+// a compact invalidates — they're a running total of real usage that already
+// happened and stays true regardless of a later compact. This used to
+// os.Remove the whole file, which self-healed once SessionEnd's full
+// transcript re-read landed later — but if the process crashed or was
+// force-quit between the compact and SessionEnd, that delete was
+// destructive: the pre-compact usage was wiped from disk with nothing yet
+// written to replace it, so it was gone for good. Resetting the mechanism
+// fields in place instead of deleting the file removes that window.
+//
+// If resetting the mechanism counters leaves the session entirely zero
+// (including transcript usage — true for a session with no recorded
+// transcript activity yet), the file is still removed rather than left
+// behind as an empty husk, matching the old behavior for that case.
 func InvalidateSession(projectDir, sessionID string) error {
 	p, err := sessionPath(projectDir, sessionID)
 	if err != nil {
 		return err
 	}
-	err = os.Remove(p)
-	if os.IsNotExist(err) {
-		return nil
+	var s Session
+	if err := loadJSON(p, &s); err != nil {
+		return err
 	}
-	return err
+	s.DedupHits = 0
+	s.DedupBytes = 0
+	s.BudgetTrims = 0
+	s.BudgetLinesOmitted = 0
+	s.BudgetBytesOmitted = 0
+	s.RetiredCalls = 0
+	s.RetiredBytes = 0
+
+	if s.TranscriptTokens == 0 && s.TranscriptCostUSD == 0 && s.TranscriptContentBytes == 0 {
+		err := os.Remove(p)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return saveJSON(p, &s)
 }
 
 // SessionFile identifies one on-disk session-stats file and its

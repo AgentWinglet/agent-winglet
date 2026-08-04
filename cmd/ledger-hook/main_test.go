@@ -763,6 +763,86 @@ func TestHandlePostToolUseTracksTranscriptUsageLive(t *testing.T) {
 	}
 }
 
+// TestHandleStopTracksTranscriptUsageForToolFreeSession is the regression
+// test for the gap Stop closes: a session that never calls a tool (pure
+// chat) used to have no stats file at all until SessionEnd — PostToolUse
+// never fires to create one, so a crash or force-quit before SessionEnd
+// meant the session's real token usage was silently excluded from every
+// project/overall total. This asserts a bare Stop call, with no preceding
+// PostToolUse, already persists nonzero transcript usage.
+func TestHandleStopTracksTranscriptUsageForToolFreeSession(t *testing.T) {
+	dir := t.TempDir()
+	transcriptPath := writeTranscriptFixture(t, dir)
+
+	in := hookInput{
+		SessionID:      "sess1",
+		Cwd:            dir,
+		HookEventName:  "Stop",
+		TranscriptPath: transcriptPath,
+	}
+	if _, err := handle(in); err != nil {
+		t.Fatalf("Stop handling errored: %v", err)
+	}
+
+	sess, err := stats.LoadSession(dir, "sess1")
+	if err != nil {
+		t.Fatalf("LoadSession errored: %v", err)
+	}
+	if sess.TranscriptTokens == 0 || sess.TranscriptCostUSD == 0 || sess.TranscriptContentBytes == 0 {
+		t.Fatalf("expected nonzero transcript usage after a bare Stop call (no tool calls this session), got %+v", sess)
+	}
+}
+
+// TestHandlePostCompactSurvivesCrashBeforeSessionEnd is the end-to-end
+// regression test for the second half of the same bug report Stop fixes:
+// PostCompact used to wipe the whole session-stats file, relying on
+// SessionEnd's later full transcript re-read to restore it — fine as long
+// as SessionEnd actually fires, but a crash or force-quit between the
+// compact and SessionEnd meant it never did, permanently losing the
+// pre-compact usage. This drives a real turn (accruing transcript usage via
+// Stop), fires PostCompact, and then simulates a crash by calling
+// SumProject directly instead of ever calling SessionEnd — the pre-compact
+// usage must still be there.
+func TestHandlePostCompactSurvivesCrashBeforeSessionEnd(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	transcriptPath := writeTranscriptFixture(t, dir)
+
+	stopIn := hookInput{
+		SessionID:      "sess1",
+		Cwd:            dir,
+		HookEventName:  "Stop",
+		TranscriptPath: transcriptPath,
+	}
+	if _, err := handle(stopIn); err != nil {
+		t.Fatalf("Stop handling errored: %v", err)
+	}
+
+	preCompact, err := stats.LoadSession(dir, "sess1")
+	if err != nil {
+		t.Fatalf("LoadSession before compact errored: %v", err)
+	}
+	if preCompact.TranscriptTokens == 0 {
+		t.Fatalf("expected nonzero transcript usage before compact, got %+v", preCompact)
+	}
+
+	if _, err := handle(hookInput{SessionID: "sess1", Cwd: dir, HookEventName: "PostCompact"}); err != nil {
+		t.Fatalf("PostCompact handling errored: %v", err)
+	}
+
+	// No further hook call — this is the simulated crash: SessionEnd never
+	// fires, so nothing re-reads the transcript from scratch to restore
+	// what PostCompact just touched.
+	rollup, err := stats.SumProject(dir)
+	if err != nil {
+		t.Fatalf("SumProject errored: %v", err)
+	}
+	if rollup.TranscriptTokens != preCompact.TranscriptTokens {
+		t.Fatalf("pre-compact transcript usage lost after a simulated crash: rollup=%+v, want TranscriptTokens=%d",
+			rollup, preCompact.TranscriptTokens)
+	}
+}
+
 func TestHandleSessionEndReadsTranscriptUsage(t *testing.T) {
 	dir := t.TempDir()
 	repeatIn := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
