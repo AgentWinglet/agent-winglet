@@ -510,4 +510,3 @@ func (a *App) GetSessionStats(projectDir string) ([]SessionRow, error) {
 	}
 	return rows, nil
 }
-
