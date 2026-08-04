@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/umitkaanusta/agent-winglet/internal/config"
 	"github.com/umitkaanusta/agent-winglet/internal/registry"
+	"github.com/umitkaanusta/agent-winglet/internal/statedir"
 	"github.com/umitkaanusta/agent-winglet/internal/stats"
 )
 
@@ -776,21 +778,21 @@ func TestHandleSessionEndReadsTranscriptUsage(t *testing.T) {
 		t.Fatalf("handle errored: %v", err)
 	}
 
-	lifetime, err := stats.LoadLifetime(dir)
+	rollup, err := stats.SumProject(dir)
 	if err != nil {
-		t.Fatalf("LoadLifetime errored: %v", err)
+		t.Fatalf("SumProject errored: %v", err)
 	}
-	if lifetime.TranscriptTokens == 0 {
-		t.Fatalf("expected lifetime.TranscriptTokens to be folded in from the transcript, got %+v", lifetime)
+	if rollup.TranscriptTokens == 0 {
+		t.Fatalf("expected the rollup's TranscriptTokens to reflect the transcript, got %+v", rollup)
 	}
-	if lifetime.TranscriptCostUSD == 0 {
-		t.Fatalf("expected lifetime.TranscriptCostUSD to be nonzero, got %+v", lifetime)
+	if rollup.TranscriptCostUSD == 0 {
+		t.Fatalf("expected the rollup's TranscriptCostUSD to be nonzero, got %+v", rollup)
 	}
 
-	// Regression: the per-session file must carry the transcript usage too,
-	// not just the in-memory copy folded into lifetime — GetSessionStats
-	// (agent-winglet-app) reads this file back later for the per-session
-	// breakdown.
+	// Regression: the per-session file must carry the transcript usage too
+	// — GetSessionStats (agent-winglet-app) reads this file back later for
+	// the per-session breakdown, and SumProject itself only sees what's on
+	// disk.
 	sess, err := stats.LoadSession(dir, "sess1")
 	if err != nil {
 		t.Fatalf("LoadSession errored: %v", err)
@@ -800,19 +802,20 @@ func TestHandleSessionEndReadsTranscriptUsage(t *testing.T) {
 	}
 }
 
-// TestHandleSessionEndFoldsTranscriptOnlySessionIntoLifetimeSilently covers
-// the session shape that used to fall through the cracks entirely: no Bash
-// calls at all (a Read-only/Edit-only session), so dedup/budget/retire never
-// fire and IsZero() stays true throughout — but PostToolUse still tracked
-// real transcript usage live (see recordTranscriptDelta, unconditional on
-// tool name). Before this fix, IsZero() gated the entire SessionEnd fold, so
-// this session's real transcript data was silently dropped: never folded
-// into lifetime, never marked Ended, and — most visibly — would have kept
-// getting summed as "still live" by the desktop app's Overview/Projects
-// rollup forever, even after the session was long gone. It should now fold
-// into lifetime and get marked Ended, while still emitting no receipt (a
-// suppression-activity report with nothing to report stays silent).
-func TestHandleSessionEndFoldsTranscriptOnlySessionIntoLifetimeSilently(t *testing.T) {
+// TestHandleSessionEndPersistsTranscriptOnlySession covers the session shape
+// that used to fall through the cracks entirely: no Bash calls at all (a
+// Read-only/Edit-only session), so dedup/budget/retire never fire and
+// IsZero() stays true throughout — but PostToolUse still tracked real
+// transcript usage live (see recordTranscriptDelta, unconditional on tool
+// name). Before this fix, IsZero() gated the entire SessionEnd persist path,
+// so this session's real transcript data was silently dropped: never
+// written back to disk, and — most visibly — would have kept getting summed
+// as "still live" by the desktop app's Overview/Projects rollup forever,
+// even after the session was long gone. It should now persist to disk (so
+// it counts toward every future stats.SumProject call) while still emitting
+// no receipt (a suppression-activity report with nothing to report stays
+// silent).
+func TestHandleSessionEndPersistsTranscriptOnlySession(t *testing.T) {
 	dir := t.TempDir()
 	readIn := hookInput{
 		SessionID:      "sess1",
@@ -852,19 +855,19 @@ func TestHandleSessionEndFoldsTranscriptOnlySessionIntoLifetimeSilently(t *testi
 	if err != nil {
 		t.Fatalf("LoadSession after SessionEnd errored: %v", err)
 	}
-	if !sess.Ended {
-		t.Fatalf("expected Ended=true after SessionEnd, so the app's live rollup stops double-adding this session")
+	if sess.TranscriptContentBytes == 0 {
+		t.Fatalf("expected the transcript-only session's usage to still be on disk after SessionEnd, got %+v", sess)
 	}
 
-	lifetime, err := stats.LoadLifetime(dir)
+	rollup, err := stats.SumProject(dir)
 	if err != nil {
-		t.Fatalf("LoadLifetime errored: %v", err)
+		t.Fatalf("SumProject errored: %v", err)
 	}
-	if lifetime.Sessions != 1 {
-		t.Fatalf("Sessions = %d, want 1 (a transcript-only session should still count toward lifetime.Sessions)", lifetime.Sessions)
+	if rollup.Sessions != 1 {
+		t.Fatalf("Sessions = %d, want 1 (a transcript-only session should still count toward the rollup)", rollup.Sessions)
 	}
-	if lifetime.TranscriptContentBytes == 0 {
-		t.Fatalf("expected the transcript-only session's usage to be folded into lifetime, got %+v", lifetime)
+	if rollup.TranscriptContentBytes == 0 {
+		t.Fatalf("expected the transcript-only session's usage to show up in the rollup, got %+v", rollup)
 	}
 }
 
@@ -889,12 +892,12 @@ func TestHandleSessionEndUnreadableTranscriptStillEmitsReceipt(t *testing.T) {
 		t.Fatalf("expected a receipt even when the transcript can't be read, got %+v", out)
 	}
 
-	lifetime, err := stats.LoadLifetime(dir)
+	rollup, err := stats.SumProject(dir)
 	if err != nil {
-		t.Fatalf("LoadLifetime errored: %v", err)
+		t.Fatalf("SumProject errored: %v", err)
 	}
-	if lifetime.TranscriptTokens != 0 {
-		t.Fatalf("expected TranscriptTokens to stay zero for an unreadable transcript, got %d", lifetime.TranscriptTokens)
+	if rollup.TranscriptTokens != 0 {
+		t.Fatalf("expected TranscriptTokens to stay zero for an unreadable transcript, got %d", rollup.TranscriptTokens)
 	}
 }
 
@@ -931,7 +934,7 @@ func TestHandleSessionEndRespectsQuietEnvVar(t *testing.T) {
 	}
 }
 
-func TestHandleSessionEndStillUpdatesLifetimeWhenQuiet(t *testing.T) {
+func TestHandleSessionEndStillPersistsSessionWhenQuiet(t *testing.T) {
 	dir := t.TempDir()
 	repeatIn := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
 	if _, err := handle(repeatIn); err != nil {
@@ -946,12 +949,12 @@ func TestHandleSessionEndStillUpdatesLifetimeWhenQuiet(t *testing.T) {
 		t.Fatalf("handle errored: %v", err)
 	}
 
-	lifetime, err := stats.LoadLifetime(dir)
+	rollup, err := stats.SumProject(dir)
 	if err != nil {
-		t.Fatalf("LoadLifetime errored: %v", err)
+		t.Fatalf("SumProject errored: %v", err)
 	}
-	if lifetime.Sessions != 1 || lifetime.DedupHits != 1 {
-		t.Fatalf("lifetime tally not updated while quiet: %+v", lifetime)
+	if rollup.Sessions != 1 || rollup.DedupHits != 1 {
+		t.Fatalf("session not persisted while quiet: %+v", rollup)
 	}
 }
 
@@ -1151,5 +1154,80 @@ func TestRetiredBytesOnRetiredCall(t *testing.T) {
 	}
 	if s.RetiredBytes != int64(len(response)) {
 		t.Fatalf("RetiredBytes = %d, want %d", s.RetiredBytes, len(response))
+	}
+}
+
+// TestMigrateLegacyDataFoldsCurrentLayoutLifetimeIntoSeedSession covers the
+// migration path every existing install hits: a lifetime.stats.json already
+// sitting in root's own state dir from before project/overall totals became
+// a pure sum of session files (see internal/stats.SumProject). Its counts
+// must survive the upgrade by landing on the legacy-migrated seed session,
+// and the now-orphaned file must be removed so it doesn't confuse a future
+// reader.
+func TestMigrateLegacyDataFoldsCurrentLayoutLifetimeIntoSeedSession(t *testing.T) {
+	dir := t.TempDir()
+	d, err := statedir.Dir(dir)
+	if err != nil {
+		t.Fatalf("statedir.Dir errored: %v", err)
+	}
+	lifetimePath := filepath.Join(d, stats.LifetimeFileName)
+	if err := os.MkdirAll(d, 0o755); err != nil {
+		t.Fatalf("MkdirAll errored: %v", err)
+	}
+	if err := os.WriteFile(lifetimePath, []byte(`{"sessions":3,"dedupHits":5,"dedupBytes":500}`), 0o644); err != nil {
+		t.Fatalf("writing lifetime.stats.json errored: %v", err)
+	}
+
+	migrateLegacyData(dir, dir)
+
+	if _, err := os.Stat(lifetimePath); !os.IsNotExist(err) {
+		t.Fatalf("expected the orphaned lifetime.stats.json to be removed, stat err = %v", err)
+	}
+
+	seed, err := stats.LoadSession(dir, legacySessionID)
+	if err != nil {
+		t.Fatalf("LoadSession for seed errored: %v", err)
+	}
+	if seed.DedupHits != 5 || seed.DedupBytes != 500 {
+		t.Fatalf("seed session = %+v, want DedupHits=5 DedupBytes=500", seed)
+	}
+
+	rollup, err := stats.SumProject(dir)
+	if err != nil {
+		t.Fatalf("SumProject errored: %v", err)
+	}
+	if rollup.DedupHits != 5 || rollup.DedupBytes != 500 {
+		t.Fatalf("rollup after migration = %+v, want DedupHits=5 DedupBytes=500", rollup)
+	}
+}
+
+// TestMigrateLegacyDataMergesRepeatedCallsWithoutDoubleCounting guards the
+// order-independence property the old Lifetime-file merge relied on: calling
+// migrateLegacyData again (as every SessionStart/PostCompact does) with no
+// new legacy file present must leave the seed session untouched, not fold
+// the same numbers in twice.
+func TestMigrateLegacyDataMergesRepeatedCallsWithoutDoubleCounting(t *testing.T) {
+	dir := t.TempDir()
+	d, err := statedir.Dir(dir)
+	if err != nil {
+		t.Fatalf("statedir.Dir errored: %v", err)
+	}
+	if err := os.MkdirAll(d, 0o755); err != nil {
+		t.Fatalf("MkdirAll errored: %v", err)
+	}
+	lifetimePath := filepath.Join(d, stats.LifetimeFileName)
+	if err := os.WriteFile(lifetimePath, []byte(`{"sessions":1,"retiredCalls":2,"retiredBytes":20}`), 0o644); err != nil {
+		t.Fatalf("writing lifetime.stats.json errored: %v", err)
+	}
+
+	migrateLegacyData(dir, dir)
+	migrateLegacyData(dir, dir) // second call: file is already gone, must no-op
+
+	rollup, err := stats.SumProject(dir)
+	if err != nil {
+		t.Fatalf("SumProject errored: %v", err)
+	}
+	if rollup.RetiredCalls != 2 || rollup.RetiredBytes != 20 {
+		t.Fatalf("rollup after two migration calls = %+v, want RetiredCalls=2 RetiredBytes=20 (not doubled)", rollup)
 	}
 }
