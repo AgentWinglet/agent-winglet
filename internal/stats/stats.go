@@ -80,15 +80,28 @@ func (s *Session) RecordRetire(bytes int) {
 	s.RetiredBytes += int64(bytes)
 }
 
-// SetTranscriptUsage copies a transcript read (see internal/transcript) onto
-// the session. Called once per SessionEnd, after the transcript file has
-// already been fully read — a plain field copy, not an accumulator, since a
-// transcript file's own line-by-line summation already reflects the whole
-// session.
-func (s *Session) SetTranscriptUsage(u transcript.SessionUsage) {
+// SetTranscriptUsage copies a transcript read (see
+// transcript.ReadSessionUsageWithOffset) onto the session. Called once per
+// SessionEnd, after the transcript file has already been fully read — a
+// plain field copy, not an accumulator, since a transcript file's own
+// line-by-line summation already reflects the whole session.
+//
+// offset must be the exact byte count that read consumed (what
+// ReadSessionUsageWithOffset returns alongside u), and is stored onto
+// TranscriptOffset right along with the usage totals it priced. Skipping
+// this used to leave TranscriptOffset stuck at whatever the last
+// AddTranscriptUsage call (PostToolUse/Stop, mid-session) left it — fine
+// while the session kept running, but wrong the moment it later got
+// resumed (same session_id, transcript file kept growing): the next
+// AddTranscriptUsage would resume from that stale offset and re-add
+// everything between it and SessionEnd's end-of-file, double-counting
+// content this full read already priced once. Keeping the two in the same
+// call makes that pairing impossible to break by accident.
+func (s *Session) SetTranscriptUsage(u transcript.SessionUsage, offset int64) {
 	s.TranscriptTokens = u.Tokens
 	s.TranscriptCostUSD = u.CostUSD
 	s.TranscriptContentBytes = u.ContentBytes
+	s.TranscriptOffset = offset
 }
 
 // AddTranscriptUsage folds one incremental transcript.ReadSessionUsageFrom

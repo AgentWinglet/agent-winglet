@@ -639,8 +639,12 @@ func handleSessionEnd(in hookInput) (*hookOutput, error) {
 	// offset-based one PostToolUse uses — see recordTranscriptDelta) is the
 	// authoritative reconciliation pass: it overwrites whatever got
 	// accumulated turn-by-turn with one clean read of the whole final file.
-	if usage, err := transcript.ReadSessionUsage(in.TranscriptPath); err == nil {
-		sess.SetTranscriptUsage(usage)
+	// The offset it also returns must be persisted right along with the
+	// usage totals (see SetTranscriptUsage) so a later resume of this same
+	// session_id picks its incremental reads back up from here, not from
+	// whatever stale offset the last PostToolUse/Stop call left behind.
+	if usage, offset, err := transcript.ReadSessionUsageWithOffset(in.TranscriptPath); err == nil {
+		sess.SetTranscriptUsage(usage, offset)
 	}
 
 	// A session worth folding into lifetime is one with either suppression
