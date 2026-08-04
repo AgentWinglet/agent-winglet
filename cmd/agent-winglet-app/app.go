@@ -40,13 +40,15 @@ func (a *App) GetPlatform() string {
 }
 
 // Card is one of the three summary cards on the card row: a label, a
-// pre-formatted primary detail string, and an optional secondary line shown
-// beneath it (e.g. a percent under a byte count, or a fixed caption under
-// the net-gains multiplier).
+// hover-tooltip explaining how that figure is derived (real measurement vs.
+// estimate, and from what), a pre-formatted primary detail string, and an
+// optional secondary line shown beneath it (e.g. a percent under a byte
+// count, or a fixed caption under the net-gains multiplier).
 type Card struct {
-	Label  string `json:"label"`
-	Detail string `json:"detail"`
-	Sub    string `json:"sub"`
+	Label   string `json:"label"`
+	Tooltip string `json:"tooltip"`
+	Detail  string `json:"detail"`
+	Sub     string `json:"sub"`
 }
 
 // BarRow is one row of the suppressed-by-mechanism bar list: a
@@ -224,6 +226,13 @@ const (
 		"to a head/tail summary."
 	retireTooltip = "Once a session moves from investigating to editing, earlier read/search/fetch output is " +
 		"assumed to have served its purpose and is archived instead of replayed."
+
+	bytesSavedTooltip = "This is a real measurement, not an estimate. It is the size of the tool output " +
+		"(command results, file reads, search results) that agent-winglet removed from the model's context."
+	tokensSavedTooltip = "This is an estimate. It applies the percent saved above to the real token count " +
+		"from the transcript."
+	moneySavedTooltip = "Based on official API usage rates for the model in this session. Cache-read tokens " +
+		"and output tokens are excluded."
 )
 
 // barRows builds the suppressed-by-mechanism bar list: one row per
@@ -371,13 +380,13 @@ func buildOverview(t overviewTotals, projectCount, sessionCount int) Overview {
 		HasTranscriptData:   hasTranscriptData,
 		HasActivity:         hasActivity,
 		BytesSavedCard: Card{
-			Label: "Bytes saved", Detail: bytesSavedDetail,
+			Label: "Bytes saved", Tooltip: bytesSavedTooltip, Detail: bytesSavedDetail,
 		},
 		TokensSavedCard: Card{
-			Label: "Tokens saved", Detail: tokensSavedDetail,
+			Label: "Tokens saved", Tooltip: tokensSavedTooltip, Detail: tokensSavedDetail,
 		},
 		DollarSavedCard: Card{
-			Label: "Money saved", Detail: dollarDetail,
+			Label: "Money saved", Tooltip: moneySavedTooltip, Detail: dollarDetail,
 		},
 		Bars:         barRows(t, total),
 		ProjectCount: projectCount,

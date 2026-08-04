@@ -37,6 +37,23 @@ function startPolling(fn) {
   pollTimer = setInterval(fn, REFRESH_INTERVAL_MS);
 }
 
+// A poll-driven container.innerHTML replace tears down and recreates every
+// element inside it, even on a tick where nothing actually changed — which,
+// among other things, kills whatever the mouse is currently hovering (e.g. a
+// card's info tooltip), so it flickers shut once a second instead of staying
+// put while read. renderIfChanged skips that rebuild whenever data
+// JSON-matches what's already on screen for key, so a hovered tooltip is
+// only ever disturbed by a poll tick that has real new data to show — never
+// by an idle one. Anything the draw should also react to (e.g. which rows
+// are expanded) must be folded into data, since only data is compared.
+const lastRender = new Map();
+function renderIfChanged(key, data, draw) {
+  const snapshot = JSON.stringify(data);
+  if (lastRender.get(key) === snapshot) return;
+  lastRender.set(key, snapshot);
+  draw();
+}
+
 function navigate(screen) {
   stopPolling();
   state.screen = screen;
@@ -219,7 +236,13 @@ function cardRow(overview) {
         .map(
           (c) => `
         <div class="card">
-          <div class="card-label">${c.label}</div>
+          <div class="card-label">
+            ${c.label}
+            <span class="info-affordance" tabindex="0">
+              ${icons.info}
+              <span class="tooltip" role="tooltip">${c.tooltip}</span>
+            </span>
+          </div>
           <div class="card-detail">${c.detail}</div>
           ${c.sub ? `<div class="card-sub">${c.sub}</div>` : ''}
         </div>`
@@ -252,17 +275,24 @@ async function loadOverview(container, { animate = false } = {}) {
   // away — GetOverview is async, so a stale response could otherwise clobber
   // whatever screen is now showing.
   if (state.screen !== 'overview') return;
-  withPreservedScroll(container, () => {
-    container.innerHTML = `
-      <h1 class="screen-title">Overview</h1>
-      <p class="screen-subtitle">Lifetime, across ${o.projectCount} project${o.projectCount === 1 ? '' : 's'} and ${o.sessionCount} session${o.sessionCount === 1 ? '' : 's'}.</p>
-      ${statsBlock(o)}
-    `;
+  renderIfChanged('overview', o, () => {
+    withPreservedScroll(container, () => {
+      container.innerHTML = `
+        <h1 class="screen-title">Overview</h1>
+        <p class="screen-subtitle">Lifetime, across ${o.projectCount} project${o.projectCount === 1 ? '' : 's'} and ${o.sessionCount} session${o.sessionCount === 1 ? '' : 's'}.</p>
+        ${statsBlock(o)}
+      `;
+    });
+    if (animate) animateHeroEntrance(container, o.hasTranscriptData, o.heroPercent);
   });
-  if (animate) animateHeroEntrance(container, o.hasTranscriptData, o.heroPercent);
 }
 
 async function renderOverviewScreen(container) {
+  // Cleared so the first render after (re)entering this screen always draws
+  // — otherwise, revisiting with unchanged data would compare equal to
+  // whatever was last cached and leave the "Loading…" placeholder above stuck
+  // on screen forever.
+  lastRender.delete('overview');
   container.innerHTML = `<div class="empty-state">Loading…</div>`;
   await loadOverview(container, { animate: true });
   startPolling(() => loadOverview(container));
@@ -300,68 +330,75 @@ async function loadProjects(container) {
   if (state.screen !== 'projects') return;
 
   if (!rows || rows.length === 0) {
-    withPreservedScroll(container, () => {
-      container.innerHTML = `
-        <h1 class="screen-title">Projects</h1>
-        <p class="screen-subtitle">Projects with the agent-winglet hook installed.</p>
-        <div class="empty-state">No projects registered yet — the hook installs globally; a project is added automatically the first time Claude Code starts a session in it.</div>
-      `;
+    renderIfChanged('projects', { empty: true }, () => {
+      withPreservedScroll(container, () => {
+        container.innerHTML = `
+          <h1 class="screen-title">Projects</h1>
+          <p class="screen-subtitle">Projects with the agent-winglet hook installed.</p>
+          <div class="empty-state">No projects registered yet — the hook installs globally; a project is added automatically the first time Claude Code starts a session in it.</div>
+        `;
+      });
     });
     return;
   }
 
-  withPreservedScroll(container, () => {
-    container.innerHTML = `
-      <h1 class="screen-title">Projects</h1>
-      <p class="screen-subtitle">${rows.length} registered project${rows.length === 1 ? '' : 's'}.</p>
-      <div id="project-list"></div>
-    `;
+  // expanded is folded into the compared data so toggling a row forces a
+  // redraw even when the rows themselves haven't changed since the last
+  // poll tick — see renderIfChanged's own doc comment.
+  renderIfChanged('projects', { rows, expanded: [...state.expanded].sort() }, () => {
+    withPreservedScroll(container, () => {
+      container.innerHTML = `
+        <h1 class="screen-title">Projects</h1>
+        <p class="screen-subtitle">${rows.length} registered project${rows.length === 1 ? '' : 's'}.</p>
+        <div id="project-list"></div>
+      `;
 
-    const list = container.querySelector('#project-list');
-    list.innerHTML = rows
-      .map((row) => {
-        const cachedSessions = state.sessionsByProject.get(row.path);
-        const seeded = state.expanded.has(row.path) && cachedSessions ? sessionsSectionMarkup(row.path, cachedSessions) : '';
-        return `
-      <div class="project-row ${state.expanded.has(row.path) ? 'expanded' : ''}" data-path="${row.path}">
-        <button class="project-row-header" data-toggle="${row.path}">
-          <span class="project-row-chevron">${icons.chevron}</span>
-          <div>
-            <div class="project-name">${row.name}</div>
-            <div class="project-path">${row.path}</div>
+      const list = container.querySelector('#project-list');
+      list.innerHTML = rows
+        .map((row) => {
+          const cachedSessions = state.sessionsByProject.get(row.path);
+          const seeded = state.expanded.has(row.path) && cachedSessions ? sessionsSectionMarkup(row.path, cachedSessions) : '';
+          return `
+        <div class="project-row ${state.expanded.has(row.path) ? 'expanded' : ''}" data-path="${row.path}">
+          <button class="project-row-header" data-toggle="${row.path}">
+            <span class="project-row-chevron">${icons.chevron}</span>
+            <div>
+              <div class="project-name">${row.name}</div>
+              <div class="project-path">${row.path}</div>
+            </div>
+            <span class="project-row-spacer"></span>
+            <span class="project-hero-inline">${row.overview.heroHeadline}</span>
+            ${statusPill(row.installed)}
+          </button>
+          <div class="project-row-detail">
+            ${statsBlock(row.overview)}
+            <div class="sessions-section" data-sessions="${row.path}">${seeded}</div>
           </div>
-          <span class="project-row-spacer"></span>
-          <span class="project-hero-inline">${row.overview.heroHeadline}</span>
-          ${statusPill(row.installed)}
-        </button>
-        <div class="project-row-detail">
-          ${statsBlock(row.overview)}
-          <div class="sessions-section" data-sessions="${row.path}">${seeded}</div>
-        </div>
-      </div>`;
-      })
-      .join('');
+        </div>`;
+        })
+        .join('');
 
-    list.querySelectorAll('[data-toggle]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const path = btn.getAttribute('data-toggle');
-        if (state.expanded.has(path)) {
-          state.expanded.delete(path);
-        } else {
-          state.expanded.add(path);
-        }
-        loadProjects(container);
+      list.querySelectorAll('[data-toggle]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const path = btn.getAttribute('data-toggle');
+          if (state.expanded.has(path)) {
+            state.expanded.delete(path);
+          } else {
+            state.expanded.add(path);
+          }
+          loadProjects(container);
+        });
       });
-    });
 
-    // Wire the toggle handlers for whatever session rows were just seeded
-    // from cache above — renderSessionsSection (called below, once its own
-    // fetch resolves) re-wires these again once it swaps in fresh data, same
-    // as it always has.
-    for (const row of rows) {
-      const target = list.querySelector(`[data-sessions="${CSS.escape(row.path)}"]`);
-      if (target) wireSessionToggles(container, target, row.path);
-    }
+      // Wire the toggle handlers for whatever session rows were just seeded
+      // from cache above — renderSessionsSection (called below, once its own
+      // fetch resolves) re-wires these again once it swaps in fresh data, same
+      // as it always has.
+      for (const row of rows) {
+        const target = list.querySelector(`[data-sessions="${CSS.escape(row.path)}"]`);
+        if (target) wireSessionToggles(container, target, row.path);
+      }
+    });
   });
 
   for (const row of rows) {
@@ -372,6 +409,8 @@ async function loadProjects(container) {
 }
 
 async function renderProjectsScreen(container) {
+  // See renderOverviewScreen's identical reset for why this can't be skipped.
+  lastRender.delete('projects');
   container.innerHTML = `<div class="empty-state">Loading…</div>`;
   await loadProjects(container);
   startPolling(() => loadProjects(container));
@@ -447,9 +486,15 @@ async function renderSessionsSection(container, projectPath) {
   const target = container.querySelector(`[data-sessions="${CSS.escape(projectPath)}"]`);
   if (!target) return;
 
-  withPreservedScroll(container, () => {
-    target.innerHTML = sessionsSectionMarkup(projectPath, sessions);
-    wireSessionToggles(container, target, projectPath);
+  // expandedHere is folded into the compared data so expanding/collapsing an
+  // individual session row forces a redraw even when its stats haven't moved
+  // since the last poll tick — see renderIfChanged's own doc comment.
+  const expandedHere = sessions.map((s) => `${projectPath}::${s.sessionId}`).filter((key) => state.expandedSessions.has(key));
+  renderIfChanged(`sessions:${projectPath}`, { sessions, expandedHere }, () => {
+    withPreservedScroll(container, () => {
+      target.innerHTML = sessionsSectionMarkup(projectPath, sessions);
+      wireSessionToggles(container, target, projectPath);
+    });
   });
 }
 

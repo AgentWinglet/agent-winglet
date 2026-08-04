@@ -404,11 +404,19 @@ body {
   transform: translateY(0);
 }
 
+/* Cards are narrower than a full-width bar row, so the last card's icon sits
+   close enough to the right edge that a left-anchored 260px tooltip would run
+   past it — anchor from the right instead, only for that one card. */
+.card-grid .card:last-child .info-affordance .tooltip {
+  left: auto;
+  right: 0;
+}
+
 /* --- Cards --- */
 
 .card-grid {
   display: grid;
-  grid-template-columns: 1.6fr 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
   margin-bottom: 8px;
 }
@@ -417,19 +425,11 @@ body {
   .card-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-
-  .card-grid .card:first-child {
-    grid-column: 1 / -1;
-  }
 }
 
 @media (max-width: 380px) {
   .card-grid {
     grid-template-columns: 1fr;
-  }
-
-  .card-grid .card:first-child {
-    grid-column: auto;
   }
 }
 
@@ -441,11 +441,10 @@ body {
   min-width: 0;
 }
 
-.card-grid .card:first-child {
-  border-top: 1px solid rgba(63, 224, 138, 0.35);
-}
-
 .card-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   font-size: 12px;
   font-weight: 600;
   color: var(--text-secondary);
@@ -460,10 +459,6 @@ body {
   font-size: 16px;
   color: var(--text-primary);
   font-variant-numeric: tabular-nums;
-}
-
-.card-grid .card:first-child .card-detail {
-  font-size: 22px;
 }
 
 .card-sub {

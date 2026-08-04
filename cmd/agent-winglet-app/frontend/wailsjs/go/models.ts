@@ -28,6 +28,7 @@ export namespace main {
 	}
 	export class Card {
 	    label: string;
+	    tooltip: string;
 	    detail: string;
 	    sub: string;
 	
@@ -38,6 +39,7 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.label = source["label"];
+	        this.tooltip = source["tooltip"];
 	        this.detail = source["detail"];
 	        this.sub = source["sub"];
 	    }
