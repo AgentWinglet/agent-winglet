@@ -1,8 +1,11 @@
 package stats
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/umitkaanusta/agent-winglet/internal/statedir"
 	"github.com/umitkaanusta/agent-winglet/internal/transcript"
 )
 
@@ -185,93 +188,115 @@ func TestInvalidateSessionOnMissingFileIsNotAnError(t *testing.T) {
 	}
 }
 
-func TestLifetimeAddAccumulatesAcrossSessions(t *testing.T) {
+func TestSumProjectAccumulatesAcrossSessions(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 
-	l, err := LoadLifetime(dir)
+	r, err := SumProject(dir)
 	if err != nil {
-		t.Fatalf("LoadLifetime failed: %v", err)
+		t.Fatalf("SumProject on empty project failed: %v", err)
 	}
-	if l.Sessions != 0 {
-		t.Fatalf("expected fresh lifetime tally, got %+v", l)
+	if r.Sessions != 0 {
+		t.Fatalf("expected fresh rollup, got %+v", r)
 	}
 
 	s1 := &Session{}
 	s1.RecordDedup(100)
 	s1.SetTranscriptUsage(transcript.SessionUsage{Tokens: 1000, CostUSD: 0.4, ContentBytes: 3000})
-	l.Add(s1)
+	if err := SaveSession(dir, "sess1", s1); err != nil {
+		t.Fatalf("SaveSession sess1 failed: %v", err)
+	}
 
 	s2 := &Session{}
 	s2.RecordDedup(50)
 	s2.RecordRetire(25)
 	s2.SetTranscriptUsage(transcript.SessionUsage{Tokens: 500, CostUSD: 0.1, ContentBytes: 1500})
-	l.Add(s2)
+	if err := SaveSession(dir, "sess2", s2); err != nil {
+		t.Fatalf("SaveSession sess2 failed: %v", err)
+	}
 
-	if l.Sessions != 2 {
-		t.Fatalf("Sessions = %d, want 2", l.Sessions)
+	r, err = SumProject(dir)
+	if err != nil {
+		t.Fatalf("SumProject failed: %v", err)
 	}
-	if l.DedupHits != 2 || l.DedupBytes != 150 {
-		t.Fatalf("got DedupHits=%d DedupBytes=%d, want 2/150", l.DedupHits, l.DedupBytes)
+	if r.Sessions != 2 {
+		t.Fatalf("Sessions = %d, want 2", r.Sessions)
 	}
-	if l.RetiredCalls != 1 || l.RetiredBytes != 25 {
-		t.Fatalf("got RetiredCalls=%d RetiredBytes=%d, want 1/25", l.RetiredCalls, l.RetiredBytes)
+	if r.DedupHits != 2 || r.DedupBytes != 150 {
+		t.Fatalf("got DedupHits=%d DedupBytes=%d, want 2/150", r.DedupHits, r.DedupBytes)
 	}
-	if l.TranscriptTokens != 1500 || l.TranscriptCostUSD != 0.5 || l.TranscriptContentBytes != 4500 {
+	if r.RetiredCalls != 1 || r.RetiredBytes != 25 {
+		t.Fatalf("got RetiredCalls=%d RetiredBytes=%d, want 1/25", r.RetiredCalls, r.RetiredBytes)
+	}
+	if r.TranscriptTokens != 1500 || r.TranscriptCostUSD != 0.5 || r.TranscriptContentBytes != 4500 {
 		t.Fatalf("got TranscriptTokens=%d TranscriptCostUSD=%v TranscriptContentBytes=%d, want 1500/0.5/4500",
-			l.TranscriptTokens, l.TranscriptCostUSD, l.TranscriptContentBytes)
+			r.TranscriptTokens, r.TranscriptCostUSD, r.TranscriptContentBytes)
 	}
 }
 
-func TestLifetimeSurvivesSessionInvalidation(t *testing.T) {
+func TestSumProjectDropsInvalidatedSessions(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	sessionID := "sess1"
 
-	l, _ := LoadLifetime(dir)
 	s := &Session{}
 	s.RecordDedup(10)
-	l.Add(s)
-	if err := SaveLifetime(dir, l); err != nil {
-		t.Fatalf("SaveLifetime failed: %v", err)
-	}
 	if err := SaveSession(dir, sessionID, s); err != nil {
 		t.Fatalf("SaveSession failed: %v", err)
 	}
 
-	// Invalidating the session tally (as SessionStart/PostCompact do) must
-	// not touch the lifetime tally — it isn't keyed by session_id at all.
+	// Invalidating the session tally (as SessionStart/PostCompact do)
+	// removes the file entirely — since the rollup is a live sum of
+	// on-disk session files, an invalidated session simply drops out of it,
+	// with no separate ledger left holding a stale copy of its numbers.
 	if err := InvalidateSession(dir, sessionID); err != nil {
 		t.Fatalf("InvalidateSession failed: %v", err)
 	}
 
-	reloaded, err := LoadLifetime(dir)
+	r, err := SumProject(dir)
 	if err != nil {
-		t.Fatalf("LoadLifetime after session invalidation failed: %v", err)
+		t.Fatalf("SumProject after session invalidation failed: %v", err)
 	}
-	if reloaded.Sessions != 1 || reloaded.DedupHits != 1 || reloaded.DedupBytes != 10 {
-		t.Fatalf("lifetime tally changed after session invalidation: %+v", reloaded)
+	if r.Sessions != 0 || r.DedupHits != 0 || r.DedupBytes != 0 {
+		t.Fatalf("expected an invalidated session to drop out of the rollup, got %+v", r)
 	}
 }
 
-func TestLifetimeSaveThenLoadRoundTrips(t *testing.T) {
+func TestListSessionsExcludesLegacyLifetimeFile(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 
-	l, _ := LoadLifetime(dir)
 	s := &Session{}
 	s.RecordBudgetTrim(15, 150)
-	s.SetTranscriptUsage(transcript.SessionUsage{Tokens: 750, CostUSD: 0.3, ContentBytes: 2250})
-	l.Add(s)
-	if err := SaveLifetime(dir, l); err != nil {
-		t.Fatalf("SaveLifetime failed: %v", err)
+	if err := SaveSession(dir, "sess1", s); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
 	}
 
-	reloaded, err := LoadLifetime(dir)
+	d, err := statedir.Dir(dir)
 	if err != nil {
-		t.Fatalf("LoadLifetime failed: %v", err)
+		t.Fatalf("statedir.Dir failed: %v", err)
 	}
-	if *reloaded != *l {
-		t.Fatalf("reloaded lifetime = %+v, want %+v", reloaded, l)
+	// A leftover pre-Rollup lifetime.stats.json shares enough JSON field
+	// names with Session that, if not excluded, it would get parsed as a
+	// bogus extra session and double-count its own history.
+	legacyPath := filepath.Join(d, LifetimeFileName)
+	if err := os.WriteFile(legacyPath, []byte(`{"sessions":1,"dedupHits":99,"dedupBytes":9900}`), 0o644); err != nil {
+		t.Fatalf("writing legacy lifetime file failed: %v", err)
+	}
+
+	files, err := ListSessions(dir)
+	if err != nil {
+		t.Fatalf("ListSessions failed: %v", err)
+	}
+	if len(files) != 1 || files[0].ID != "sess1" {
+		t.Fatalf("ListSessions = %+v, want only sess1 (lifetime.stats.json must be excluded)", files)
+	}
+
+	r, err := SumProject(dir)
+	if err != nil {
+		t.Fatalf("SumProject failed: %v", err)
+	}
+	if r.DedupHits != 0 {
+		t.Fatalf("SumProject picked up the legacy lifetime file's dedupHits, got %+v", r)
 	}
 }
