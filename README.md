@@ -1,15 +1,9 @@
-# agent-winglet
-Get X% more usage on the same Claude Code / Codex plan
+# Agent Winglet
 
-## Savings receipt
+**Get more Claude Code usage out of the same weekly cap.**
 
-At the end of a session (if at least one mechanism fired), agent-winglet
-prints a one-line summary of what it did — repeat commands deduped, long
-outputs trimmed, investigate calls retired post-boundary — plus a running
-lifetime total across sessions. It reports raw suppressed-content counts,
-not a cost or token-savings figure (no such measurement exists yet). Set
-`AGENT_WINGLET_QUIET=1` to suppress the message; every underlying mechanism
-stays active either way.
+[![CI](https://github.com/umitkaanusta/agent-winglet/actions/workflows/ci.yml/badge.svg)](https://github.com/umitkaanusta/agent-winglet/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ## Install
 
@@ -56,9 +50,8 @@ and corrupt the ledger's turn tracking.
 **The app**: unlike the hook, this is always built from your local
 checkout — its frontend build output isn't checked into git (it's
 generated), so `go install` can't fetch a working copy of it the way it can
-for the hook. `install.sh` builds it (`make app` under the hood — see
-"Desktop app" below) and installs the result to the standard per-OS
-location:
+for the hook. `install.sh` builds it (`make app` under the hood) and installs
+the result to the standard per-OS location:
 
 | OS      | Installed to                                          |
 |---------|--------------------------------------------------------|
@@ -105,37 +98,6 @@ Add:
 
 `./uninstall.sh --purge-binary --purge-data -y` does a full teardown.
 
-## Desktop app
-
-`cmd/agent-winglet-app` is a small cross-platform dashboard (Wails — Go
-backend, OS-native webview frontend) that shows the savings receipt data
-above without reading JSON files by hand: an Overview screen with a
-lifetime hero stat and per-mechanism cards summed across every registered
-project, a Projects screen breaking that down per project (and showing
-whether the hook is actually wired into that project's `.claude/settings.json`
-right now, not just registry presence), and a Settings screen for the one
-wired toggle today — quiet mode, via `~/.agent-winglet/config.json`
-(`AGENT_WINGLET_QUIET`, if set, still takes precedence for that session).
-
-No system-tray/menu-bar icon: building `getlantern/systray` alongside Wails
-in the same binary fails at link time on macOS (both declare an Objective-C
-class named `AppDelegate`, which collides as a duplicate symbol) — not a
-design choice. Dock/taskbar icon only.
-
-```
-make app   # builds cmd/agent-winglet-app into a native .app/.exe/binary,
-           # at cmd/agent-winglet-app/build/bin/ — install.sh handles
-           # copying that into the right place for your OS (see "Install")
-```
-
-On macOS this requires `CGO_LDFLAGS="-framework UniformTypeIdentifiers"`
-(see the Makefile comment) — recent Xcode SDKs don't pull that framework
-in as a transitive link the way Wails' darwin frontend code expects.
-`make app` sets this for you. On Linux it probes `pkg-config` to pick the
-right webkit2gtk build tag (Ubuntu 24.04+ needs `-tags webkit2_41`; older
-versions don't) — same distinction the CI matrix in
-`.github/workflows/app-build.yml` handles explicitly.
-
 ## Developing this repo
 
 ```
@@ -147,3 +109,7 @@ This repo's own `.claude/settings.json` is a dev/test fixture — it points
 at the locally-built `bin/ledger-hook` so the hook can be exercised against
 this repo itself while working on it. It is not the install mechanism end
 users go through; that's `install.sh`/`uninstall.sh` above.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

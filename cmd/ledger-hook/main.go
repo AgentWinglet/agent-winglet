@@ -27,9 +27,11 @@
 //     dir (see migrateLegacyData). The hook installs globally now, so
 //     SessionStart/PostCompact is the only place a project gets registered.
 //   - SessionEnd: emits a one-time "savings receipt" systemMessage
-//     summarizing what the above mechanisms did this session (see
-//     handleSessionEnd), then folds the session's tally into a lifetime
-//     total. SessionEnd was confirmed to support the systemMessage output
+//     summarizing what the above mechanisms did this session, plus the
+//     project's lifetime total — computed fresh across every session file on
+//     disk, not a separately maintained running total (see
+//     internal/stats.SumProject and handleSessionEnd). SessionEnd was
+//     confirmed to support the systemMessage output
 //     field (a universal field, per the hooks reference) on 2026-08-03 —
 //     unlike hookSpecificOutput.additionalContext, which is not documented
 //     for this event and isn't needed here since no further model turn
@@ -59,9 +61,16 @@ import (
 	"github.com/umitkaanusta/agent-winglet/internal/projectroot"
 	"github.com/umitkaanusta/agent-winglet/internal/registry"
 	"github.com/umitkaanusta/agent-winglet/internal/retire"
+	"github.com/umitkaanusta/agent-winglet/internal/statedir"
 	"github.com/umitkaanusta/agent-winglet/internal/stats"
 	"github.com/umitkaanusta/agent-winglet/internal/transcript"
 )
+
+// legacySessionID is the synthetic session file that absorbs pre-Rollup
+// history during migration (see migrateLegacyData). Never a real Claude Code
+// session_id (those are UUIDs), so it can't collide with one; it just
+// participates in stats.SumProject like any other session file from then on.
+const legacySessionID = "legacy-migrated"
 
 // Output budgeting by outcome: a first-time (non-repeat) command that
 // succeeded but produced a long stdout gets collapsed to its head and tail.
@@ -200,57 +209,98 @@ func handle(in hookInput) (*hookOutput, error) {
 	return nil, nil
 }
 
-// migrateLegacyData reclaims a pre-move-storage install's per-project state
-// (<cwd>/.claude/agent-winglet/) into the new global location for root. Only
-// lifetime.stats.json has lasting value — everything else in that directory
-// is session-scoped and was already designed to never survive a restart, so
-// losing it mid-upgrade is a non-event. This runs against the raw cwd (not
-// root) on every SessionStart/PostCompact, so each stale per-subdirectory
+// legacyLifetime mirrors the JSON shape of a pre-Rollup lifetime.stats.json
+// file (the type that used to live there, stats.Lifetime, no longer exists —
+// see internal/stats' package doc) so migrateLegacyData can still read one
+// left over from before this codebase switched project/overall totals to a
+// pure sum of session files.
+type legacyLifetime struct {
+	DedupHits              int     `json:"dedupHits"`
+	DedupBytes             int64   `json:"dedupBytes"`
+	BudgetTrims            int     `json:"budgetTrims"`
+	BudgetLinesOmitted     int     `json:"budgetLinesOmitted"`
+	BudgetBytesOmitted     int64   `json:"budgetBytesOmitted"`
+	RetiredCalls           int     `json:"retiredCalls"`
+	RetiredBytes           int64   `json:"retiredBytes"`
+	TranscriptTokens       int64   `json:"transcriptTokens"`
+	TranscriptCostUSD      float64 `json:"transcriptCostUsd"`
+	TranscriptContentBytes int64   `json:"transcriptContentBytes"`
+}
+
+// migrateLegacyData reclaims two things that predate stats.SumProject's
+// sum-of-session-files model, both by folding their counts onto the
+// legacy-migrated seed session (see legacySessionID) rather than into a
+// second persisted ledger of their own:
+//
+//  1. A pre-move-storage install's per-project state
+//     (<cwd>/.claude/agent-winglet/lifetime.stats.json). Only the lifetime
+//     figures have lasting value — everything else in that directory is
+//     session-scoped and was already designed to never survive a restart,
+//     so losing it mid-upgrade is a non-event.
+//  2. This project's own current-layout lifetime.stats.json (root's state
+//     dir), from before this switch — otherwise its history would just be
+//     silently orphaned on disk, never summed again.
+//
+// This runs on every SessionStart/PostCompact so a stale per-subdirectory
 // dir left over from the old cwd-keyed layout gets folded in and cleaned up
 // independently, the next time a session happens to start from that
-// particular subdirectory. It merges rather than overwrites, so the order
-// that happens in across multiple old dirs doesn't matter.
+// particular subdirectory. Each fold reads-mutates-saves the same seed
+// session (see mergeLegacyLifetime), so calling it repeatedly, or across
+// multiple old dirs, never double-counts.
 //
 // Best-effort: errors are logged to stderr, never surfaced to the hook's
 // caller, matching this codebase's existing fail-soft convention for state
 // I/O.
 func migrateLegacyData(cwd, root string) {
 	legacyDir := filepath.Join(cwd, ".claude", "agent-winglet")
-	info, err := os.Stat(legacyDir)
-	if err != nil || !info.IsDir() {
-		return
-	}
-
-	legacyLifetimePath := filepath.Join(legacyDir, "lifetime.stats.json")
-	if data, err := os.ReadFile(legacyLifetimePath); err == nil {
-		var old stats.Lifetime
-		if err := json.Unmarshal(data, &old); err != nil {
-			fmt.Fprintln(os.Stderr, "ledger-hook: migration: corrupt legacy lifetime stats, skipping merge:", err)
-		} else {
-			merged, err := stats.LoadLifetime(root)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "ledger-hook: migration: loading new lifetime stats failed:", err)
-			} else {
-				merged.Sessions += old.Sessions
-				merged.DedupHits += old.DedupHits
-				merged.DedupBytes += old.DedupBytes
-				merged.BudgetTrims += old.BudgetTrims
-				merged.BudgetLinesOmitted += old.BudgetLinesOmitted
-				merged.BudgetBytesOmitted += old.BudgetBytesOmitted
-				merged.RetiredCalls += old.RetiredCalls
-				merged.RetiredBytes += old.RetiredBytes
-				merged.TranscriptTokens += old.TranscriptTokens
-				merged.TranscriptCostUSD += old.TranscriptCostUSD
-				merged.TranscriptContentBytes += old.TranscriptContentBytes
-				if err := stats.SaveLifetime(root, merged); err != nil {
-					fmt.Fprintln(os.Stderr, "ledger-hook: migration: saving merged lifetime stats failed:", err)
-				}
-			}
+	if info, err := os.Stat(legacyDir); err == nil && info.IsDir() {
+		mergeLegacyLifetime(root, filepath.Join(legacyDir, stats.LifetimeFileName))
+		if err := os.RemoveAll(legacyDir); err != nil {
+			fmt.Fprintln(os.Stderr, "ledger-hook: migration: removing legacy dir failed:", err)
 		}
 	}
 
-	if err := os.RemoveAll(legacyDir); err != nil {
-		fmt.Fprintln(os.Stderr, "ledger-hook: migration: removing legacy dir failed:", err)
+	if d, err := statedir.Dir(root); err == nil {
+		mergeLegacyLifetime(root, filepath.Join(d, stats.LifetimeFileName))
+	}
+}
+
+// mergeLegacyLifetime folds one old lifetime.stats.json's counts onto the
+// legacy-migrated seed session and removes the file. A missing or unreadable
+// path is a silent no-op (nothing to migrate); a corrupt file is logged and
+// skipped, leaving the file in place rather than losing its data.
+func mergeLegacyLifetime(root, path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var old legacyLifetime
+	if err := json.Unmarshal(data, &old); err != nil {
+		fmt.Fprintln(os.Stderr, "ledger-hook: migration: corrupt legacy lifetime stats, skipping merge:", err)
+		return
+	}
+
+	seed, err := stats.LoadSession(root, legacySessionID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ledger-hook: migration: loading seed session failed:", err)
+		return
+	}
+	seed.DedupHits += old.DedupHits
+	seed.DedupBytes += old.DedupBytes
+	seed.BudgetTrims += old.BudgetTrims
+	seed.BudgetLinesOmitted += old.BudgetLinesOmitted
+	seed.BudgetBytesOmitted += old.BudgetBytesOmitted
+	seed.RetiredCalls += old.RetiredCalls
+	seed.RetiredBytes += old.RetiredBytes
+	seed.TranscriptTokens += old.TranscriptTokens
+	seed.TranscriptCostUSD += old.TranscriptCostUSD
+	seed.TranscriptContentBytes += old.TranscriptContentBytes
+	if err := stats.SaveSession(root, legacySessionID, seed); err != nil {
+		fmt.Fprintln(os.Stderr, "ledger-hook: migration: saving seed session failed:", err)
+		return
+	}
+	if err := os.Remove(path); err != nil {
+		fmt.Fprintln(os.Stderr, "ledger-hook: migration: removing legacy lifetime file failed:", err)
 	}
 }
 
@@ -404,8 +454,41 @@ func recordStat(projectDir, sessionID string, mutate func(*stats.Session)) error
 	return stats.SaveSession(projectDir, sessionID, s)
 }
 
+// recordTranscriptDelta reads whatever the transcript gained since this
+// session's last recorded offset and folds it in — the incremental
+// counterpart to handleSessionEnd's one-shot full read. Bounded to new
+// content only (transcript.ReadSessionUsageFrom), so running this on every
+// PostToolUse costs O(this call's new lines), not O(the whole transcript so
+// far) — the latter would make hook latency grow with session length, in a
+// tool whose entire purpose is cutting round-trip cost, not adding to it.
+// No-ops (cheaply) when nothing new has landed since the last call.
+func recordTranscriptDelta(projectDir string, in hookInput) error {
+	s, err := stats.LoadSession(projectDir, in.SessionID)
+	if err != nil {
+		return err
+	}
+	delta, newOffset, err := transcript.ReadSessionUsageFrom(in.TranscriptPath, s.TranscriptOffset)
+	if err != nil {
+		return err
+	}
+	if newOffset == s.TranscriptOffset {
+		return nil
+	}
+	s.AddTranscriptUsage(delta, newOffset)
+	return stats.SaveSession(projectDir, in.SessionID, s)
+}
+
 func handlePostToolUse(in hookInput) (*hookOutput, error) {
 	root := projectroot.Resolve(in.Cwd)
+
+	// Live transcript-usage tracking runs unconditionally, before any of the
+	// tool-specific branches below (several of which return early) — the
+	// transcript grows on every tool call, not just the ones a mechanism
+	// below fires on, so this can't be folded into any single branch's
+	// early return without under-counting the calls that take other paths.
+	if err := recordTranscriptDelta(root, in); err != nil {
+		return nil, err
+	}
 
 	out, pastBoundary, err := handlePhaseBoundary(in, root)
 	if err != nil {
@@ -518,11 +601,13 @@ func quiet() bool {
 
 // handleSessionEnd emits the session's savings receipt: a summary of what
 // the ledger (dedup), output-budgeting, and retirement mechanisms did this
-// session, plus the running lifetime total. If no mechanism fired this
-// session, it emits nothing — a receipt reporting "0 things happened" is
-// noise, not signal (see the package doc's zero-activity note). The
-// session's tally is folded into the lifetime tally either way once it's
-// non-zero, even when AGENT_WINGLET_QUIET suppresses the message itself.
+// session, plus the project's lifetime total (stats.SumProject, computed
+// fresh across every session file — this one included, since it's saved
+// below before the sum runs). If no mechanism fired this session, it emits
+// nothing — a receipt reporting "0 things happened" is noise, not signal
+// (see the package doc's zero-activity note). The session's final numbers
+// are still persisted to disk either way, even when AGENT_WINGLET_QUIET
+// suppresses the message itself, so they count toward every future rollup.
 func handleSessionEnd(in hookInput) (*hookOutput, error) {
 	root := projectroot.Resolve(in.Cwd)
 
@@ -530,41 +615,52 @@ func handleSessionEnd(in hookInput) (*hookOutput, error) {
 	if err != nil {
 		return nil, err
 	}
-	if sess.IsZero() {
-		return nil, nil
-	}
+	hadMechanismActivity := !sess.IsZero()
 
 	// Read errors are swallowed (fields stay zero) — the transcript is real
 	// usage data if the read succeeds, and a "no data yet" fallback exists
 	// downstream (see stats.Session.TranscriptTokens' doc comment) for
-	// whenever it doesn't.
+	// whenever it doesn't. This full re-read (as opposed to the incremental,
+	// offset-based one PostToolUse uses — see recordTranscriptDelta) is the
+	// authoritative reconciliation pass: it overwrites whatever got
+	// accumulated turn-by-turn with one clean read of the whole final file.
 	if usage, err := transcript.ReadSessionUsage(in.TranscriptPath); err == nil {
 		sess.SetTranscriptUsage(usage)
 	}
-	// Persist the transcript usage onto the per-session file too, not just
-	// the in-memory copy folded into lifetime below — GetSessionStats reads
-	// this file back later for the per-session breakdown, and without this
-	// write it would always see zero transcript data even for a completed
-	// session.
+
+	// A session worth folding into lifetime is one with either suppression
+	// activity or real transcript usage — not just the former. Before
+	// PostToolUse tracked transcript usage live, "no mechanism fired" and
+	// "nothing worth recording" were the same condition; they no longer are
+	// — a session that only read/edited files (no Bash dedup/trim, no
+	// post-boundary retire) still has a real, nonzero transcriptContentBytes
+	// figure the desktop app's live Overview/Projects rollup needs.
+	if !hadMechanismActivity && sess.TranscriptContentBytes == 0 {
+		return nil, nil
+	}
+
+	// Persist the final transcript numbers onto the per-session file —
+	// GetSessionStats (cmd/agent-winglet-app) reads this file back later for
+	// the per-session breakdown, and without this write it would always see
+	// zero transcript data for a completed session.
 	if err := stats.SaveSession(root, in.SessionID, sess); err != nil {
 		return nil, err
 	}
 
-	lifetime, err := stats.LoadLifetime(root)
-	if err != nil {
-		return nil, err
-	}
-	lifetime.Add(sess)
-	if err := stats.SaveLifetime(root, lifetime); err != nil {
-		return nil, err
-	}
-
-	if quiet() {
+	// The printed receipt stays gated on suppression activity specifically
+	// — "0 things suppressed" is noise even when real transcript pricing
+	// data exists to report (see receiptMessage's doc comment: it's a
+	// suppression report, not a general usage report).
+	if quiet() || !hadMechanismActivity {
 		return nil, nil
 	}
 
+	rollup, err := stats.SumProject(root)
+	if err != nil {
+		return nil, err
+	}
 	return &hookOutput{
-		SystemMessage: receiptMessage(sess, lifetime),
+		SystemMessage: receiptMessage(sess, rollup),
 		HookSpecificOutput: hookSpecificOutput{
 			HookEventName: "SessionEnd",
 		},
@@ -587,7 +683,7 @@ func handleSessionEnd(in hookInput) (*hookOutput, error) {
 // rates, not a re-measurement of total billed cost, and it carries its own
 // caveat/tooltip there. This terminal receipt stays bytes-only on purpose —
 // it has no room for that caveat, so it doesn't carry the estimate.
-func receiptMessage(s *stats.Session, l *stats.Lifetime) string {
+func receiptMessage(s *stats.Session, r stats.Rollup) string {
 	var parts []string
 	if s.DedupHits > 0 {
 		parts = append(parts, fmt.Sprintf("%d repeat command%s deduped (%d bytes not replayed)",
@@ -605,7 +701,7 @@ func receiptMessage(s *stats.Session, l *stats.Lifetime) string {
 	return fmt.Sprintf(
 		"[agent-winglet] this session: %s. Lifetime across %d session%s: %d dedup hits, %d trims, %d retires. "+
 			"(Raw suppressed-content counts, not a validated usage or cost figure.)",
-		strings.Join(parts, ", "), l.Sessions, plural(l.Sessions), l.DedupHits, l.BudgetTrims, l.RetiredCalls,
+		strings.Join(parts, ", "), r.Sessions, plural(r.Sessions), r.DedupHits, r.BudgetTrims, r.RetiredCalls,
 	)
 }
 

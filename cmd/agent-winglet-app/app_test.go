@@ -34,6 +34,46 @@ func TestBuildOverviewNoDataYetWhenNothingProcessed(t *testing.T) {
 	}
 }
 
+// TestBuildOverviewShowsLiveActivityBeforeTranscriptIsReadable is the
+// in-progress-session case: dedup/budget/retire have fired (as they do live,
+// on every PostToolUse) but TranscriptContentBytes is still zero, exactly
+// like every session looks for its entire duration until SessionEnd. Before
+// this test existed, this state was indistinguishable from
+// TestBuildOverviewNoDataYetWhenNothingProcessed — a running session with
+// real suppression activity rendered identically to one that had done
+// nothing at all.
+func TestBuildOverviewShowsLiveActivityBeforeTranscriptIsReadable(t *testing.T) {
+	o := buildOverview(overviewTotals{
+		BudgetTrims: 9, BudgetLinesOmitted: 1947, BudgetBytesOmitted: 93983,
+	}, 1, 1)
+
+	if o.HasTranscriptData {
+		t.Fatalf("expected HasTranscriptData = false with no transcript content bytes, got true")
+	}
+	if !o.HasActivity {
+		t.Fatalf("expected HasActivity = true with nonzero suppressed bytes")
+	}
+	if o.HeroHeadline == "No data yet" {
+		t.Fatalf("HeroHeadline = %q, want it to reflect the real suppressed bytes instead of hiding them", o.HeroHeadline)
+	}
+	if !strings.Contains(o.HeroHeadline, "suppressed so far") {
+		t.Fatalf("HeroHeadline = %q, want it to mention suppressed bytes so far", o.HeroHeadline)
+	}
+	if o.BytesSavedCard.Detail == "no data yet" {
+		t.Fatalf("BytesSavedCard.Detail should show real suppressed bytes once a mechanism has fired, got %q", o.BytesSavedCard.Detail)
+	}
+	// Tokens/dollars genuinely need the completed transcript's cost-per-token
+	// rate — those two staying "no data yet" mid-session is correct, not a
+	// regression of this fix.
+	if o.TokensSavedCard.Detail != "no data yet" || o.DollarSavedCard.Detail != "no data yet" {
+		t.Fatalf("TokensSavedCard/DollarSavedCard should still read 'no data yet' without transcript data, got tokens=%q dollar=%q",
+			o.TokensSavedCard.Detail, o.DollarSavedCard.Detail)
+	}
+	if o.HeroUsageDetail == "no data yet" || o.HeroUsageDetail == "" {
+		t.Fatalf("HeroUsageDetail = %q, want an explanation that percent saved is pending, not a blank/generic placeholder", o.HeroUsageDetail)
+	}
+}
+
 func TestBuildOverviewComputesBytesAndStretch(t *testing.T) {
 	o := buildOverview(overviewTotals{
 		DedupHits: 1, DedupBytes: 20,
@@ -167,13 +207,17 @@ func TestGetOverviewSumsAcrossProjects(t *testing.T) {
 		t.Fatalf("Register dir2 errored: %v", err)
 	}
 
-	l1 := &stats.Lifetime{Sessions: 1, DedupHits: 1, DedupBytes: 10, TranscriptContentBytes: 100}
-	if err := stats.SaveLifetime(dir1, l1); err != nil {
-		t.Fatalf("SaveLifetime dir1 errored: %v", err)
+	s1 := &stats.Session{DedupHits: 1, DedupBytes: 10, TranscriptContentBytes: 100}
+	if err := stats.SaveSession(dir1, "sess1", s1); err != nil {
+		t.Fatalf("SaveSession dir1 errored: %v", err)
 	}
-	l2 := &stats.Lifetime{Sessions: 2, RetiredCalls: 1, RetiredBytes: 20}
-	if err := stats.SaveLifetime(dir2, l2); err != nil {
-		t.Fatalf("SaveLifetime dir2 errored: %v", err)
+	s2a := &stats.Session{RetiredCalls: 1, RetiredBytes: 20}
+	if err := stats.SaveSession(dir2, "sess2a", s2a); err != nil {
+		t.Fatalf("SaveSession dir2/sess2a errored: %v", err)
+	}
+	s2b := &stats.Session{}
+	if err := stats.SaveSession(dir2, "sess2b", s2b); err != nil {
+		t.Fatalf("SaveSession dir2/sess2b errored: %v", err)
 	}
 
 	a := NewApp()
@@ -189,6 +233,80 @@ func TestGetOverviewSumsAcrossProjects(t *testing.T) {
 	}
 	if o.HeroHeadline == "No data yet" {
 		t.Fatalf("expected a computed hero headline across projects, got %q", o.HeroHeadline)
+	}
+}
+
+// TestGetOverviewIncludesLiveInProgressSessions is the regression test for
+// the bug report this fix originally addressed: Overview only ever
+// reflected a session's numbers once it had ended and been folded into a
+// separately persisted lifetime file — so a currently-running session
+// (however active) never moved the Overview screen's numbers no matter how
+// fast the frontend polled it. Now that GetOverview sums every session file
+// on disk directly (stats.SumProject), a still-in-progress session's file
+// counts the same as a finished one, with no "ended" distinction needed —
+// verified here by summing two never-finalized session files.
+func TestGetOverviewIncludesLiveInProgressSessions(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	if err := registry.Register(dir); err != nil {
+		t.Fatalf("Register errored: %v", err)
+	}
+
+	finished := &stats.Session{DedupHits: 1, DedupBytes: 10, TranscriptContentBytes: 100}
+	if err := stats.SaveSession(dir, "sess-finished", finished); err != nil {
+		t.Fatalf("SaveSession finished errored: %v", err)
+	}
+
+	// A still-running session's file — nothing marks it "finished" in this
+	// model, it's just another session file on disk. Its numbers must show
+	// up on top of the finished one's.
+	live := &stats.Session{BudgetTrims: 3, BudgetBytesOmitted: 900}
+	if err := stats.SaveSession(dir, "sess-live", live); err != nil {
+		t.Fatalf("SaveSession live errored: %v", err)
+	}
+
+	a := NewApp()
+	o, err := a.GetOverview()
+	if err != nil {
+		t.Fatalf("GetOverview errored: %v", err)
+	}
+	if o.HeroBytes != 910 {
+		t.Fatalf("HeroBytes = %d, want 910 (finished session's 10 + the live session's 900)", o.HeroBytes)
+	}
+	if o.SessionCount != 2 {
+		t.Fatalf("SessionCount = %d, want 2 (1 finished + 1 live in-progress session)", o.SessionCount)
+	}
+}
+
+// TestGetProjectsIncludesLiveInProgressSessions is GetProjects' counterpart
+// to TestGetOverviewIncludesLiveInProgressSessions — same reasoning, same
+// fix, different call site.
+func TestGetProjectsIncludesLiveInProgressSessions(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	if err := registry.Register(dir); err != nil {
+		t.Fatalf("Register errored: %v", err)
+	}
+
+	finished := &stats.Session{RetiredCalls: 1, RetiredBytes: 5}
+	if err := stats.SaveSession(dir, "sess-finished", finished); err != nil {
+		t.Fatalf("SaveSession finished errored: %v", err)
+	}
+	live := &stats.Session{DedupHits: 2, DedupBytes: 40}
+	if err := stats.SaveSession(dir, "sess-live", live); err != nil {
+		t.Fatalf("SaveSession live errored: %v", err)
+	}
+
+	a := NewApp()
+	rows, err := a.GetProjects()
+	if err != nil {
+		t.Fatalf("GetProjects errored: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	if rows[0].Overview.HeroBytes != 45 {
+		t.Fatalf("HeroBytes = %d, want 45 (finished session's 5 retired + the live session's 40 deduped)", rows[0].Overview.HeroBytes)
 	}
 }
 
@@ -217,8 +335,9 @@ func TestGetSessionStatsListsSessionsNewestFirstAndSkipsLifetime(t *testing.T) {
 	if err := os.Chtimes(newerPath, future, future); err != nil {
 		t.Fatalf("Chtimes errored: %v", err)
 	}
-	if err := stats.SaveLifetime(dir, &stats.Lifetime{Sessions: 1}); err != nil {
-		t.Fatalf("SaveLifetime errored: %v", err)
+	legacyPath := filepath.Join(agentDir, stats.LifetimeFileName)
+	if err := os.WriteFile(legacyPath, []byte(`{"dedupHits":99,"dedupBytes":9900}`), 0o644); err != nil {
+		t.Fatalf("write legacy lifetime file errored: %v", err)
 	}
 
 	a := NewApp()
@@ -246,14 +365,19 @@ func TestGetSessionStatsMissingDirReturnsEmpty(t *testing.T) {
 	}
 }
 
-func TestGetProjectsReturnsLifetimeOverviewPerProject(t *testing.T) {
+func TestGetProjectsReturnsSummedOverviewPerProject(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	if err := registry.Register(dir); err != nil {
 		t.Fatalf("Register errored: %v", err)
 	}
-	if err := stats.SaveLifetime(dir, &stats.Lifetime{Sessions: 2, DedupHits: 2, DedupBytes: 110}); err != nil {
-		t.Fatalf("SaveLifetime errored: %v", err)
+	s1 := &stats.Session{DedupHits: 1, DedupBytes: 60}
+	if err := stats.SaveSession(dir, "sess1", s1); err != nil {
+		t.Fatalf("SaveSession sess1 errored: %v", err)
+	}
+	s2 := &stats.Session{DedupHits: 1, DedupBytes: 50}
+	if err := stats.SaveSession(dir, "sess2", s2); err != nil {
+		t.Fatalf("SaveSession sess2 errored: %v", err)
 	}
 
 	a := NewApp()
@@ -266,6 +390,6 @@ func TestGetProjectsReturnsLifetimeOverviewPerProject(t *testing.T) {
 	}
 	row := rows[0]
 	if row.Overview.HeroBytes != 110 {
-		t.Fatalf("Overview (lifetime) HeroBytes = %d, want 110", row.Overview.HeroBytes)
+		t.Fatalf("Overview HeroBytes = %d, want 110 (60 + 50, summed across the project's sessions)", row.Overview.HeroBytes)
 	}
 }

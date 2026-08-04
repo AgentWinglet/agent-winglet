@@ -2,24 +2,27 @@
 // retirement path, and output budgeting) actually did, so a hook can surface
 // a session-end receipt instead of leaving every substitution invisible.
 //
-// Two separate lifecycles, both keyed on projectDir:
-//
-//   - Session: same same-session-only lifecycle as ledger/phase/retire —
-//     keyed additionally on session_id, wiped on SessionStart/PostCompact.
-//     A receipt describing "this session's" activity is meaningless once the
-//     session it describes is gone.
-//   - Lifetime: a single file, not keyed by session_id and never wiped. This
-//     doesn't violate the same-session-only constraint the other packages
-//     enforce: that constraint exists because a stale *substitution* is
-//     unsafe to replay across a session boundary. A plain count of how many
-//     times a mechanism has fired carries no such risk — it's never replayed
-//     into context, only displayed once as a number.
+// Session is the only thing persisted: one file per session_id under
+// projectDir, wiped on SessionStart/PostCompact same as ledger/phase/retire
+// (a receipt describing "this session's" activity is meaningless once the
+// session it describes is gone), but never deleted once a session ends —
+// see ListSessions. Project and cross-project totals are never separately
+// stored; SumProject computes them fresh by summing every on-disk session
+// file every time it's called, so a project's total and the sum of its
+// sessions can never disagree. This used to be two lifecycles — Session plus
+// a separately persisted, incrementally-folded Lifetime file — but that
+// second ledger could drift from the session files it was supposed to
+// summarize (e.g. a crash between marking a session "folded" and actually
+// folding it), so it's gone; SumProject is the only rollup path now.
 package stats
 
 import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
+	"time"
 
 	"github.com/umitkaanusta/agent-winglet/internal/statedir"
 	"github.com/umitkaanusta/agent-winglet/internal/transcript"
@@ -44,6 +47,13 @@ type Session struct {
 	TranscriptTokens       int64   `json:"transcriptTokens"`
 	TranscriptCostUSD      float64 `json:"transcriptCostUsd"`
 	TranscriptContentBytes int64   `json:"transcriptContentBytes"`
+	// TranscriptOffset is the transcript byte offset already folded into the
+	// three fields above via AddTranscriptUsage — purely internal
+	// bookkeeping for PostToolUse's incremental reads (see
+	// transcript.ReadSessionUsageFrom), never surfaced to the desktop app.
+	// Persisted here (not in a separate file) so it travels with the same
+	// load/mutate/save cycle every other per-session field already uses.
+	TranscriptOffset int64 `json:"transcriptOffset"`
 }
 
 // RecordDedup records one ledger repeat-hit that replaced would-be-replayed
@@ -81,6 +91,19 @@ func (s *Session) SetTranscriptUsage(u transcript.SessionUsage) {
 	s.TranscriptContentBytes = u.ContentBytes
 }
 
+// AddTranscriptUsage folds one incremental transcript.ReadSessionUsageFrom
+// delta onto the running total and advances TranscriptOffset past it — the
+// PostToolUse-time counterpart to SetTranscriptUsage's SessionEnd-time
+// one-shot copy. Called on every PostToolUse (see cmd/ledger-hook's
+// handlePostToolUse), so the desktop app's tokens/$ figures move live
+// instead of staying at zero until the session ends.
+func (s *Session) AddTranscriptUsage(delta transcript.SessionUsage, newOffset int64) {
+	s.TranscriptTokens += delta.Tokens
+	s.TranscriptCostUSD += delta.CostUSD
+	s.TranscriptContentBytes += delta.ContentBytes
+	s.TranscriptOffset = newOffset
+}
+
 // IsZero reports whether no mechanism fired this session. Transcript usage
 // is deliberately not part of this check — see TranscriptTokens' doc
 // comment.
@@ -88,40 +111,40 @@ func (s *Session) IsZero() bool {
 	return s.DedupHits == 0 && s.BudgetTrims == 0 && s.RetiredCalls == 0
 }
 
-// Lifetime is the running tally across every session, plus a count of how
-// many sessions have contributed to it.
-type Lifetime struct {
-	Sessions           int   `json:"sessions"`
-	DedupHits          int   `json:"dedupHits"`
-	DedupBytes         int64 `json:"dedupBytes"`
-	BudgetTrims        int   `json:"budgetTrims"`
-	BudgetLinesOmitted int   `json:"budgetLinesOmitted"`
-	BudgetBytesOmitted int64 `json:"budgetBytesOmitted"`
-	RetiredCalls       int   `json:"retiredCalls"`
-	RetiredBytes       int64 `json:"retiredBytes"`
-	// TranscriptTokens/TranscriptCostUSD/TranscriptContentBytes — see
-	// Session's fields of the same name. Folded in Add like every other
-	// field, excluded from IsZero (Lifetime has no IsZero; see Session's).
-	TranscriptTokens       int64   `json:"transcriptTokens"`
-	TranscriptCostUSD      float64 `json:"transcriptCostUsd"`
-	TranscriptContentBytes int64   `json:"transcriptContentBytes"`
+// Rollup is a plain summed total across a set of sessions, plus a count of
+// how many sessions contributed to it — the shape SumProject returns.
+// Unlike the old Lifetime type, a Rollup is never itself persisted: it's
+// always recomputed from on-disk session files (see SumProject), so there's
+// nothing for it to drift out of sync with.
+type Rollup struct {
+	Sessions           int
+	DedupHits          int
+	DedupBytes         int64
+	BudgetTrims        int
+	BudgetLinesOmitted int
+	BudgetBytesOmitted int64
+	RetiredCalls       int
+	RetiredBytes       int64
+
+	TranscriptTokens       int64
+	TranscriptCostUSD      float64
+	TranscriptContentBytes int64
 }
 
-// Add folds one session's tally into the lifetime tally and counts that
-// session toward Sessions. Callers only call this for a session whose tally
-// is non-zero (see the SessionEnd handler's zero-activity rule).
-func (l *Lifetime) Add(s *Session) {
-	l.Sessions++
-	l.DedupHits += s.DedupHits
-	l.DedupBytes += s.DedupBytes
-	l.BudgetTrims += s.BudgetTrims
-	l.BudgetLinesOmitted += s.BudgetLinesOmitted
-	l.BudgetBytesOmitted += s.BudgetBytesOmitted
-	l.RetiredCalls += s.RetiredCalls
-	l.RetiredBytes += s.RetiredBytes
-	l.TranscriptTokens += s.TranscriptTokens
-	l.TranscriptCostUSD += s.TranscriptCostUSD
-	l.TranscriptContentBytes += s.TranscriptContentBytes
+// add folds one session's tally into the rollup and counts it toward
+// Sessions.
+func (r *Rollup) add(s *Session) {
+	r.Sessions++
+	r.DedupHits += s.DedupHits
+	r.DedupBytes += s.DedupBytes
+	r.BudgetTrims += s.BudgetTrims
+	r.BudgetLinesOmitted += s.BudgetLinesOmitted
+	r.BudgetBytesOmitted += s.BudgetBytesOmitted
+	r.RetiredCalls += s.RetiredCalls
+	r.RetiredBytes += s.RetiredBytes
+	r.TranscriptTokens += s.TranscriptTokens
+	r.TranscriptCostUSD += s.TranscriptCostUSD
+	r.TranscriptContentBytes += s.TranscriptContentBytes
 }
 
 // Percent computes winglet_pct = suppressed / total * 100, where suppressed
@@ -183,13 +206,14 @@ func sessionPath(projectDir, sessionID string) (string, error) {
 	return filepath.Join(d, sessionID+".stats.json"), nil
 }
 
-func lifetimePath(projectDir string) (string, error) {
-	d, err := statedir.Dir(projectDir)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(d, "lifetime.stats.json"), nil
-}
+// LifetimeFileName is the on-disk name of the pre-Rollup lifetime ledger.
+// The type that used to live there is gone (see the package doc), but the
+// name is still needed to (a) exclude a leftover file from ListSessions —
+// its JSON shape overlaps enough of Session's fields that parsing it as a
+// session would silently double-count an old install's history — and (b)
+// let a caller migrate that leftover file's data forward (see
+// cmd/ledger-hook's migrateLegacyData).
+const LifetimeFileName = "lifetime.stats.json"
 
 func LoadSession(projectDir, sessionID string) (*Session, error) {
 	p, err := sessionPath(projectDir, sessionID)
@@ -227,24 +251,70 @@ func InvalidateSession(projectDir, sessionID string) error {
 	return err
 }
 
-func LoadLifetime(projectDir string) (*Lifetime, error) {
-	p, err := lifetimePath(projectDir)
-	if err != nil {
-		return nil, err
-	}
-	var l Lifetime
-	if err := loadJSON(p, &l); err != nil {
-		return nil, err
-	}
-	return &l, nil
+// SessionFile identifies one on-disk session-stats file and its
+// modification time — the closest thing to a session timestamp available,
+// since Session itself carries no clock reading.
+type SessionFile struct {
+	ID      string
+	ModTime time.Time
 }
 
-func SaveLifetime(projectDir string, l *Lifetime) error {
-	p, err := lifetimePath(projectDir)
+// ListSessions returns every session-stats file still on disk for
+// projectDir (excluding LifetimeFileName), newest first by modification
+// time. A project with no state dir yet (hook never fired here) returns an
+// empty slice, not an error — same fail-soft convention the rest of this
+// package follows.
+func ListSessions(projectDir string) ([]SessionFile, error) {
+	d, err := statedir.Dir(projectDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return saveJSON(p, l)
+	entries, err := os.ReadDir(d)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var files []SessionFile
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || name == LifetimeFileName || !strings.HasSuffix(name, ".stats.json") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, SessionFile{
+			ID:      strings.TrimSuffix(name, ".stats.json"),
+			ModTime: info.ModTime(),
+		})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].ModTime.After(files[j].ModTime) })
+	return files, nil
+}
+
+// SumProject sums every session-stats file on disk for projectDir into a
+// single Rollup. This is the only project or cross-project total this
+// package produces — callers wanting an overall figure across projects sum
+// multiple SumProject results themselves (see cmd/agent-winglet-app's
+// GetOverview) rather than reading a separately maintained global file.
+func SumProject(projectDir string) (Rollup, error) {
+	files, err := ListSessions(projectDir)
+	if err != nil {
+		return Rollup{}, err
+	}
+	var r Rollup
+	for _, f := range files {
+		s, err := LoadSession(projectDir, f.ID)
+		if err != nil {
+			return Rollup{}, err
+		}
+		r.add(s)
+	}
+	return r, nil
 }
 
 func loadJSON(path string, v interface{}) error {

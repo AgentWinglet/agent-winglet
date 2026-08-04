@@ -9,6 +9,7 @@ package transcript
 import (
 	"bufio"
 	"encoding/json"
+	"io"
 	"os"
 
 	"github.com/umitkaanusta/agent-winglet/internal/pricing"
@@ -101,33 +102,107 @@ func ReadSessionUsage(path string) (SessionUsage, error) {
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
 	for scanner.Scan() {
-		var line transcriptLine
-		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
-			continue
-		}
-
-		switch {
-		case line.Type == "assistant" && line.Message.Usage != nil:
-			rate := pricing.Lookup(line.Message.Model)
-			us := line.Message.Usage
-			cacheCreation1h := us.CacheCreation.Ephemeral1hInputTokens
-			cacheCreation5m := us.CacheCreation.Ephemeral5mInputTokens
-
-			tokens := us.InputTokens + cacheCreation1h + cacheCreation5m
-			u.Tokens += tokens
-
-			cost := float64(us.InputTokens)*rate.Input/1e6 +
-				float64(cacheCreation5m)*rate.CacheWrite5m/1e6 +
-				float64(cacheCreation1h)*rate.CacheWrite1h/1e6
-			u.CostUSD += cost
-
-		case line.Type == "user":
-			u.ContentBytes += int64(len(line.Message.Content))
-		}
+		accumulateLine(scanner.Bytes(), &u)
 	}
 	if err := scanner.Err(); err != nil {
 		return SessionUsage{}, nil
 	}
 
 	return u, nil
+}
+
+// accumulateLine parses one JSONL transcript line and folds it into u, the
+// same per-line logic ReadSessionUsage and ReadSessionUsageFrom both need. A
+// malformed line is skipped, not an error — matches ReadSessionUsage's
+// existing fail-soft convention.
+func accumulateLine(line []byte, u *SessionUsage) {
+	var tl transcriptLine
+	if err := json.Unmarshal(line, &tl); err != nil {
+		return
+	}
+
+	switch {
+	case tl.Type == "assistant" && tl.Message.Usage != nil:
+		rate := pricing.Lookup(tl.Message.Model)
+		us := tl.Message.Usage
+		cacheCreation1h := us.CacheCreation.Ephemeral1hInputTokens
+		cacheCreation5m := us.CacheCreation.Ephemeral5mInputTokens
+
+		tokens := us.InputTokens + cacheCreation1h + cacheCreation5m
+		u.Tokens += tokens
+
+		cost := float64(us.InputTokens)*rate.Input/1e6 +
+			float64(cacheCreation5m)*rate.CacheWrite5m/1e6 +
+			float64(cacheCreation1h)*rate.CacheWrite1h/1e6
+		u.CostUSD += cost
+
+	case tl.Type == "user":
+		u.ContentBytes += int64(len(tl.Message.Content))
+	}
+}
+
+// ReadSessionUsageFrom reads only the transcript content written since
+// offset — the incremental counterpart to ReadSessionUsage, built so a hook
+// that fires on every tool call (PostToolUse) can keep a session's usage
+// tally current without re-parsing the whole, ever-growing transcript file
+// from scratch on every single call. Returns the delta usage for just the
+// newly-read content and the byte offset to pass back in on the next call;
+// the caller is expected to accumulate the delta onto a running total (see
+// stats.Session.AddTranscriptUsage), not treat it as the session's full
+// usage.
+//
+// Unlike ReadSessionUsage's bufio.Scanner (which returns a final
+// non-newline-terminated token at EOF as-is), this uses bufio.Reader.
+// ReadBytes so a line still mid-write when this runs — real, since Claude
+// Code appends to the transcript live while a hook may run concurrently —
+// is detected and left unconsumed: the returned offset never advances past
+// an incomplete final line, so that line's content is read whole on a later
+// call instead of being silently split or lost. A one-shot read (like
+// ReadSessionUsage's, called once at SessionEnd) doesn't need this care,
+// since there's no "later call" to hand an unfinished line to.
+func ReadSessionUsageFrom(path string, offset int64) (SessionUsage, int64, error) {
+	var u SessionUsage
+	if path == "" {
+		return u, offset, nil
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return SessionUsage{}, offset, nil
+	}
+	defer f.Close()
+
+	if offset > 0 {
+		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+			return SessionUsage{}, offset, nil
+		}
+	}
+
+	reader := bufio.NewReaderSize(f, 64*1024)
+	pos := offset
+	for {
+		line, err := reader.ReadBytes('\n')
+		if err == nil {
+			// Complete line, newline included — safe to consume and count
+			// toward the offset.
+			pos += int64(len(line))
+			accumulateLine(line, &u)
+			continue
+		}
+		if err == io.EOF {
+			// A trailing chunk with no newline is either the true end of a
+			// complete write (nothing more coming, but we can't tell that
+			// from here) or a write still in progress. Either way, don't
+			// advance pos past it and don't count it now — a future call
+			// picks it up whole once the newline lands. len(line) == 0 at
+			// true EOF just means there was nothing new to read.
+			break
+		}
+		// Unexpected read error: stop here, keep whatever was accumulated
+		// and the offset up to the last fully-consumed line, matching this
+		// package's fail-soft convention elsewhere.
+		break
+	}
+
+	return u, pos, nil
 }

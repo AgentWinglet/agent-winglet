@@ -3,15 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
-	"strings"
-	"time"
 
 	"github.com/umitkaanusta/agent-winglet/internal/config"
 	"github.com/umitkaanusta/agent-winglet/internal/registry"
-	"github.com/umitkaanusta/agent-winglet/internal/statedir"
 	"github.com/umitkaanusta/agent-winglet/internal/stats"
 )
 
@@ -77,26 +73,41 @@ type BarRow struct {
 //     a fourth card restating it would just repeat the hero line.
 //  3. Bars — one row per suppression mechanism, descending by bytes.
 type Overview struct {
-	HeroBytes           int64    `json:"heroBytes"`
-	HeroTotalBytes      int64    `json:"heroTotalBytes"`
-	HeroTotalBytesLabel string   `json:"heroTotalBytesLabel"`
-	HeroPercent         float64  `json:"heroPercent"`
-	HeroHeadline        string   `json:"heroHeadline"`
-	HeroUsageDetail     string   `json:"heroUsageDetail"`
-	HeroUsageSub        string   `json:"heroUsageSub"`
-	HasTranscriptData   bool     `json:"hasTranscriptData"`
-	BytesSavedCard      Card     `json:"bytesSavedCard"`
-	TokensSavedCard     Card     `json:"tokensSavedCard"`
-	DollarSavedCard     Card     `json:"dollarSavedCard"`
-	Bars                []BarRow `json:"bars"`
-	ProjectCount        int      `json:"projectCount"`
-	SessionCount        int      `json:"sessionCount"`
+	HeroBytes           int64   `json:"heroBytes"`
+	HeroTotalBytes      int64   `json:"heroTotalBytes"`
+	HeroTotalBytesLabel string  `json:"heroTotalBytesLabel"`
+	HeroPercent         float64 `json:"heroPercent"`
+	HeroHeadline        string  `json:"heroHeadline"`
+	HeroUsageDetail     string  `json:"heroUsageDetail"`
+	HeroUsageSub        string  `json:"heroUsageSub"`
+	HasTranscriptData   bool    `json:"hasTranscriptData"`
+	// HasActivity is true the moment any mechanism (dedup/budget-trim/retire)
+	// has fired, independent of HasTranscriptData. Suppressed-byte totals
+	// need nothing but the hook's own live-written stats file; the percent-
+	// saved figure additionally needs this session's transcript, which is
+	// only read once, at SessionEnd (see internal/transcript and
+	// cmd/ledger-hook's handleSessionEnd). Without this split, a session
+	// that's still running always renders identically to a session that
+	// never did anything — real, live, moment-to-moment suppression data was
+	// being discarded for the entire lifetime of every in-progress session.
+	HasActivity     bool     `json:"hasActivity"`
+	BytesSavedCard  Card     `json:"bytesSavedCard"`
+	TokensSavedCard Card     `json:"tokensSavedCard"`
+	DollarSavedCard Card     `json:"dollarSavedCard"`
+	Bars            []BarRow `json:"bars"`
+	ProjectCount    int      `json:"projectCount"`
+	SessionCount    int      `json:"sessionCount"`
 }
 
-// GetOverview sums the lifetime tally of every project in the registry that
-// still exists on disk. A project whose lifetime.stats.json is missing
-// (hook installed but never fired yet) contributes a zero tally, not an
-// error.
+// GetOverview sums every project's session files (see stats.SumProject)
+// across every project in the registry that still exists on disk — a live,
+// still-in-progress session's file counts the same as a finished one, so
+// this screen moves as soon as a session's stats file changes, not only once
+// a session ends. A project with no state dir yet (hook installed but never
+// fired here) contributes a zero rollup, not an error. There is no
+// separately stored overall total: this is always the live sum of what's on
+// disk, so it can't drift from what GetProjects/GetSessionStats show for the
+// same projects.
 func (a *App) GetOverview() (Overview, error) {
 	dirs, err := registry.Load()
 	if err != nil {
@@ -106,21 +117,21 @@ func (a *App) GetOverview() (Overview, error) {
 	var total overviewTotals
 	sessions := 0
 	for _, dir := range dirs {
-		l, err := stats.LoadLifetime(dir)
+		r, err := stats.SumProject(dir)
 		if err != nil {
 			return Overview{}, err
 		}
-		total.add(totalsFromLifetime(l))
-		sessions += l.Sessions
+		total.add(totalsFromRollup(r))
+		sessions += r.Sessions
 	}
 
 	return buildOverview(total, len(dirs), sessions), nil
 }
 
 // overviewTotals is the minimal common shape buildOverview needs — both
-// stats.Session (one session's tally) and stats.Lifetime (a project or
-// cross-project rollup's tally) share these fields, just without a common
-// Go type, so callers adapt each into this before formatting.
+// stats.Session (one session's tally) and stats.Rollup (a project or
+// cross-project sum) share these fields, just without a common Go type, so
+// callers adapt each into this before formatting.
 type overviewTotals struct {
 	DedupHits          int
 	DedupBytes         int64
@@ -150,19 +161,19 @@ func (t *overviewTotals) add(o overviewTotals) {
 	t.TranscriptContentBytes += o.TranscriptContentBytes
 }
 
-func totalsFromLifetime(l *stats.Lifetime) overviewTotals {
+func totalsFromRollup(r stats.Rollup) overviewTotals {
 	return overviewTotals{
-		DedupHits:          l.DedupHits,
-		DedupBytes:         l.DedupBytes,
-		BudgetTrims:        l.BudgetTrims,
-		BudgetLinesOmitted: l.BudgetLinesOmitted,
-		BudgetBytesOmitted: l.BudgetBytesOmitted,
-		RetiredCalls:       l.RetiredCalls,
-		RetiredBytes:       l.RetiredBytes,
+		DedupHits:          r.DedupHits,
+		DedupBytes:         r.DedupBytes,
+		BudgetTrims:        r.BudgetTrims,
+		BudgetLinesOmitted: r.BudgetLinesOmitted,
+		BudgetBytesOmitted: r.BudgetBytesOmitted,
+		RetiredCalls:       r.RetiredCalls,
+		RetiredBytes:       r.RetiredBytes,
 
-		TranscriptTokens:       l.TranscriptTokens,
-		TranscriptCostUSD:      l.TranscriptCostUSD,
-		TranscriptContentBytes: l.TranscriptContentBytes,
+		TranscriptTokens:       r.TranscriptTokens,
+		TranscriptCostUSD:      r.TranscriptCostUSD,
+		TranscriptContentBytes: r.TranscriptContentBytes,
 	}
 }
 
@@ -180,10 +191,6 @@ func totalsFromSession(s *stats.Session) overviewTotals {
 		TranscriptCostUSD:      s.TranscriptCostUSD,
 		TranscriptContentBytes: s.TranscriptContentBytes,
 	}
-}
-
-func overviewFromLifetime(l *stats.Lifetime, projectCount int) Overview {
-	return buildOverview(totalsFromLifetime(l), projectCount, l.Sessions)
 }
 
 func overviewFromSession(s *stats.Session, projectCount, sessionCount int) Overview {
@@ -280,12 +287,23 @@ func barRows(t overviewTotals, total int64) []BarRow {
 func buildOverview(t overviewTotals, projectCount, sessionCount int) Overview {
 	suppressed := t.DedupBytes + t.BudgetBytesOmitted + t.RetiredBytes
 	total := t.TranscriptContentBytes + suppressed
+	hasActivity := suppressed > 0
 
 	pct, hasPct := stats.Percent(t.DedupBytes, t.BudgetBytesOmitted, t.RetiredBytes, t.TranscriptContentBytes)
 
+	// heroHeadline has three states, not two: real percent (transcript read,
+	// at SessionEnd), real-but-partial activity (a mechanism has already
+	// fired this session, but the transcript isn't readable yet), or
+	// genuinely nothing (a session that hasn't done anything). Collapsing
+	// the middle state into "No data yet" is what made a live, in-progress
+	// session look identical to an untouched one for its entire duration —
+	// see HasActivity's doc comment.
 	heroHeadline := "No data yet"
-	if hasPct {
+	switch {
+	case hasPct:
 		heroHeadline = fmt.Sprintf("%.0f%% saved", pct)
+	case hasActivity:
+		heroHeadline = fmt.Sprintf("%s suppressed so far", formatBytes(suppressed))
 	}
 
 	hasTranscriptData := t.TranscriptContentBytes > 0
@@ -307,17 +325,26 @@ func buildOverview(t overviewTotals, projectCount, sessionCount int) Overview {
 	// percent rather than a bare "Ax" multiplier with no unit. stats.Stretch
 	// gives that runway as a ratio of 1 (e.g. 1.6129), so subtracting 100
 	// after scaling to a percent yields "how much more," not "how much
-	// total."
+	// total." Tokens/dollars genuinely require the completed transcript
+	// (a cost-per-token rate derived from it), so those two cards stay "no
+	// data yet" through an in-progress session — that's an honest gap, not
+	// the same bug as the headline hiding data it already has.
 	heroUsageDetail := "no data yet"
 	heroUsageSub := ""
-	if hasPct {
+	switch {
+	case hasPct:
 		extraPercent := stats.Stretch(pct)*100 - 100
 		heroUsageDetail = fmt.Sprintf("~%.0f%% more usage", extraPercent)
 		heroUsageSub = "with the same plan"
+	case hasActivity:
+		heroUsageDetail = "% saved lands once this session ends"
 	}
 
+	// BytesSavedCard needs nothing but suppressed, which is already known
+	// live — it does not need the completed transcript the way tokens/
+	// dollars do, so it shouldn't wait for one either.
 	bytesSavedDetail := "no data yet"
-	if hasPct {
+	if hasActivity {
 		bytesSavedDetail = formatBytes(suppressed)
 	}
 
@@ -330,6 +357,7 @@ func buildOverview(t overviewTotals, projectCount, sessionCount int) Overview {
 		HeroUsageDetail:     heroUsageDetail,
 		HeroUsageSub:        heroUsageSub,
 		HasTranscriptData:   hasTranscriptData,
+		HasActivity:         hasActivity,
 		BytesSavedCard: Card{
 			Label: "Bytes saved", Detail: bytesSavedDetail,
 		},
@@ -399,7 +427,10 @@ type ProjectRow struct {
 	Overview  Overview `json:"overview"`
 }
 
-// GetProjects returns one row per registered, still-existing project.
+// GetProjects returns one row per registered, still-existing project. Each
+// row's Overview is that project's sum of session files (see
+// stats.SumProject) — the same rollup GetOverview sums across projects, so a
+// project row and its slice of Overview can never disagree.
 func (a *App) GetProjects() ([]ProjectRow, error) {
 	dirs, err := registry.Load()
 	if err != nil {
@@ -409,15 +440,16 @@ func (a *App) GetProjects() ([]ProjectRow, error) {
 	globalInstalled := registry.GlobalHookInstalled()
 	rows := make([]ProjectRow, 0, len(dirs))
 	for _, dir := range dirs {
-		l, err := stats.LoadLifetime(dir)
+		r, err := stats.SumProject(dir)
 		if err != nil {
 			return nil, err
 		}
+
 		rows = append(rows, ProjectRow{
 			Name:      filepath.Base(dir),
 			Path:      dir,
 			Installed: globalInstalled || registry.HookInstalled(dir),
-			Overview:  overviewFromLifetime(l, 1),
+			Overview:  buildOverview(totalsFromRollup(r), 1, r.Sessions),
 		})
 	}
 	return rows, nil
@@ -437,67 +469,22 @@ type SessionRow struct {
 	Overview  Overview `json:"overview"`
 }
 
-// sessionFileInfo identifies one <sessionID>.stats.json file on disk and its
-// modification time — the closest thing to a session timestamp available,
-// since the stats.Session content itself carries no clock reading.
-type sessionFileInfo struct {
-	id      string
-	modTime time.Time
-}
-
-// listSessionFiles returns every session-stats file still on disk for
-// projectDir (excluding lifetime.stats.json), newest first by modification
-// time. A project with no state dir yet (hook never fired here) returns an
-// empty slice, not an error, same fail-soft convention the rest of this
-// package follows.
-func listSessionFiles(projectDir string) ([]sessionFileInfo, error) {
-	dir, err := statedir.Dir(projectDir)
-	if err != nil {
-		return nil, err
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	var files []sessionFileInfo
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || name == "lifetime.stats.json" || !strings.HasSuffix(name, ".stats.json") {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		files = append(files, sessionFileInfo{
-			id:      strings.TrimSuffix(name, ".stats.json"),
-			modTime: info.ModTime(),
-		})
-	}
-	sort.Slice(files, func(i, j int) bool { return files[i].modTime.After(files[j].modTime) })
-	return files, nil
-}
-
 // GetSessionStats returns one row per session-stats file still on disk for
-// projectDir, newest first.
+// projectDir, newest first (see stats.ListSessions).
 func (a *App) GetSessionStats(projectDir string) ([]SessionRow, error) {
-	files, err := listSessionFiles(projectDir)
+	files, err := stats.ListSessions(projectDir)
 	if err != nil {
 		return nil, err
 	}
 
 	rows := make([]SessionRow, 0, len(files))
 	for _, f := range files {
-		s, err := stats.LoadSession(projectDir, f.id)
+		s, err := stats.LoadSession(projectDir, f.ID)
 		if err != nil {
 			return nil, err
 		}
 		rows = append(rows, SessionRow{
-			SessionID: f.id,
+			SessionID: f.ID,
 			Overview:  overviewFromSession(s, 1, 1),
 		})
 	}

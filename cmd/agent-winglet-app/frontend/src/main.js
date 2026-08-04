@@ -43,6 +43,29 @@ function navigate(screen) {
   render();
 }
 
+// Replacing a container's innerHTML on every poll tick can reset its scroll
+// position back to the top in a WebView, even though nothing about where
+// you were looking actually changed — jarring specifically on screens
+// designed to be watched continuously while numbers update every second.
+// Every poll-driven render captures scrollTop immediately before mutating
+// the DOM and restores it right after, so watching a session's numbers move
+// never yanks the view back to the top mid-read.
+function withPreservedScroll(el, mutate) {
+  const top = el.scrollTop;
+  mutate();
+  el.scrollTop = top;
+  // The synchronous restore above isn't always enough: some WebViews (this
+  // app's frontend runs in one, not a regular browser tab) run a layout
+  // pass on the next frame after a large innerHTML swap that can re-clamp
+  // scrollTop back toward 0 before that first assignment is visually
+  // committed — restoring again once that frame settles closes the gap
+  // without weakening the synchronous restore, which still matters
+  // wherever that extra pass doesn't happen.
+  requestAnimationFrame(() => {
+    el.scrollTop = top;
+  });
+}
+
 // hero renders the primary figure: the headline percent-saved figure (e.g.
 // "38% saved"), a one-line restatement of that same figure as extra runway
 // ("→ ~61% more usage with the same plan") — the actual claim agent-winglet
@@ -51,10 +74,16 @@ function navigate(screen) {
 // bytes + suppressed) — the same total the headline percent itself is
 // computed from, so the fill width and the number always agree.
 function hero(overview) {
+  // hasTranscriptData gates the bytes bar (it needs a real total, which only
+  // exists once the transcript's been read at SessionEnd) but must not gate
+  // the usage-detail line too — hasActivity alone is enough to explain why
+  // the number above it isn't a percent yet, and that explanation is exactly
+  // what an in-progress session most needs to show instead of going silent.
+  const showUsageLine = overview.hasTranscriptData || overview.hasActivity;
   return `
     <div class="hero">
       <div class="hero-number">${overview.heroHeadline}</div>
-      ${overview.hasTranscriptData ? `<div class="hero-usage">→ ${overview.heroUsageDetail} ${overview.heroUsageSub}</div>` : ''}
+      ${showUsageLine ? `<div class="hero-usage">${overview.hasTranscriptData ? '→ ' : ''}${overview.heroUsageDetail} ${overview.heroUsageSub}</div>` : ''}
       ${overview.hasTranscriptData ? heroBar(overview) : ''}
     </div>`;
 }
@@ -125,22 +154,19 @@ function cardRow(overview) {
     </div>`;
 }
 
-// statsBlock is the full hierarchy shared by the Overview screen and each
-// Projects-screen row: hero (raw suppressed bytes) -> summary cards (bytes/
-// tokens/$) -> per-mechanism bars. One function, two call sites, so the
-// layout can never drift between the two.
+// statsBlock is the full hierarchy shared by the Overview screen, each
+// Projects-screen row, and each expanded session row nested inside one:
+// hero (percent saved, or live suppressed bytes so far — see hero's own doc
+// comment) -> summary cards (bytes/tokens/$) -> per-mechanism bars. One
+// function, three call sites, so the "X% saved / X% more usage / bar"
+// treatment can never drift between them — a session watched live gets the
+// same story an already-ended one gets in the Overview rollup, not a
+// stripped-down view.
 function statsBlock(overview) {
   return `
     ${hero(overview)}
     ${cardRow(overview)}
     ${barList(overview)}`;
-}
-
-// lightweightCardGrid is the compact view used only for per-session rows
-// nested inside an expanded project — just the three cards, no hero/bars/
-// tooltips stacked three levels deep.
-function lightweightCardGrid(overview) {
-  return cardRow(overview);
 }
 
 async function loadOverview(container) {
@@ -149,11 +175,13 @@ async function loadOverview(container) {
   // away — GetOverview is async, so a stale response could otherwise clobber
   // whatever screen is now showing.
   if (state.screen !== 'overview') return;
-  container.innerHTML = `
-    <h1 class="screen-title">Overview</h1>
-    <p class="screen-subtitle">Lifetime, across ${o.projectCount} project${o.projectCount === 1 ? '' : 's'} and ${o.sessionCount} session${o.sessionCount === 1 ? '' : 's'}.</p>
-    ${statsBlock(o)}
-  `;
+  withPreservedScroll(container, () => {
+    container.innerHTML = `
+      <h1 class="screen-title">Overview</h1>
+      <p class="screen-subtitle">Lifetime, across ${o.projectCount} project${o.projectCount === 1 ? '' : 's'} and ${o.sessionCount} session${o.sessionCount === 1 ? '' : 's'}.</p>
+      ${statsBlock(o)}
+    `;
+  });
 }
 
 async function renderOverviewScreen(container) {
@@ -174,58 +202,88 @@ function statusPill(installed) {
 // calls this directly instead of going through renderProjectsScreen, so an
 // already-expanded project's card doesn't flash back to a bare loading state
 // every few seconds.
+//
+// An expanded project's sessions-section is seeded with its last-known
+// (cached) content right here, synchronously, instead of left empty until
+// renderSessionsSection's own async fetch resolves a moment later. That
+// gap mattered: on every poll tick this function tears down and rebuilds
+// the entire project list (#project-list.innerHTML), so an expanded row's
+// session cards briefly disappeared and reappeared each second — shrinking
+// #main's scrollable height for that instant, which clamps scrollTop toward
+// 0 regardless of what withPreservedScroll restores it to right after
+// (there's nothing to scroll down to yet). renderSessionsSection's own
+// scroll-preserving fetch then only made things worse: it captured
+// scrollTop *after* that clamp had already happened, so it faithfully
+// restored the wrong, already-collapsed position. Seeding with cached
+// content keeps #main's height essentially stable across the swap, so
+// there's nothing left to clamp.
 async function loadProjects(container) {
   const rows = await GetProjects();
   if (state.screen !== 'projects') return;
 
   if (!rows || rows.length === 0) {
-    container.innerHTML = `
-      <h1 class="screen-title">Projects</h1>
-      <p class="screen-subtitle">Projects with the agent-winglet hook installed.</p>
-      <div class="empty-state">No projects registered yet — the hook installs globally; a project is added automatically the first time Claude Code starts a session in it.</div>
-    `;
+    withPreservedScroll(container, () => {
+      container.innerHTML = `
+        <h1 class="screen-title">Projects</h1>
+        <p class="screen-subtitle">Projects with the agent-winglet hook installed.</p>
+        <div class="empty-state">No projects registered yet — the hook installs globally; a project is added automatically the first time Claude Code starts a session in it.</div>
+      `;
+    });
     return;
   }
 
-  container.innerHTML = `
-    <h1 class="screen-title">Projects</h1>
-    <p class="screen-subtitle">${rows.length} registered project${rows.length === 1 ? '' : 's'}.</p>
-    <div id="project-list"></div>
-  `;
+  withPreservedScroll(container, () => {
+    container.innerHTML = `
+      <h1 class="screen-title">Projects</h1>
+      <p class="screen-subtitle">${rows.length} registered project${rows.length === 1 ? '' : 's'}.</p>
+      <div id="project-list"></div>
+    `;
 
-  const list = container.querySelector('#project-list');
-  list.innerHTML = rows
-    .map(
-      (row) => `
-    <div class="project-row ${state.expanded.has(row.path) ? 'expanded' : ''}" data-path="${row.path}">
-      <button class="project-row-header" data-toggle="${row.path}">
-        <span class="project-row-chevron">${icons.chevron}</span>
-        <div>
-          <div class="project-name">${row.name}</div>
-          <div class="project-path">${row.path}</div>
+    const list = container.querySelector('#project-list');
+    list.innerHTML = rows
+      .map((row) => {
+        const cachedSessions = state.sessionsByProject.get(row.path);
+        const seeded = state.expanded.has(row.path) && cachedSessions ? sessionsSectionMarkup(row.path, cachedSessions) : '';
+        return `
+      <div class="project-row ${state.expanded.has(row.path) ? 'expanded' : ''}" data-path="${row.path}">
+        <button class="project-row-header" data-toggle="${row.path}">
+          <span class="project-row-chevron">${icons.chevron}</span>
+          <div>
+            <div class="project-name">${row.name}</div>
+            <div class="project-path">${row.path}</div>
+          </div>
+          <span class="project-row-spacer"></span>
+          <span class="project-hero-inline">${row.overview.heroHeadline}</span>
+          ${statusPill(row.installed)}
+        </button>
+        <div class="project-row-detail">
+          ${statsBlock(row.overview)}
+          <div class="sessions-section" data-sessions="${row.path}">${seeded}</div>
         </div>
-        <span class="project-row-spacer"></span>
-        <span class="project-hero-inline">${row.overview.heroHeadline}</span>
-        ${statusPill(row.installed)}
-      </button>
-      <div class="project-row-detail">
-        ${statsBlock(row.overview)}
-        <div class="sessions-section" data-sessions="${row.path}"></div>
-      </div>
-    </div>`
-    )
-    .join('');
+      </div>`;
+      })
+      .join('');
 
-  list.querySelectorAll('[data-toggle]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const path = btn.getAttribute('data-toggle');
-      if (state.expanded.has(path)) {
-        state.expanded.delete(path);
-      } else {
-        state.expanded.add(path);
-      }
-      loadProjects(container);
+    list.querySelectorAll('[data-toggle]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const path = btn.getAttribute('data-toggle');
+        if (state.expanded.has(path)) {
+          state.expanded.delete(path);
+        } else {
+          state.expanded.add(path);
+        }
+        loadProjects(container);
+      });
     });
+
+    // Wire the toggle handlers for whatever session rows were just seeded
+    // from cache above — renderSessionsSection (called below, once its own
+    // fetch resolves) re-wires these again once it swaps in fresh data, same
+    // as it always has.
+    for (const row of rows) {
+      const target = list.querySelector(`[data-sessions="${CSS.escape(row.path)}"]`);
+      if (target) wireSessionToggles(container, target, row.path);
+    }
   });
 
   for (const row of rows) {
@@ -241,13 +299,60 @@ async function renderProjectsScreen(container) {
   startPolling(() => loadProjects(container));
 }
 
+// sessionsSectionMarkup renders one project's sessions-section content —
+// shared by loadProjects (seeding from cache, synchronously, to avoid the
+// empty-then-populated flicker described on loadProjects' own doc comment)
+// and renderSessionsSection (rendering fresh data once its fetch resolves).
+// One function, two call sites, so the two can never drift out of sync.
+function sessionsSectionMarkup(projectPath, sessions) {
+  if (!sessions || sessions.length === 0) {
+    return `<div class="sessions-empty">No sessions on disk yet for this project.</div>`;
+  }
+  return `
+    <div class="sessions-title">Sessions (${sessions.length})</div>
+    ${sessions
+      .map((row) => {
+        const key = `${projectPath}::${row.sessionId}`;
+        const expanded = state.expandedSessions.has(key);
+        return `
+        <div class="session-row ${expanded ? 'expanded' : ''}">
+          <button class="session-row-header" data-toggle-session="${key}">
+            <span class="project-row-chevron">${icons.chevron}</span>
+            <span class="session-id">${row.sessionId}</span>
+            <span class="project-row-spacer"></span>
+            <span class="project-hero-inline">${row.overview.heroHeadline}</span>
+          </button>
+          <div class="session-row-detail">${statsBlock(row.overview)}</div>
+        </div>`;
+      })
+      .join('')}
+  `;
+}
+
+// wireSessionToggles attaches the expand/collapse click handler to every
+// session row inside target — shared by loadProjects (for content it seeded
+// from cache) and renderSessionsSection (for freshly-fetched content).
+function wireSessionToggles(container, target, projectPath) {
+  target.querySelectorAll('[data-toggle-session]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const key = btn.getAttribute('data-toggle-session');
+      if (state.expandedSessions.has(key)) {
+        state.expandedSessions.delete(key);
+      } else {
+        state.expandedSessions.add(key);
+      }
+      renderSessionsSection(container, projectPath);
+    });
+  });
+}
+
 // renderSessionsSection always fetches fresh session data (per-session stats
 // files are written live, on every dedup hit/trim/retire — see
 // internal/stats — so an in-progress session's numbers grow between polls
 // too, not just once it ends). The "Loading…" placeholder only shows the
-// first time a project is expanded — a poll tick refreshing an
-// already-populated section swaps its content in place instead of flashing
-// back to a loading state.
+// first time a project is expanded and loadProjects had no cache to seed it
+// with yet — every poll tick after that swaps content already seeded from
+// cache for fresh content in place, never an empty gap in between.
 async function renderSessionsSection(container, projectPath) {
   const hadCache = state.sessionsByProject.has(projectPath);
   if (!hadCache) {
@@ -264,41 +369,9 @@ async function renderSessionsSection(container, projectPath) {
   const target = container.querySelector(`[data-sessions="${CSS.escape(projectPath)}"]`);
   if (!target) return;
 
-  if (!sessions || sessions.length === 0) {
-    target.innerHTML = `<div class="sessions-empty">No sessions on disk yet for this project.</div>`;
-    return;
-  }
-
-  target.innerHTML = `
-    <div class="sessions-title">Sessions (${sessions.length})</div>
-    ${sessions
-      .map((row) => {
-        const key = `${projectPath}::${row.sessionId}`;
-        const expanded = state.expandedSessions.has(key);
-        return `
-        <div class="session-row ${expanded ? 'expanded' : ''}">
-          <button class="session-row-header" data-toggle-session="${key}">
-            <span class="project-row-chevron">${icons.chevron}</span>
-            <span class="session-id">${row.sessionId}</span>
-            <span class="project-row-spacer"></span>
-            <span class="project-hero-inline">${row.overview.heroHeadline}</span>
-          </button>
-          <div class="session-row-detail">${lightweightCardGrid(row.overview)}</div>
-        </div>`;
-      })
-      .join('')}
-  `;
-
-  target.querySelectorAll('[data-toggle-session]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const key = btn.getAttribute('data-toggle-session');
-      if (state.expandedSessions.has(key)) {
-        state.expandedSessions.delete(key);
-      } else {
-        state.expandedSessions.add(key);
-      }
-      renderSessionsSection(container, projectPath);
-    });
+  withPreservedScroll(container, () => {
+    target.innerHTML = sessionsSectionMarkup(projectPath, sessions);
+    wireSessionToggles(container, target, projectPath);
   });
 }
 
