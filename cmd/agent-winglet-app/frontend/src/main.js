@@ -15,7 +15,30 @@ const NAV_ITEMS = [
   { id: 'settings', label: 'Settings', icon: icons.settings },
 ];
 
+// Session/project stats files on disk are updated live by the hook (every
+// dedup hit, budget trim, and retire is written immediately — see
+// internal/stats' package doc), but nothing pushes those changes to this
+// app. Polling on a short interval is what actually makes "start a session,
+// watch the numbers move" true, instead of only updating on next navigation
+// or app restart. Cleared on every navigate() so only the visible screen
+// polls, and re-armed each time that screen is (re)rendered.
+const REFRESH_INTERVAL_MS = 1000;
+let pollTimer = null;
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+}
+
+function startPolling(fn) {
+  stopPolling();
+  pollTimer = setInterval(fn, REFRESH_INTERVAL_MS);
+}
+
 function navigate(screen) {
+  stopPolling();
   state.screen = screen;
   render();
 }
@@ -120,14 +143,23 @@ function lightweightCardGrid(overview) {
   return cardRow(overview);
 }
 
-async function renderOverviewScreen(container) {
-  container.innerHTML = `<div class="empty-state">Loading…</div>`;
+async function loadOverview(container) {
   const o = await GetOverview();
+  // Guard against a poll tick landing after the user has already navigated
+  // away — GetOverview is async, so a stale response could otherwise clobber
+  // whatever screen is now showing.
+  if (state.screen !== 'overview') return;
   container.innerHTML = `
     <h1 class="screen-title">Overview</h1>
     <p class="screen-subtitle">Lifetime, across ${o.projectCount} project${o.projectCount === 1 ? '' : 's'} and ${o.sessionCount} session${o.sessionCount === 1 ? '' : 's'}.</p>
     ${statsBlock(o)}
   `;
+}
+
+async function renderOverviewScreen(container) {
+  container.innerHTML = `<div class="empty-state">Loading…</div>`;
+  await loadOverview(container);
+  startPolling(() => loadOverview(container));
 }
 
 function statusPill(installed) {
@@ -137,9 +169,14 @@ function statusPill(installed) {
   return `<span class="status-pill stale">${icons.circle} Not wired in</span>`;
 }
 
-async function renderProjectsScreen(container) {
-  container.innerHTML = `<div class="empty-state">Loading…</div>`;
+// loadProjects fetches and renders the Projects screen's rows. Used both for
+// the initial render and every poll tick (see REFRESH_INTERVAL_MS) — polling
+// calls this directly instead of going through renderProjectsScreen, so an
+// already-expanded project's card doesn't flash back to a bare loading state
+// every few seconds.
+async function loadProjects(container) {
   const rows = await GetProjects();
+  if (state.screen !== 'projects') return;
 
   if (!rows || rows.length === 0) {
     container.innerHTML = `
@@ -187,7 +224,7 @@ async function renderProjectsScreen(container) {
       } else {
         state.expanded.add(path);
       }
-      renderProjectsScreen(container);
+      loadProjects(container);
     });
   });
 
@@ -198,18 +235,37 @@ async function renderProjectsScreen(container) {
   }
 }
 
+async function renderProjectsScreen(container) {
+  container.innerHTML = `<div class="empty-state">Loading…</div>`;
+  await loadProjects(container);
+  startPolling(() => loadProjects(container));
+}
+
+// renderSessionsSection always fetches fresh session data (per-session stats
+// files are written live, on every dedup hit/trim/retire — see
+// internal/stats — so an in-progress session's numbers grow between polls
+// too, not just once it ends). The "Loading…" placeholder only shows the
+// first time a project is expanded — a poll tick refreshing an
+// already-populated section swaps its content in place instead of flashing
+// back to a loading state.
 async function renderSessionsSection(container, projectPath) {
+  const hadCache = state.sessionsByProject.has(projectPath);
+  if (!hadCache) {
+    const target = container.querySelector(`[data-sessions="${CSS.escape(projectPath)}"]`);
+    if (target) target.innerHTML = `<div class="sessions-loading">Loading sessions…</div>`;
+  }
+
+  const sessions = await GetSessionStats(projectPath);
+  state.sessionsByProject.set(projectPath, sessions);
+
+  // Bail if the user moved off this screen, or collapsed/re-navigated away
+  // from this project row, while the fetch above was in flight.
+  if (state.screen !== 'projects' || !state.expanded.has(projectPath)) return;
   const target = container.querySelector(`[data-sessions="${CSS.escape(projectPath)}"]`);
   if (!target) return;
 
-  if (!state.sessionsByProject.has(projectPath)) {
-    target.innerHTML = `<div class="sessions-loading">Loading sessions…</div>`;
-    state.sessionsByProject.set(projectPath, await GetSessionStats(projectPath));
-  }
-  const sessions = state.sessionsByProject.get(projectPath);
-
   if (!sessions || sessions.length === 0) {
-    target.innerHTML = `<div class="sessions-empty">No completed sessions on disk yet for this project.</div>`;
+    target.innerHTML = `<div class="sessions-empty">No sessions on disk yet for this project.</div>`;
     return;
   }
 
