@@ -17,6 +17,8 @@ package main
 
 import (
 	"embed"
+	"fmt"
+	"os"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -28,6 +30,33 @@ import (
 var assets embed.FS
 
 func main() {
+	// Headless CLI modes for install.sh/uninstall.sh — SMAppService's login
+	// item registration can only be called by the app whose bundle owns it
+	// (see loginitem_darwin.go), so these give the installer a way to
+	// register/unregister it without ever opening a window. No-ops on
+	// non-darwin (see loginitem_other.go); the flags are accepted there too
+	// so install.sh doesn't need per-OS branching to know whether to pass
+	// them.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "--register-login-item":
+			if err := RegisterLoginItem(); err != nil {
+				fmt.Fprintln(os.Stderr, "register-login-item:", err)
+				os.Exit(1)
+			}
+			return
+		case "--unregister-login-item":
+			if err := UnregisterLoginItem(); err != nil {
+				fmt.Fprintln(os.Stderr, "unregister-login-item:", err)
+				os.Exit(1)
+			}
+			return
+		case "--login-item-status":
+			fmt.Println(LoginItemStatus())
+			return
+		}
+	}
+
 	app := NewApp()
 
 	err := wails.Run(&options.App{

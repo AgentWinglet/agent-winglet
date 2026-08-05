@@ -41,6 +41,19 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	go a.serveIPC()
+
+	// Defensive fallback: install.sh already calls RegisterLoginItem via
+	// `--register-login-item` right after installing, but this covers any
+	// other way the app ends up running (a dev build, a manual copy) — it's
+	// idempotent (see loginitem_darwin.go), so calling it again here is
+	// harmless. Errors are logged, not surfaced: the dashboard is fully
+	// usable without a registered login item, just without the
+	// launch-at-login convenience.
+	go func() {
+		if err := RegisterLoginItem(); err != nil {
+			fmt.Println("agent-winglet-app: login item registration failed:", err)
+		}
+	}()
 }
 
 // serveIPC accepts local connections from the tray helper for the lifetime
