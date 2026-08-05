@@ -6,6 +6,12 @@
 // and "quit the app", never any data, so a loopback TCP port advertised via a
 // small file under ~/.agent-winglet is enough — no need for OS-specific Unix
 // sockets/named pipes for a channel this narrow.
+//
+// There's a second, one-way channel alongside that: the tray publishes its
+// own liveness listener (ListenTray/CleanupTray) purely so the dashboard can
+// ask TrayRunning before deciding whether hiding on close is safe. Hiding
+// only makes sense if something is still around to bring the window back —
+// see app.go's beforeClose.
 package appipc
 
 import (
@@ -37,26 +43,34 @@ const (
 	ioTimeout   = 2 * time.Second
 )
 
-func portFilePath() (string, error) {
+// appPortFile carries the dashboard's two-command channel (Show/Quit),
+// dialed by the tray. trayPortFile carries nothing but its own existence —
+// dialed by the dashboard, purely to answer TrayRunning.
+const (
+	appPortFile  = "app.port"
+	trayPortFile = "tray.port"
+)
+
+func portFilePath(name string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".agent-winglet", "app.port"), nil
+	return filepath.Join(home, ".agent-winglet", name), nil
 }
 
-// Listen binds a loopback TCP listener on an OS-assigned port and publishes
-// that port to the port file so Dial can find it. Callers should Cleanup on
-// shutdown — a stale file left pointing at a dead port isn't unsafe (Dial and
-// SendCommand both treat an unreachable port as "not running," not an
-// error), just untidy.
-func Listen() (net.Listener, error) {
+// listen binds a loopback TCP listener on an OS-assigned port and publishes
+// that port to the named port file so dial can find it. Callers should clean
+// up on shutdown — a stale file left pointing at a dead port isn't unsafe
+// (dial treats an unreachable port as "not running," not an error), just
+// untidy.
+func listen(name string) (net.Listener, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
 	}
 
-	p, err := portFilePath()
+	p, err := portFilePath(name)
 	if err != nil {
 		ln.Close()
 		return nil, err
@@ -80,22 +94,22 @@ func Listen() (net.Listener, error) {
 	return ln, nil
 }
 
-// Cleanup removes the port file. Safe to call even if Listen was never
+// cleanup removes the named port file. Safe to call even if listen was never
 // called, or the file is already gone.
-func Cleanup() {
-	p, err := portFilePath()
+func cleanup(name string) {
+	p, err := portFilePath(name)
 	if err != nil {
 		return
 	}
 	os.Remove(p)
 }
 
-// Dial connects to the dashboard's IPC listener. An error here — missing or
-// unreadable port file, or nothing answering on the recorded port — means
-// "the dashboard isn't running," not a real failure; callers should treat it
-// that way rather than surfacing it.
-func Dial() (net.Conn, error) {
-	p, err := portFilePath()
+// dial connects to whatever's listening at the named port file. An error
+// here — missing or unreadable port file, or nothing answering on the
+// recorded port — means "that side isn't running," not a real failure;
+// callers should treat it that way rather than surfacing it.
+func dial(name string) (net.Conn, error) {
+	p, err := portFilePath(name)
 	if err != nil {
 		return nil, err
 	}
@@ -108,6 +122,36 @@ func Dial() (net.Conn, error) {
 		return nil, fmt.Errorf("appipc: invalid port file contents %q", port)
 	}
 	return net.DialTimeout("tcp", "127.0.0.1:"+port, dialTimeout)
+}
+
+// Listen binds the dashboard's IPC listener. See listen.
+func Listen() (net.Listener, error) { return listen(appPortFile) }
+
+// Cleanup removes the dashboard's port file. See cleanup.
+func Cleanup() { cleanup(appPortFile) }
+
+// Dial connects to the dashboard's IPC listener. See dial.
+func Dial() (net.Conn, error) { return dial(appPortFile) }
+
+// ListenTray binds the tray helper's liveness listener. Accepted connections
+// carry no commands — TrayRunning's dial succeeding is the entire signal, so
+// callers should just close whatever they accept. See listen.
+func ListenTray() (net.Listener, error) { return listen(trayPortFile) }
+
+// CleanupTray removes the tray's port file. See cleanup.
+func CleanupTray() { cleanup(trayPortFile) }
+
+// TrayRunning reports whether a tray helper is currently reachable. The
+// dashboard uses this to decide whether hiding on close is safe — hiding
+// only makes sense if a tray is actually still around to bring the window
+// back; see app.go's beforeClose.
+func TrayRunning() bool {
+	conn, err := dial(trayPortFile)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
 }
 
 // SendCommand dials the dashboard, sends cmd, and waits for its

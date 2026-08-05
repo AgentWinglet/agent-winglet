@@ -101,8 +101,16 @@ func (a *App) handleIPCConn(conn net.Conn) {
 // the window instead of quitting — same pattern as Slack/Spotify-style
 // tray-resident apps. Only the tray's own "Quit" (via handleIPCConn above)
 // actually exits.
+//
+// Hiding is only correct while a tray is actually around to bring the
+// window back via appipc.Show — otherwise the dashboard would hide itself
+// with no way to reach it again short of a force-quit, which is exactly what
+// happened before this checked TrayRunning: quit the tray helper, then close
+// the dashboard, and it vanishes from the Dock/window list while still
+// running in the background forever. If no tray answers, this is the user's
+// only way to quit, so let it through instead of hiding.
 func (a *App) beforeClose(ctx context.Context) bool {
-	if a.quitting.Load() {
+	if a.quitting.Load() || !appipc.TrayRunning() {
 		return false
 	}
 	wailsruntime.WindowHide(ctx)

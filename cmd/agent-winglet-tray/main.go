@@ -19,6 +19,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os/exec"
 
 	"github.com/getlantern/systray"
@@ -41,6 +42,18 @@ func onReady() {
 	systray.AddSeparator()
 	mQuit := systray.AddMenuItem("Quit", "Quit Winglet")
 
+	// serveLiveness lets the dashboard tell whether a tray is actually
+	// around before it decides to hide on close instead of quitting — see
+	// appipc.TrayRunning. Nothing is ever read off accepted connections, so
+	// a failure to bind here (e.g. two tray instances racing) just means the
+	// dashboard will always see "no tray" and quit for real on close, which
+	// is safe, just not the tray-resident behavior.
+	if ln, err := appipc.ListenTray(); err == nil {
+		go serveLiveness(ln)
+	} else {
+		fmt.Println("agent-winglet-tray: liveness listener failed to start:", err)
+	}
+
 	go func() {
 		for {
 			select {
@@ -55,7 +68,21 @@ func onReady() {
 	}()
 }
 
-func onExit() {}
+func onExit() {
+	appipc.CleanupTray()
+}
+
+// serveLiveness accepts and immediately closes connections for the lifetime
+// of the tray — see the ListenTray call in onReady above.
+func serveLiveness(ln net.Listener) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		conn.Close()
+	}
+}
 
 // openDashboard asks a running dashboard to show its window; if none is
 // reachable, it launches a fresh one instead (which binds its own IPC

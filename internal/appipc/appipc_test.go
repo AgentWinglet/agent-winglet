@@ -74,6 +74,55 @@ func TestDialFailsWithStalePortFile(t *testing.T) {
 	}
 }
 
+func TestTrayRunningFalseWithNoTray(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	if TrayRunning() {
+		t.Fatal("TrayRunning = true with no tray port file on disk, want false")
+	}
+}
+
+func TestTrayRunningTrueWhileTrayListening(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	ln, err := ListenTray()
+	if err != nil {
+		t.Fatalf("ListenTray errored: %v", err)
+	}
+	defer ln.Close()
+	defer CleanupTray()
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			conn.Close()
+		}
+	}()
+
+	if !TrayRunning() {
+		t.Fatal("TrayRunning = false while tray listener is up, want true")
+	}
+}
+
+func TestTrayRunningFalseAfterCleanupTray(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	ln, err := ListenTray()
+	if err != nil {
+		t.Fatalf("ListenTray errored: %v", err)
+	}
+	defer ln.Close()
+
+	CleanupTray()
+
+	if TrayRunning() {
+		t.Fatal("TrayRunning = true after CleanupTray, want false")
+	}
+}
+
 func TestCleanupRemovesPortFile(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
@@ -83,7 +132,7 @@ func TestCleanupRemovesPortFile(t *testing.T) {
 	}
 	defer ln.Close()
 
-	p, err := portFilePath()
+	p, err := portFilePath(appPortFile)
 	if err != nil {
 		t.Fatalf("portFilePath errored: %v", err)
 	}
