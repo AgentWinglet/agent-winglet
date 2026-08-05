@@ -5,10 +5,6 @@
 
 APP_NAME="Winglet"
 TRAY_BIN_NAME="agent-winglet-tray"
-# Reverse-DNS label for the macOS LaunchAgent that keeps the tray helper
-# running from login onward — shared between install.sh (registers it) and
-# uninstall.sh (tears it down) so the two can't drift apart on the name.
-TRAY_LAUNCH_AGENT_LABEL="com.umitkaanusta.winglet.tray"
 
 # Prints one of: darwin, linux, windows, unknown.
 # Windows here means "running under a bash-capable environment on Windows"
@@ -47,6 +43,14 @@ app_install_path() {
   esac
 }
 
+# linux/windows only — darwin's tray is built and installed as part of
+# `make app`/the app's own install step (see the Makefile's
+# nest-tray-darwin target and install.sh's darwin branch): it's nested
+# inside Winglet.app so it can be registered as a proper macOS login item
+# via SMAppService (cmd/agent-winglet-app/loginitem_darwin.go), which only
+# works for a helper embedded in the calling app's own bundle, not a
+# standalone one.
+
 # The file `make tray` produces under cmd/agent-winglet-tray/build/bin,
 # relative to that directory, for a given detect_os() value.
 tray_build_artifact() {
@@ -56,18 +60,24 @@ tray_build_artifact() {
   esac
 }
 
-# Where the tray helper binary is installed to, per OS. Unlike the app (a
-# .app bundle on darwin, so app_install_path is itself launchable), the tray
-# is a plain binary everywhere — it just needs a stable path for the
-# LaunchAgent/Startup-shortcut/autostart entry that launches it at login to
-# point at, in a location that survives across installs the same way the
-# app's own install location does.
+# Where the tray helper binary is installed to — a stable path for the
+# Startup-shortcut/autostart entry that launches it at login to point at,
+# surviving across installs the same way the app's own install location
+# does.
 tray_install_path() {
   case "$1" in
-    darwin) echo "${HOME}/Library/Application Support/${APP_NAME}/${TRAY_BIN_NAME}" ;;
     linux) echo "${HOME}/.local/bin/${TRAY_BIN_NAME}" ;;
     windows) echo "$(windows_local_app_dir)/${APP_NAME}/${TRAY_BIN_NAME}.exe" ;;
   esac
+}
+
+# The actual launchable executable, per OS — what a Startup-shortcut/
+# autostart entry's Exec should point at. Same as tray_install_path here
+# (both are bare binaries); kept as its own function for symmetry with
+# app_install_path/app_build_artifact's naming, and because darwin used to
+# need the two to differ before its tray moved into the app bundle.
+tray_executable_path() {
+  tray_install_path "$1"
 }
 
 # Legacy/alternate macOS install location — installers before this one
@@ -136,60 +146,12 @@ windows_remove_shortcut() {
 }
 
 ##############################################################################
-# Tray helper autostart (login item) — one register/unregister pair per OS,
-# used by install.sh/uninstall.sh so the tray icon (cmd/agent-winglet-tray)
-# is there from login onward rather than only after the dashboard has been
-# opened once. Each register function is idempotent — safe to call on a
-# re-install to pick up a changed binary path.
+# Tray helper autostart (login item), linux/windows — used by
+# install.sh/uninstall.sh so the tray icon (cmd/agent-winglet-tray) is there
+# from login onward rather than only after the dashboard has been opened
+# once. darwin registers via SMAppService instead — see
+# cmd/agent-winglet-app/loginitem_darwin.go and install.sh's darwin branch.
 ##############################################################################
-
-darwin_tray_plist_path() {
-  echo "${HOME}/Library/LaunchAgents/${TRAY_LAUNCH_AGENT_LABEL}.plist"
-}
-
-# No KeepAlive: if the user quits the tray from its own menu, launchd
-# shouldn't immediately relaunch it out from under them — only the next
-# login should bring it back.
-darwin_register_tray_autostart() {
-  tray_path="$1"
-  plist="$(darwin_tray_plist_path)"
-  mkdir -p "$(dirname "$plist")"
-  cat > "$plist" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>Label</key>
-	<string>${TRAY_LAUNCH_AGENT_LABEL}</string>
-	<key>ProgramArguments</key>
-	<array>
-		<string>${tray_path}</string>
-	</array>
-	<key>RunAtLoad</key>
-	<true/>
-</dict>
-</plist>
-EOF
-  # bootout+bootstrap rather than the deprecated `load -w`, and bootout
-  # first (ignoring failure) so a re-install picks up a changed binary path
-  # instead of launchd holding on to whatever it loaded previously — the
-  # first-ever install has nothing loaded yet, so that bootout is expected
-  # to fail there.
-  launchctl bootout "gui/$(id -u)" "$plist" >/dev/null 2>&1 || true
-  if launchctl bootstrap "gui/$(id -u)" "$plist" >/dev/null 2>&1; then
-    echo "Registered ${APP_NAME} to start at login (LaunchAgent)"
-  else
-    echo "note: failed to register the login item via launchctl (tray helper is still installed at ${tray_path})"
-  fi
-}
-
-darwin_unregister_tray_autostart() {
-  plist="$(darwin_tray_plist_path)"
-  if [ -f "$plist" ]; then
-    launchctl bootout "gui/$(id -u)" "$plist" >/dev/null 2>&1 || true
-    rm -f "$plist"
-  fi
-}
 
 linux_autostart_desktop_path() {
   echo "${HOME}/.config/autostart/winglet-tray.desktop"
