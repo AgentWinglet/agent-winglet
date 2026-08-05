@@ -1,6 +1,6 @@
 import './style.css';
 import { icons } from './icons.js';
-import { GetOverview, GetPlatform, GetProjects, GetSessionStats } from '../wailsjs/go/main/App';
+import { GetOverview, GetPlatform, GetProjects, GetSessionStats, QuitApp } from '../wailsjs/go/main/App';
 
 const state = {
   screen: 'overview',
@@ -509,11 +509,25 @@ async function renderSessionsSection(container, projectPath) {
   });
 }
 
+// renderSettingsScreen's Quit row is the dashboard's own real-quit
+// affordance (App.QuitApp) — closing the window itself (titlebar button,
+// Cmd+Q/Alt+F4) only hides it back to the tray, by design, so without this
+// there's no way to fully quit from the dashboard side at all once a tray is
+// running (which is most of the time — see App.ensureTrayRunning). This
+// tears down the tray too, not just the dashboard, so "quit" here means the
+// same thing it does from the tray's own menu.
 function renderSettingsScreen(container) {
   container.innerHTML = `
     <h1 class="screen-title">Settings</h1>
-    <div class="empty-state">Nothing to configure yet.</div>
+    <div class="settings-row">
+      <div>
+        <div class="settings-row-title">Quit Winglet</div>
+        <div class="settings-row-detail">Closes the dashboard and the menu-bar icon together.</div>
+      </div>
+      <button class="quit-button" data-quit>Quit Winglet</button>
+    </div>
   `;
+  container.querySelector('[data-quit]').addEventListener('click', () => QuitApp());
 }
 
 function renderMain(container) {

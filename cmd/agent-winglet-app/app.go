@@ -122,11 +122,28 @@ func (a *App) handleIPCConn(conn net.Conn) {
 	}
 }
 
+// QuitApp is the dashboard's own "actually quit" affordance (bound to the
+// Settings screen's Quit button in the frontend). Closing the window (the
+// titlebar button, Cmd+Q/Alt+F4) only ever hides it while a tray is reachable
+// — see beforeClose — which otherwise leaves no way to fully quit from the
+// dashboard side at all once ensureTrayRunning (see startup) is keeping a
+// tray around consistently. This bypasses that: it sets quitting so
+// beforeClose lets the close through, best-effort tells a reachable tray to
+// exit too (so quitting from the app side tears down both, the mirror of
+// what the tray's own Quit already does via handleIPCConn's Quit case), and
+// then quits.
+func (a *App) QuitApp() {
+	a.quitting.Store(true)
+	_ = appipc.SendTrayCommand(appipc.Quit)
+	wailsruntime.Quit(a.ctx)
+}
+
 // beforeClose implements options.App.OnBeforeClose: once a tray helper is
 // managing this dashboard, the titlebar close button and Cmd+Q/Alt+F4 hide
 // the window instead of quitting — same pattern as Slack/Spotify-style
-// tray-resident apps. Only the tray's own "Quit" (via handleIPCConn above)
-// actually exits.
+// tray-resident apps. The tray's own "Quit" (via handleIPCConn above) and the
+// dashboard's own Quit button (QuitApp above) are the two paths that actually
+// exit.
 //
 // Hiding is only correct while a tray is actually around to bring the
 // window back via appipc.Show — otherwise the dashboard would hide itself

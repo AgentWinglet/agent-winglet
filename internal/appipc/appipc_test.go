@@ -46,6 +46,45 @@ func TestSendCommandRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSendTrayCommandRoundTrip(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	ln, err := ListenTray()
+	if err != nil {
+		t.Fatalf("ListenTray errored: %v", err)
+	}
+	defer ln.Close()
+	defer CleanupTray()
+
+	received := make(chan Command, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		cmd, err := ReadCommand(conn)
+		if err != nil {
+			t.Errorf("ReadCommand errored: %v", err)
+			return
+		}
+		received <- cmd
+	}()
+
+	if err := SendTrayCommand(Quit); err != nil {
+		t.Fatalf("SendTrayCommand errored: %v", err)
+	}
+
+	select {
+	case cmd := <-received:
+		if cmd != Quit {
+			t.Fatalf("received command = %q, want %q", cmd, Quit)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the tray side to receive the command")
+	}
+}
+
 func TestDialFailsWithNoPortFile(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 

@@ -13,7 +13,13 @@
 // internal/appipc: "Open Winglet" asks a running dashboard to show its
 // window, or launches one if none is running; "Quit" tells a running
 // dashboard to actually exit (bypassing its hide-on-close behavior) and then
-// exits itself.
+// exits itself. The dashboard's own Quit button (App.QuitApp) is the mirror
+// image of that last part: it sends this tray a Quit command of its own
+// (handleControlConn below), so quitting from either side tears down both,
+// not just the half you clicked. Either side starting back up also
+// relaunches the other if it's not reachable (openDashboard here,
+// App.ensureTrayRunning on the dashboard's side) — so a quit-both from
+// either side is always fully recoverable by opening either one again.
 package main
 
 import (
@@ -42,16 +48,18 @@ func onReady() {
 	systray.AddSeparator()
 	mQuit := systray.AddMenuItem("Quit", "Quit Winglet")
 
-	// serveLiveness lets the dashboard tell whether a tray is actually
-	// around before it decides to hide on close instead of quitting — see
-	// appipc.TrayRunning. Nothing is ever read off accepted connections, so
-	// a failure to bind here (e.g. two tray instances racing) just means the
-	// dashboard will always see "no tray" and quit for real on close, which
-	// is safe, just not the tray-resident behavior.
+	// serveControl lets the dashboard tell whether a tray is actually around
+	// before it decides to hide on close instead of quitting (appipc.
+	// TrayRunning), and lets the dashboard's own Quit button (App.QuitApp)
+	// fully exit this tray too, not just itself. A failure to bind here
+	// (e.g. two tray instances racing) just means the dashboard will always
+	// see "no tray" and quit for real on close instead — safe, just not the
+	// tray-resident behavior, and the dashboard's Quit button simply has
+	// nothing to reach.
 	if ln, err := appipc.ListenTray(); err == nil {
-		go serveLiveness(ln)
+		go serveControl(ln)
 	} else {
-		fmt.Println("agent-winglet-tray: liveness listener failed to start:", err)
+		fmt.Println("agent-winglet-tray: control listener failed to start:", err)
 	}
 
 	go func() {
@@ -72,15 +80,33 @@ func onExit() {
 	appipc.CleanupTray()
 }
 
-// serveLiveness accepts and immediately closes connections for the lifetime
-// of the tray — see the ListenTray call in onReady above.
-func serveLiveness(ln net.Listener) {
+// serveControl accepts connections for the lifetime of the tray — see the
+// ListenTray call in onReady above.
+func serveControl(ln net.Listener) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		conn.Close()
+		go handleControlConn(conn)
+	}
+}
+
+// handleControlConn reads one command off an accepted connection, same
+// protocol as the dashboard's own handleIPCConn. A bare liveness probe from
+// TrayRunning sends nothing and closes right away, so ReadCommand just
+// errors out here with nothing to do — expected, not logged. Quit is the
+// one command this side acts on, by exiting exactly the way the tray's own
+// Quit menu item does.
+func handleControlConn(conn net.Conn) {
+	defer conn.Close()
+
+	cmd, err := appipc.ReadCommand(conn)
+	if err != nil {
+		return
+	}
+	if cmd == appipc.Quit {
+		systray.Quit()
 	}
 }
 

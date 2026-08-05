@@ -2,16 +2,19 @@
 // dashboard (cmd/agent-winglet-app) and its tray helper (cmd/agent-winglet-tray)
 // — two separate processes, since bundling a systray library into the same
 // binary as Wails fails to link on macOS (see cmd/agent-winglet-app/main.go's
-// doc comment). The channel carries exactly two commands, "show the window"
-// and "quit the app", never any data, so a loopback TCP port advertised via a
-// small file under ~/.agent-winglet is enough — no need for OS-specific Unix
+// doc comment). Two loopback TCP listeners, one per process, each advertised
+// via its own small port file under ~/.agent-winglet, carry the same tiny
+// Command vocabulary in both directions — no need for OS-specific Unix
 // sockets/named pipes for a channel this narrow.
 //
-// There's a second, one-way channel alongside that: the tray publishes its
-// own liveness listener (ListenTray/CleanupTray) purely so the dashboard can
-// ask TrayRunning before deciding whether hiding on close is safe. Hiding
-// only makes sense if something is still around to bring the window back —
-// see app.go's beforeClose.
+// The tray dials the dashboard (SendCommand/Dial/Listen, app.port) to ask it
+// to show its window or quit — see app.go's handleIPCConn. The dashboard
+// dials the tray (SendTrayCommand/ListenTray, tray.port) for two things: a
+// bare connect-and-close as a liveness probe (TrayRunning, used by
+// beforeClose to decide whether hiding on close is safe — hiding only makes
+// sense if something is still around to bring the window back), and a real
+// Quit so the dashboard's own Quit button can fully tear down the tray too,
+// not just itself — see cmd/agent-winglet-tray's handleControlConn.
 package appipc
 
 import (
@@ -133,9 +136,11 @@ func Cleanup() { cleanup(appPortFile) }
 // Dial connects to the dashboard's IPC listener. See dial.
 func Dial() (net.Conn, error) { return dial(appPortFile) }
 
-// ListenTray binds the tray helper's liveness listener. Accepted connections
-// carry no commands — TrayRunning's dial succeeding is the entire signal, so
-// callers should just close whatever they accept. See listen.
+// ListenTray binds the tray helper's control listener. Most accepted
+// connections are bare liveness probes from TrayRunning (dial-and-close, no
+// command sent — ReadCommand on those just errors out immediately, which
+// is fine, there's nothing to do); SendTrayCommand's Quit is the one real
+// command this side needs to handle. See listen.
 func ListenTray() (net.Listener, error) { return listen(trayPortFile) }
 
 // CleanupTray removes the tray's port file. See cleanup.
@@ -154,10 +159,10 @@ func TrayRunning() bool {
 	return true
 }
 
-// SendCommand dials the dashboard, sends cmd, and waits for its
-// acknowledgement.
-func SendCommand(cmd Command) error {
-	conn, err := Dial()
+// sendCommand dials whatever's listening at the named port file, sends cmd,
+// and waits for its acknowledgement.
+func sendCommand(name string, cmd Command) error {
+	conn, err := dial(name)
 	if err != nil {
 		return err
 	}
@@ -178,6 +183,15 @@ func SendCommand(cmd Command) error {
 	}
 	return nil
 }
+
+// SendCommand dials the dashboard, sends cmd, and waits for its
+// acknowledgement. See sendCommand.
+func SendCommand(cmd Command) error { return sendCommand(appPortFile, cmd) }
+
+// SendTrayCommand dials the tray helper, sends cmd, and waits for its
+// acknowledgement — currently only ever Quit (see App.QuitApp). See
+// sendCommand.
+func SendTrayCommand(cmd Command) error { return sendCommand(trayPortFile, cmd) }
 
 // ReadCommand reads one command off an accepted connection and acknowledges
 // it immediately (the ack confirms receipt, not that the dashboard has
