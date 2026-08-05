@@ -4,6 +4,11 @@
 # Not meant to be run directly.
 
 APP_NAME="Winglet"
+TRAY_BIN_NAME="agent-winglet-tray"
+# Reverse-DNS label for the macOS LaunchAgent that keeps the tray helper
+# running from login onward — shared between install.sh (registers it) and
+# uninstall.sh (tears it down) so the two can't drift apart on the name.
+TRAY_LAUNCH_AGENT_LABEL="com.umitkaanusta.winglet.tray"
 
 # Prints one of: darwin, linux, windows, unknown.
 # Windows here means "running under a bash-capable environment on Windows"
@@ -39,6 +44,29 @@ app_install_path() {
     darwin) echo "/Applications/${APP_NAME}.app" ;;
     linux) echo "${HOME}/.local/bin/${APP_NAME}" ;;
     windows) echo "$(windows_local_app_dir)/${APP_NAME}/${APP_NAME}.exe" ;;
+  esac
+}
+
+# The file `make tray` produces under cmd/agent-winglet-tray/build/bin,
+# relative to that directory, for a given detect_os() value.
+tray_build_artifact() {
+  case "$1" in
+    windows) echo "${TRAY_BIN_NAME}.exe" ;;
+    *) echo "${TRAY_BIN_NAME}" ;;
+  esac
+}
+
+# Where the tray helper binary is installed to, per OS. Unlike the app (a
+# .app bundle on darwin, so app_install_path is itself launchable), the tray
+# is a plain binary everywhere — it just needs a stable path for the
+# LaunchAgent/Startup-shortcut/autostart entry that launches it at login to
+# point at, in a location that survives across installs the same way the
+# app's own install location does.
+tray_install_path() {
+  case "$1" in
+    darwin) echo "${HOME}/Library/Application Support/${APP_NAME}/${TRAY_BIN_NAME}" ;;
+    linux) echo "${HOME}/.local/bin/${TRAY_BIN_NAME}" ;;
+    windows) echo "$(windows_local_app_dir)/${APP_NAME}/${TRAY_BIN_NAME}.exe" ;;
   esac
 }
 
@@ -105,4 +133,130 @@ windows_create_shortcut() {
 windows_remove_shortcut() {
   start_menu="$(windows_local_app_dir)/../Roaming/Microsoft/Windows/Start Menu/Programs"
   rm -f "${start_menu}/${APP_NAME}.lnk"
+}
+
+##############################################################################
+# Tray helper autostart (login item) — one register/unregister pair per OS,
+# used by install.sh/uninstall.sh so the tray icon (cmd/agent-winglet-tray)
+# is there from login onward rather than only after the dashboard has been
+# opened once. Each register function is idempotent — safe to call on a
+# re-install to pick up a changed binary path.
+##############################################################################
+
+darwin_tray_plist_path() {
+  echo "${HOME}/Library/LaunchAgents/${TRAY_LAUNCH_AGENT_LABEL}.plist"
+}
+
+# No KeepAlive: if the user quits the tray from its own menu, launchd
+# shouldn't immediately relaunch it out from under them — only the next
+# login should bring it back.
+darwin_register_tray_autostart() {
+  tray_path="$1"
+  plist="$(darwin_tray_plist_path)"
+  mkdir -p "$(dirname "$plist")"
+  cat > "$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>${TRAY_LAUNCH_AGENT_LABEL}</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>${tray_path}</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+</dict>
+</plist>
+EOF
+  # bootout+bootstrap rather than the deprecated `load -w`, and bootout
+  # first (ignoring failure) so a re-install picks up a changed binary path
+  # instead of launchd holding on to whatever it loaded previously — the
+  # first-ever install has nothing loaded yet, so that bootout is expected
+  # to fail there.
+  launchctl bootout "gui/$(id -u)" "$plist" >/dev/null 2>&1 || true
+  if launchctl bootstrap "gui/$(id -u)" "$plist" >/dev/null 2>&1; then
+    echo "Registered ${APP_NAME} to start at login (LaunchAgent)"
+  else
+    echo "note: failed to register the login item via launchctl (tray helper is still installed at ${tray_path})"
+  fi
+}
+
+darwin_unregister_tray_autostart() {
+  plist="$(darwin_tray_plist_path)"
+  if [ -f "$plist" ]; then
+    launchctl bootout "gui/$(id -u)" "$plist" >/dev/null 2>&1 || true
+    rm -f "$plist"
+  fi
+}
+
+linux_autostart_desktop_path() {
+  echo "${HOME}/.config/autostart/winglet-tray.desktop"
+}
+
+linux_register_tray_autostart() {
+  tray_path="$1"
+  desktop="$(linux_autostart_desktop_path)"
+  mkdir -p "$(dirname "$desktop")"
+  cat > "$desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=${APP_NAME} Tray
+Comment=Background menu-bar helper for ${APP_NAME}
+Exec=${tray_path}
+X-GNOME-Autostart-enabled=true
+NoDisplay=true
+EOF
+}
+
+linux_unregister_tray_autostart() {
+  rm -f "$(linux_autostart_desktop_path)"
+}
+
+windows_startup_folder() {
+  echo "$(windows_local_app_dir)/../Roaming/Microsoft/Windows/Start Menu/Programs/Startup"
+}
+
+# Same WScript.Shell COM approach as windows_create_shortcut, just targeting
+# the Startup folder (which Windows auto-launches at login) instead of the
+# regular Start Menu Programs folder.
+windows_register_tray_autostart() {
+  tray_path="$1"
+  if ! command -v powershell.exe >/dev/null 2>&1; then
+    echo "note: powershell.exe not found — skipping login-item shortcut. The tray helper is still installed at:"
+    echo "  ${tray_path}"
+    return 0
+  fi
+  startup="$(windows_startup_folder)"
+  mkdir -p "$startup"
+  lnk_win="$(to_windows_path "${startup}/${APP_NAME} Tray.lnk")"
+  exe_win="$(to_windows_path "$tray_path")"
+  powershell.exe -NoProfile -Command \
+    "\$s = (New-Object -ComObject WScript.Shell).CreateShortcut('${lnk_win}'); \$s.TargetPath = '${exe_win}'; \$s.Save()" \
+    >/dev/null 2>&1 \
+    && echo "Registered ${APP_NAME} to start at login (Startup folder shortcut)" \
+    || echo "note: failed to create the login-item shortcut (tray helper is still installed at ${tray_path})"
+}
+
+windows_unregister_tray_autostart() {
+  startup="$(windows_startup_folder)"
+  rm -f "${startup}/${APP_NAME} Tray.lnk"
+}
+
+# Best-effort: stops any currently-running tray helper instance. Used by
+# install.sh before overwriting its binary — Windows in particular won't let
+# you overwrite a running .exe — and by uninstall.sh so removing the
+# autostart registration doesn't leave one running until next login. Never
+# fatal: nothing running is the common case, not an error.
+stop_tray() {
+  if [ "$(detect_os)" = "windows" ]; then
+    if command -v taskkill.exe >/dev/null 2>&1; then
+      taskkill.exe /IM "${TRAY_BIN_NAME}.exe" /F >/dev/null 2>&1 || true
+    fi
+  else
+    if pgrep -f "${TRAY_BIN_NAME}" >/dev/null 2>&1; then
+      pkill -f "${TRAY_BIN_NAME}" || true
+    fi
+  fi
 }
