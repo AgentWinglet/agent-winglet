@@ -3,10 +3,15 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"path/filepath"
 	goruntime "runtime"
 	"sort"
+	"sync/atomic"
 
+	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+
+	"github.com/umitkaanusta/agent-winglet/internal/appipc"
 	"github.com/umitkaanusta/agent-winglet/internal/registry"
 	"github.com/umitkaanusta/agent-winglet/internal/stats"
 )
@@ -18,7 +23,15 @@ import (
 // ledger/phase/retire state) are safe to read outside the hooks' own
 // same-session lifecycle.
 type App struct {
-	ctx context.Context
+	ctx         context.Context
+	ipcListener net.Listener
+	// quitting is set right before the tray helper's "Quit" command calls
+	// wailsruntime.Quit — beforeClose (see main.go) checks it to tell that
+	// one real quit apart from every other way Quit/window-close can fire
+	// (titlebar X, Cmd+Q/Alt+F4), all of which hide instead once a tray
+	// helper exists to bring the window back. See internal/appipc's package
+	// doc for why this exists as IPC to begin with.
+	quitting atomic.Bool
 }
 
 func NewApp() *App {
@@ -27,6 +40,71 @@ func NewApp() *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	go a.serveIPC()
+}
+
+// serveIPC accepts local connections from the tray helper for the lifetime
+// of the dashboard. A failure to bind the listener (e.g. two dashboard
+// instances racing to claim the port file) is logged, not fatal — the
+// dashboard still works standalone, just unreachable from the tray until
+// it's restarted.
+func (a *App) serveIPC() {
+	ln, err := appipc.Listen()
+	if err != nil {
+		fmt.Println("agent-winglet-app: IPC listener failed to start:", err)
+		return
+	}
+	a.ipcListener = ln
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go a.handleIPCConn(conn)
+	}
+}
+
+func (a *App) handleIPCConn(conn net.Conn) {
+	defer conn.Close()
+
+	cmd, err := appipc.ReadCommand(conn)
+	if err != nil {
+		return
+	}
+
+	switch cmd {
+	case appipc.Show:
+		wailsruntime.WindowShow(a.ctx)
+		wailsruntime.WindowUnminimise(a.ctx)
+	case appipc.Quit:
+		a.quitting.Store(true)
+		wailsruntime.Quit(a.ctx)
+	}
+}
+
+// beforeClose implements options.App.OnBeforeClose: once a tray helper is
+// managing this dashboard, the titlebar close button and Cmd+Q/Alt+F4 hide
+// the window instead of quitting — same pattern as Slack/Spotify-style
+// tray-resident apps. Only the tray's own "Quit" (via handleIPCConn above)
+// actually exits.
+func (a *App) beforeClose(ctx context.Context) bool {
+	if a.quitting.Load() {
+		return false
+	}
+	wailsruntime.WindowHide(ctx)
+	return true
+}
+
+// shutdown implements options.App.OnShutdown: releases the IPC listener and
+// the port file it published, so a stale one left behind doesn't make the
+// tray think a dashboard is still running when it isn't. Called on the real
+// quit path only (beforeClose above gates everything else).
+func (a *App) shutdown(ctx context.Context) {
+	if a.ipcListener != nil {
+		a.ipcListener.Close()
+	}
+	appipc.Cleanup()
 }
 
 // GetPlatform returns the Go-side runtime.GOOS ("darwin", "windows", or

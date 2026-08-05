@@ -3,13 +3,16 @@
 // receipt already computed by cmd/ledger-hook, without the user reading
 // JSON files or hook stdout by hand.
 //
-// No system-tray/menu-bar glance icon: spiking getlantern/systray alongside
-// Wails in the same binary produces a link-time failure on macOS — both
-// packages independently declare an Objective-C class named AppDelegate
+// The menu-bar/tray glance icon lives in a separate binary,
+// cmd/agent-winglet-tray, not in this one: spiking getlantern/systray
+// alongside Wails in the same binary produces a link-time failure on macOS —
+// both packages independently declare an Objective-C class named AppDelegate
 // (systray_darwin.m vs. Wails' internal/frontend/desktop/darwin/
-// AppDelegate.h), which collides as a duplicate symbol. Rather than fork
-// and patch one of the two libraries just to rename a class, this ships
-// with a Dock/taskbar icon only.
+// AppDelegate.h), which collides as a duplicate symbol. Rather than fork and
+// patch one of the two libraries just to rename a class, the tray runs as
+// its own process and talks to this one over internal/appipc — see that
+// package's doc comment and cmd/agent-winglet-tray's for the other half of
+// this.
 package main
 
 import (
@@ -38,6 +41,8 @@ func main() {
 		},
 		BackgroundColour: &options.RGBA{R: 0, G: 0, B: 0, A: 0},
 		OnStartup:        app.startup,
+		OnBeforeClose:    app.beforeClose,
+		OnShutdown:       app.shutdown,
 		Bind: []interface{}{
 			app,
 		},
