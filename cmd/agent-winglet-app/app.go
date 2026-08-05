@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
 	"sort"
@@ -41,6 +42,7 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	go a.serveIPC()
+	go a.ensureTrayRunning()
 
 	// Defensive fallback: install.sh already calls RegisterLoginItem via
 	// `--register-login-item` right after installing, but this covers any
@@ -54,6 +56,30 @@ func (a *App) startup(ctx context.Context) {
 			fmt.Println("agent-winglet-app: login item registration failed:", err)
 		}
 	}()
+}
+
+// ensureTrayRunning launches the tray helper if none is currently reachable
+// — the dashboard's side of the same self-healing relaunch the tray already
+// does for the dashboard (see cmd/agent-winglet-tray's openDashboard).
+// Without this, the tray's own "Quit" also quits a running dashboard (see
+// quitDashboard's doc comment there), which leaves no tray around to relaunch
+// it — opening the dashboard again (e.g. from Spotlight/the Dock) would
+// otherwise never bring the tray icon back on its own, only the next login
+// would. Best-effort: a failure here just means no tray icon this session,
+// not a broken dashboard, so errors are logged, not surfaced.
+func (a *App) ensureTrayRunning() {
+	if appipc.TrayRunning() {
+		return
+	}
+
+	exe, err := trayExecutablePath()
+	if err != nil {
+		fmt.Println("agent-winglet-app: don't know how to launch the tray helper:", err)
+		return
+	}
+	if err := exec.Command(exe).Start(); err != nil {
+		fmt.Println("agent-winglet-app: failed to launch the tray helper at", exe, "-", err)
+	}
 }
 
 // serveIPC accepts local connections from the tray helper for the lifetime
