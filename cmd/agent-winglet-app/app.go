@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"sort"
-	"sync/atomic"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -26,13 +25,6 @@ import (
 type App struct {
 	ctx         context.Context
 	ipcListener net.Listener
-	// quitting is set right before the tray helper's "Quit" command calls
-	// wailsruntime.Quit — beforeClose (see main.go) checks it to tell that
-	// one real quit apart from every other way Quit/window-close can fire
-	// (titlebar X, Cmd+Q/Alt+F4), all of which hide instead once a tray
-	// helper exists to bring the window back. See internal/appipc's package
-	// doc for why this exists as IPC to begin with.
-	quitting atomic.Bool
 }
 
 func NewApp() *App {
@@ -117,53 +109,33 @@ func (a *App) handleIPCConn(conn net.Conn) {
 		wailsruntime.WindowShow(a.ctx)
 		wailsruntime.WindowUnminimise(a.ctx)
 	case appipc.Quit:
-		a.quitting.Store(true)
 		wailsruntime.Quit(a.ctx)
 	}
 }
 
-// QuitApp is the dashboard's own "actually quit" affordance (bound to the
-// Settings screen's Quit button in the frontend). Closing the window (the
-// titlebar button, Cmd+Q/Alt+F4) only ever hides it while a tray is reachable
-// — see beforeClose — which otherwise leaves no way to fully quit from the
-// dashboard side at all once ensureTrayRunning (see startup) is keeping a
-// tray around consistently. This bypasses that: it sets quitting so
-// beforeClose lets the close through, best-effort tells a reachable tray to
-// exit too (so quitting from the app side tears down both, the mirror of
-// what the tray's own Quit already does via handleIPCConn's Quit case), and
-// then quits.
+// QuitApp is the dashboard's Settings-screen "Quit Winglet" affordance. It
+// tears down both halves — this dashboard and a reachable tray helper —
+// unlike closing the window (beforeClose below), which only ever exits the
+// dashboard itself and leaves the tray running so its own "Open Winglet" can
+// relaunch the dashboard later.
 func (a *App) QuitApp() {
-	a.quitting.Store(true)
 	_ = appipc.SendTrayCommand(appipc.Quit)
 	wailsruntime.Quit(a.ctx)
 }
 
-// beforeClose implements options.App.OnBeforeClose: once a tray helper is
-// managing this dashboard, the titlebar close button and Cmd+Q/Alt+F4 hide
-// the window instead of quitting — same pattern as Slack/Spotify-style
-// tray-resident apps. The tray's own "Quit" (via handleIPCConn above) and the
-// dashboard's own Quit button (QuitApp above) are the two paths that actually
-// exit.
-//
-// Hiding is only correct while a tray is actually around to bring the
-// window back via appipc.Show — otherwise the dashboard would hide itself
-// with no way to reach it again short of a force-quit, which is exactly what
-// happened before this checked TrayRunning: quit the tray helper, then close
-// the dashboard, and it vanishes from the Dock/window list while still
-// running in the background forever. If no tray answers, this is the user's
-// only way to quit, so let it through instead of hiding.
+// beforeClose implements options.App.OnBeforeClose: closing the window —
+// the titlebar button, Cmd+Q/Alt+F4, or the Dock icon's Quit — always exits
+// the dashboard for real. It never touches a tray helper, which (if
+// running) is left alone: its "Open Winglet" menu item relaunches the
+// dashboard on demand (see cmd/agent-winglet-tray's openDashboard), the same
+// way it would for a dashboard that was never started this session.
 func (a *App) beforeClose(ctx context.Context) bool {
-	if a.quitting.Load() || !appipc.TrayRunning() {
-		return false
-	}
-	wailsruntime.WindowHide(ctx)
-	return true
+	return false
 }
 
 // shutdown implements options.App.OnShutdown: releases the IPC listener and
 // the port file it published, so a stale one left behind doesn't make the
-// tray think a dashboard is still running when it isn't. Called on the real
-// quit path only (beforeClose above gates everything else).
+// tray think a dashboard is still running when it isn't.
 func (a *App) shutdown(ctx context.Context) {
 	if a.ipcListener != nil {
 		a.ipcListener.Close()

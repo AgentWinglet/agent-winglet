@@ -12,14 +12,15 @@
 // the dashboard window has been opened yet. It talks to the dashboard over
 // internal/appipc: "Open Winglet" asks a running dashboard to show its
 // window, or launches one if none is running; "Quit" tells a running
-// dashboard to actually exit (bypassing its hide-on-close behavior) and then
-// exits itself. The dashboard's own Quit button (App.QuitApp) is the mirror
-// image of that last part: it sends this tray a Quit command of its own
-// (handleControlConn below), so quitting from either side tears down both,
-// not just the half you clicked. Either side starting back up also
-// relaunches the other if it's not reachable (openDashboard here,
-// App.ensureTrayRunning on the dashboard's side) — so a quit-both from
-// either side is always fully recoverable by opening either one again.
+// dashboard to actually exit and then exits itself. The dashboard's own Quit
+// button (App.QuitApp) is the mirror image of that last part: it sends this
+// tray a Quit command of its own (handleControlConn below), so quitting from
+// either side tears down both, not just the half you clicked. Closing the
+// dashboard's window on its own (titlebar button, Cmd+Q/Alt+F4, Dock Quit)
+// leaves this tray running — its "Open Winglet" relaunches the dashboard on
+// demand, just like it would if the dashboard had never been started this
+// session (openDashboard here, App.ensureTrayRunning on the dashboard's
+// side).
 package main
 
 import (
@@ -48,14 +49,13 @@ func onReady() {
 	systray.AddSeparator()
 	mQuit := systray.AddMenuItem("Quit", "Quit Winglet")
 
-	// serveControl lets the dashboard tell whether a tray is actually around
-	// before it decides to hide on close instead of quitting (appipc.
-	// TrayRunning), and lets the dashboard's own Quit button (App.QuitApp)
-	// fully exit this tray too, not just itself. A failure to bind here
-	// (e.g. two tray instances racing) just means the dashboard will always
-	// see "no tray" and quit for real on close instead — safe, just not the
-	// tray-resident behavior, and the dashboard's Quit button simply has
-	// nothing to reach.
+	// serveControl lets the dashboard tell whether a tray is already running
+	// before launching one at startup (appipc.TrayRunning, see App.
+	// ensureTrayRunning), and lets the dashboard's own Quit button
+	// (App.QuitApp) fully exit this tray too, not just itself. A failure to
+	// bind here (e.g. two tray instances racing) just means the dashboard's
+	// Quit button has nothing to reach — the tray itself still works, it
+	// just won't hear a dashboard-initiated Quit.
 	if ln, err := appipc.ListenTray(); err == nil {
 		go serveControl(ln)
 	} else {

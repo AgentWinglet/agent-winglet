@@ -10,11 +10,11 @@
 // The tray dials the dashboard (SendCommand/Dial/Listen, app.port) to ask it
 // to show its window or quit — see app.go's handleIPCConn. The dashboard
 // dials the tray (SendTrayCommand/ListenTray, tray.port) for two things: a
-// bare connect-and-close as a liveness probe (TrayRunning, used by
-// beforeClose to decide whether hiding on close is safe — hiding only makes
-// sense if something is still around to bring the window back), and a real
-// Quit so the dashboard's own Quit button can fully tear down the tray too,
-// not just itself — see cmd/agent-winglet-tray's handleControlConn.
+// bare connect-and-close as a liveness probe (TrayRunning, used at startup —
+// see app.go's ensureTrayRunning — to decide whether a tray helper needs
+// launching), and a real Quit so the dashboard's own Quit button can fully
+// tear down the tray too, not just itself — see cmd/agent-winglet-tray's
+// handleControlConn.
 package appipc
 
 import (
@@ -35,9 +35,7 @@ type Command string
 const (
 	// Show asks the dashboard to bring its window to front.
 	Show Command = "SHOW"
-	// Quit asks the dashboard to actually exit, bypassing the hide-on-close
-	// behavior its OnBeforeClose otherwise applies — this is the only path
-	// that fully quits the dashboard once a tray helper is managing it.
+	// Quit asks the dashboard to actually exit.
 	Quit Command = "QUIT"
 
 	ack = "OK"

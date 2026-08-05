@@ -509,13 +509,12 @@ async function renderSessionsSection(container, projectPath) {
   });
 }
 
-// renderSettingsScreen's Quit row is the dashboard's own real-quit
+// renderSettingsScreen's Quit row is the dashboard's own "quit everything"
 // affordance (App.QuitApp) — closing the window itself (titlebar button,
-// Cmd+Q/Alt+F4) only hides it back to the tray, by design, so without this
-// there's no way to fully quit from the dashboard side at all once a tray is
-// running (which is most of the time — see App.ensureTrayRunning). This
-// tears down the tray too, not just the dashboard, so "quit" here means the
-// same thing it does from the tray's own menu.
+// Cmd+Q/Alt+F4, Dock Quit) already exits the dashboard for real, but leaves
+// a running tray helper alone so its "Open Winglet" can relaunch the
+// dashboard later. This additionally tears down that tray, so "quit" here
+// means the same thing it does from the tray's own menu.
 function renderSettingsScreen(container) {
   container.innerHTML = `
     <h1 class="screen-title">Settings</h1>
