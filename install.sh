@@ -248,6 +248,73 @@ EOF
       echo "Installed/updated app: ${DEST}"
       ;;
   esac
+
+  ############################################################################
+  # Tray helper (menu-bar/tray glance icon + login item — see
+  # cmd/agent-winglet-tray's doc comment).
+  #
+  # darwin: `make app` above already built and nested it inside the just-
+  # installed Winglet.app (see the Makefile's nest-tray-darwin target) — all
+  # that's left is asking macOS to actually register it as a login item,
+  # which can only be done by the app itself (see
+  # cmd/agent-winglet-app/loginitem_darwin.go), hence shelling out to the
+  # binary we just installed rather than doing it from this script directly.
+  #
+  # linux/windows have no such API, so they keep the plain
+  # build-a-separate-binary-and-write-an-autostart-entry approach.
+  ############################################################################
+  if [ "$OS" = "darwin" ]; then
+    stop_tray
+    if "$DEST/Contents/MacOS/${APP_NAME}" --register-login-item; then
+      echo "Registered ${APP_NAME} to start at login"
+    else
+      echo "note: login item registration failed — ${APP_NAME} still works, just without launch-at-login. Open it once to retry (it retries on every startup)."
+    fi
+    TRAY_EXE="${DEST}/Contents/Library/LoginItems/Tray.app/Contents/MacOS/${TRAY_BIN_NAME}"
+    if [ -x "$TRAY_EXE" ]; then
+      nohup "$TRAY_EXE" >/dev/null 2>&1 &
+      disown 2>/dev/null || true
+    fi
+  else
+    echo "Building the tray helper for ${OS}..."
+    if ! make tray; then
+      if [ "$OS" = "linux" ]; then
+        echo "error: tray build failed. On Linux this is usually a missing appindicator dev package:" >&2
+        echo "  sudo apt-get install -y libayatana-appindicator3-dev" >&2
+        echo "(or libappindicator3-dev on older distros — see .github/workflows/app-build.yml for the Ubuntu package CI uses)." >&2
+      fi
+      exit 1
+    fi
+
+    TRAY_ARTIFACT="cmd/agent-winglet-tray/build/bin/$(tray_build_artifact "$OS")"
+    if [ ! -e "$TRAY_ARTIFACT" ]; then
+      echo "error: expected tray build output at ${TRAY_ARTIFACT} but it's not there." >&2
+      exit 1
+    fi
+
+    TRAY_DEST="$(tray_install_path "$OS")"
+    # Stop any already-running instance first — Windows won't let a running
+    # .exe be overwritten, and this avoids two copies racing to register the
+    # same autostart entry a moment from now.
+    stop_tray
+    mkdir -p "$(dirname "$TRAY_DEST")"
+    cp "$TRAY_ARTIFACT" "$TRAY_DEST"
+    chmod +x "$TRAY_DEST" 2>/dev/null || true
+    TRAY_EXE="$(tray_executable_path "$OS")"
+
+    if [ "$OS" = "linux" ]; then
+      linux_register_tray_autostart "$TRAY_EXE"
+      echo "Registered ${APP_NAME} to start at login (XDG autostart)"
+    else
+      windows_register_tray_autostart "$TRAY_EXE"
+    fi
+    echo "Installed/updated tray helper: ${TRAY_DEST}"
+
+    # Launch it now, detached from this script, so the tray icon appears
+    # right away instead of only at the next login.
+    nohup "$TRAY_EXE" >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+  fi
 fi
 
 echo ""

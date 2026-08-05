@@ -34,9 +34,17 @@ jobs:
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
+        # libayatana-appindicator3-dev is for cmd/agent-winglet-tray (the
+        # login-item tray helper, see its doc comment): getlantern/systray's
+        # Linux backend is cgo against GTK + an AppIndicator binding, same as
+        # the app's own gtk/webkit deps below but a separate library that
+        # isn't pulled in by wails. Ayatana is the actively-maintained fork
+        # current Ubuntu ships; older distros may need libappindicator3-dev
+        # instead (see install.sh's own note on this for the local-install
+        # path).
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
 
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
@@ -45,11 +53,19 @@ jobs:
         shell: bash
         # Runs install.sh/uninstall.sh's --app-only path instead of a bare
         # `wails build` — this is a real end-to-end smoke test of the actual
-        # user-facing install mechanism (which wraps `make app`, so it's
-        # still "a real wails build per OS, not just go build ./..." per the
-        # original point of this job) on all three OSes, which matters
-        # because only macOS gets run by hand day to day; Windows/Linux only
-        # get exercised here.
+        # user-facing install mechanism (which wraps `make app` and, since
+        # the tray helper's launch-at-login was added, `make tray` too, so
+        # it's still "a real wails build per OS, not just go build ./..."
+        # per the original point of this job) on all three OSes, which
+        # matters because only macOS gets run by hand day to day;
+        # Windows/Linux only get exercised here.
+        #
+        # This does exercise the tray binary actually launching (install.sh
+        # starts it, or on macOS registers it via launchctl with
+        # RunAtLoad=true), but only proves it doesn't crash outright — these
+        # are headless runners with no real desktop session, so it can't
+        # verify the icon is visible/clickable the way the manual pass in
+        # the plan's Verification section does.
         run: |
           ./install.sh --app-only
           ./uninstall.sh --app-only

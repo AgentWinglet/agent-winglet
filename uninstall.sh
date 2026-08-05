@@ -141,6 +141,12 @@ if [ "$WANT_APP" = "1" ]; then
               echo "note: ${APP_NAME} is currently running — quit it if you don't want a" \
                    "still-running copy left over after this removes it from disk."
             fi
+            # Only the app itself can unregister its login item (see
+            # cmd/agent-winglet-app/loginitem_darwin.go) — do it before
+            # deleting the bundle out from under it. Best-effort: a broken
+            # or already-partially-removed install shouldn't block cleanup.
+            "$DEST/Contents/MacOS/${APP_NAME}" --unregister-login-item 2>/dev/null || true
+            stop_tray
             rm -rf "$DEST"
             echo "Removed app: ${DEST}"
           fi
@@ -172,6 +178,23 @@ if [ "$WANT_APP" = "1" ]; then
     esac
     if [ "$FOUND_ANY" = "0" ]; then
       echo "No installed app found — nothing to remove."
+    fi
+
+    # Tray helper (login item) — darwin's is nested inside the app bundle
+    # (see the Makefile's nest-tray-darwin target), already unregistered and
+    # removed above as part of removing the app itself. linux/windows install
+    # it as a separate binary with its own autostart entry, torn down here.
+    if [ "$OS" != "darwin" ]; then
+      stop_tray
+      case "$OS" in
+        linux) linux_unregister_tray_autostart ;;
+        windows) windows_unregister_tray_autostart ;;
+      esac
+      TRAY_DEST="$(tray_install_path "$OS")"
+      if [ -e "$TRAY_DEST" ]; then
+        rm -rf "$TRAY_DEST"
+        echo "Removed tray helper: ${TRAY_DEST}"
+      fi
     fi
   fi
 fi

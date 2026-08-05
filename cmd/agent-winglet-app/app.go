@@ -3,10 +3,15 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
+	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
 	"sort"
 
+	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+
+	"github.com/umitkaanusta/agent-winglet/internal/appipc"
 	"github.com/umitkaanusta/agent-winglet/internal/registry"
 	"github.com/umitkaanusta/agent-winglet/internal/stats"
 )
@@ -18,7 +23,8 @@ import (
 // ledger/phase/retire state) are safe to read outside the hooks' own
 // same-session lifecycle.
 type App struct {
-	ctx context.Context
+	ctx         context.Context
+	ipcListener net.Listener
 }
 
 func NewApp() *App {
@@ -27,6 +33,114 @@ func NewApp() *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	go a.serveIPC()
+	go a.ensureTrayRunning()
+
+	// Defensive fallback: install.sh already calls RegisterLoginItem via
+	// `--register-login-item` right after installing, but this covers any
+	// other way the app ends up running (a dev build, a manual copy) — it's
+	// idempotent (see loginitem_darwin.go), so calling it again here is
+	// harmless. Errors are logged, not surfaced: the dashboard is fully
+	// usable without a registered login item, just without the
+	// launch-at-login convenience.
+	go func() {
+		if err := RegisterLoginItem(); err != nil {
+			fmt.Println("agent-winglet-app: login item registration failed:", err)
+		}
+	}()
+}
+
+// ensureTrayRunning launches the tray helper if none is currently reachable
+// — the dashboard's side of the same self-healing relaunch the tray already
+// does for the dashboard (see cmd/agent-winglet-tray's openDashboard).
+// Without this, the tray's own "Quit" also quits a running dashboard (see
+// quitDashboard's doc comment there), which leaves no tray around to relaunch
+// it — opening the dashboard again (e.g. from Spotlight/the Dock) would
+// otherwise never bring the tray icon back on its own, only the next login
+// would. Best-effort: a failure here just means no tray icon this session,
+// not a broken dashboard, so errors are logged, not surfaced.
+func (a *App) ensureTrayRunning() {
+	if appipc.TrayRunning() {
+		return
+	}
+
+	exe, err := trayExecutablePath()
+	if err != nil {
+		fmt.Println("agent-winglet-app: don't know how to launch the tray helper:", err)
+		return
+	}
+	if err := exec.Command(exe).Start(); err != nil {
+		fmt.Println("agent-winglet-app: failed to launch the tray helper at", exe, "-", err)
+	}
+}
+
+// serveIPC accepts local connections from the tray helper for the lifetime
+// of the dashboard. A failure to bind the listener (e.g. two dashboard
+// instances racing to claim the port file) is logged, not fatal — the
+// dashboard still works standalone, just unreachable from the tray until
+// it's restarted.
+func (a *App) serveIPC() {
+	ln, err := appipc.Listen()
+	if err != nil {
+		fmt.Println("agent-winglet-app: IPC listener failed to start:", err)
+		return
+	}
+	a.ipcListener = ln
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go a.handleIPCConn(conn)
+	}
+}
+
+func (a *App) handleIPCConn(conn net.Conn) {
+	defer conn.Close()
+
+	cmd, err := appipc.ReadCommand(conn)
+	if err != nil {
+		return
+	}
+
+	switch cmd {
+	case appipc.Show:
+		wailsruntime.WindowShow(a.ctx)
+		wailsruntime.WindowUnminimise(a.ctx)
+	case appipc.Quit:
+		wailsruntime.Quit(a.ctx)
+	}
+}
+
+// QuitApp is the dashboard's Settings-screen "Quit Winglet" affordance. It
+// tears down both halves — this dashboard and a reachable tray helper —
+// unlike closing the window (beforeClose below), which only ever exits the
+// dashboard itself and leaves the tray running so its own "Open Winglet" can
+// relaunch the dashboard later.
+func (a *App) QuitApp() {
+	_ = appipc.SendTrayCommand(appipc.Quit)
+	wailsruntime.Quit(a.ctx)
+}
+
+// beforeClose implements options.App.OnBeforeClose: closing the window —
+// the titlebar button, Cmd+Q/Alt+F4, or the Dock icon's Quit — always exits
+// the dashboard for real. It never touches a tray helper, which (if
+// running) is left alone: its "Open Winglet" menu item relaunches the
+// dashboard on demand (see cmd/agent-winglet-tray's openDashboard), the same
+// way it would for a dashboard that was never started this session.
+func (a *App) beforeClose(ctx context.Context) bool {
+	return false
+}
+
+// shutdown implements options.App.OnShutdown: releases the IPC listener and
+// the port file it published, so a stale one left behind doesn't make the
+// tray think a dashboard is still running when it isn't.
+func (a *App) shutdown(ctx context.Context) {
+	if a.ipcListener != nil {
+		a.ipcListener.Close()
+	}
+	appipc.Cleanup()
 }
 
 // GetPlatform returns the Go-side runtime.GOOS ("darwin", "windows", or
