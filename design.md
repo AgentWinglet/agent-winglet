@@ -1,4 +1,4 @@
-# Agent Winglet — Design Decisions
+# Winglet — Design Decisions
 
 Reference doc for `cmd/agent-winglet-app/frontend` (Wails desktop app — vanilla JS/HTML/CSS). Ships on macOS, Windows, and Linux — nothing here may depend on mac-only chrome to look finished. This is a decision log, not a spec to re-derive from: if you're touching this UI, match what's here rather than reintroducing something that was already tried and reverted (noted below).
 

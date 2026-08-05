@@ -1,4 +1,4 @@
-# Agent Winglet
+# Winglet
 
 **Get more Claude Code usage out of the same weekly cap.**
 
@@ -17,7 +17,7 @@ cd agent-winglet
 ```
 
 By default this installs **both** the Session Ledger hook and the desktop
-app (`AgentWinglet`). Pass `--hook-only` or `--app-only` to install just one.
+app (`Winglet`). Pass `--hook-only` or `--app-only` to install just one.
 
 **The hook** (`ledger-hook`): fetched with `go install`, so it doesn't
 matter where you run this from, and it works even if you invoke `--hook-only`
@@ -55,9 +55,9 @@ the result to the standard per-OS location:
 
 | OS      | Installed to                                          |
 |---------|--------------------------------------------------------|
-| macOS   | `/Applications/AgentWinglet.app`                       |
-| Linux   | `~/.local/bin/AgentWinglet` + a `~/.local/share/applications` launcher entry |
-| Windows | `%LOCALAPPDATA%\Programs\AgentWinglet\` + a Start Menu shortcut (via Git Bash/MSYS2 — needs `powershell.exe` on PATH for the shortcut, which is skipped, not fatal, if it's missing) |
+| macOS   | `/Applications/Winglet.app`                       |
+| Linux   | `~/.local/bin/Winglet` + a `~/.local/share/applications` launcher entry |
+| Windows | `%LOCALAPPDATA%\Programs\Winglet\` + a Start Menu shortcut (via Git Bash/MSYS2 — needs `powershell.exe` on PATH for the shortcut, which is skipped, not fatal, if it's missing) |
 
 Windows/Linux support is implemented to spec but has only been verified by
 the CI smoke-test job (see `.github/workflows/app-build.yml`), not by hand

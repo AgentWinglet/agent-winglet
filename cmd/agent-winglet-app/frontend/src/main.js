@@ -526,7 +526,7 @@ function render() {
   const app = document.querySelector('#app');
   app.innerHTML = `
     <div class="sidebar">
-      <div class="sidebar-title">Agent Winglet</div>
+      <div class="sidebar-title">Winglet</div>
       <nav class="nav">
         ${NAV_ITEMS.map(
           (item) => `
