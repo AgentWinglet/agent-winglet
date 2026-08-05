@@ -173,6 +173,26 @@ if [ "$WANT_APP" = "1" ]; then
     if [ "$FOUND_ANY" = "0" ]; then
       echo "No installed app found — nothing to remove."
     fi
+
+    # Tray helper (login item) — stop the running instance, remove its
+    # autostart registration, then the binary itself.
+    stop_tray
+    case "$OS" in
+      darwin) darwin_unregister_tray_autostart ;;
+      linux) linux_unregister_tray_autostart ;;
+      windows) windows_unregister_tray_autostart ;;
+    esac
+    TRAY_DEST="$(tray_install_path "$OS")"
+    if [ -e "$TRAY_DEST" ]; then
+      rm -f "$TRAY_DEST"
+      echo "Removed tray helper: ${TRAY_DEST}"
+      # darwin's tray lives in its own dedicated ~/Library/Application
+      # Support/Winglet/ (nothing else uses it) — clean it up too, if now
+      # empty. rmdir is a no-op (silently ignored) if anything else is still
+      # in there. linux/windows both install the tray alongside the app
+      # itself, in a directory the app-removal step above already owns.
+      [ "$OS" = "darwin" ] && rmdir "$(dirname "$TRAY_DEST")" 2>/dev/null || true
+    fi
   fi
 fi
 
