@@ -25,6 +25,14 @@ jobs:
           mkdir -p cmd/agent-winglet-app/frontend/dist
           touch cmd/agent-winglet-app/frontend/dist/placeholder
 
+      - name: Install Linux system dependencies
+        # cmd/agent-winglet-tray imports getlantern/systray unconditionally
+        # (no Wails build tags to stub it out like the app binary), so even
+        # this Go-only/fast job needs systray's Linux cgo dep to compile it.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev
+
       - name: Build
         run: go build ./...
 
