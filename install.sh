@@ -124,6 +124,8 @@ if [ "$WANT_HOOK" = "1" ]; then
     .hooks.SessionStart |= (if any(.[]; has_cmd) then . else . + [{"hooks": [{"type": "command", "command": $cmd}]}] end) |
     .hooks.PostCompact //= [] |
     .hooks.PostCompact |= (if any(.[]; has_cmd) then . else . + [{"hooks": [{"type": "command", "command": $cmd}]}] end) |
+    .hooks.Stop //= [] |
+    .hooks.Stop |= (if any(.[]; has_cmd) then . else . + [{"hooks": [{"type": "command", "command": $cmd}]}] end) |
     .hooks.SessionEnd //= [] |
     .hooks.SessionEnd |= (if any(.[]; has_cmd) then . else . + [{"hooks": [{"type": "command", "command": $cmd}]}] end)
   ' "$SETTINGS_FILE" > "$TMP_FILE"
