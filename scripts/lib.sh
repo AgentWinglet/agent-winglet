@@ -3,7 +3,7 @@
 # installed copy live, so both scripts agree without duplicating the logic.
 # Not meant to be run directly.
 
-APP_NAME="AgentWinglet"
+APP_NAME="Winglet"
 
 # Prints one of: darwin, linux, windows, unknown.
 # Windows here means "running under a bash-capable environment on Windows"

@@ -228,14 +228,14 @@ if [ "$WANT_APP" = "1" ]; then
       cat > "${HOME}/.local/share/applications/${APP_NAME}.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=Agent Winglet
+Name=Winglet
 Comment=Local-only dashboard for agent-winglet's Claude Code hooks
 Exec=${DEST}
 Icon=${ICON}
 Categories=Utility;
 EOF
       command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "${HOME}/.local/share/applications" || true
-      echo "Installed/updated app: ${DEST} (also in your app launcher as 'Agent Winglet')"
+      echo "Installed/updated app: ${DEST} (also in your app launcher as 'Winglet')"
       case ":$PATH:" in
         *":${HOME}/.local/bin:"*) ;;
         *) echo "note: ${HOME}/.local/bin isn't on your PATH — add it to launch '${APP_NAME}' from a terminal." ;;

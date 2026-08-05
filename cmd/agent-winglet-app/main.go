@@ -28,7 +28,7 @@ func main() {
 	app := NewApp()
 
 	err := wails.Run(&options.App{
-		Title:     "Agent Winglet",
+		Title:     "Winglet",
 		Width:     920,
 		Height:    640,
 		MinWidth:  680,
@@ -47,7 +47,7 @@ func main() {
 			// control reads as fake the moment its inset/spacing doesn't
 			// exactly match the real thing, which isn't worth risking here.
 			About: &mac.AboutInfo{
-				Title:   "Agent Winglet",
+				Title:   "Winglet",
 				Message: "Local-only dashboard for agent-winglet's Claude Code hooks.",
 			},
 			// Lets the sidebar's backdrop-filter blur (style.css, gated on
