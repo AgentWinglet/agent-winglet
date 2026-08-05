@@ -248,6 +248,56 @@ EOF
       echo "Installed/updated app: ${DEST}"
       ;;
   esac
+
+  ############################################################################
+  # Tray helper (menu-bar/tray glance icon + login item — see
+  # cmd/agent-winglet-tray's doc comment). A plain Go binary, not a `wails
+  # build`, so it's built by `make tray` rather than `make app`.
+  ############################################################################
+  echo "Building the tray helper for ${OS}..."
+  if ! make tray; then
+    if [ "$OS" = "linux" ]; then
+      echo "error: tray build failed. On Linux this is usually a missing appindicator dev package:" >&2
+      echo "  sudo apt-get install -y libayatana-appindicator3-dev" >&2
+      echo "(or libappindicator3-dev on older distros — see .github/workflows/app-build.yml for the Ubuntu package CI uses)." >&2
+    fi
+    exit 1
+  fi
+
+  TRAY_ARTIFACT="cmd/agent-winglet-tray/build/bin/$(tray_build_artifact "$OS")"
+  if [ ! -e "$TRAY_ARTIFACT" ]; then
+    echo "error: expected tray build output at ${TRAY_ARTIFACT} but it's not there." >&2
+    exit 1
+  fi
+
+  TRAY_DEST="$(tray_install_path "$OS")"
+  # Stop any already-running instance first — Windows won't let a running
+  # .exe be overwritten, and on every OS this avoids two copies racing to
+  # register the same LaunchAgent/autostart entry a moment from now.
+  stop_tray
+  mkdir -p "$(dirname "$TRAY_DEST")"
+  cp "$TRAY_ARTIFACT" "$TRAY_DEST"
+  chmod +x "$TRAY_DEST" 2>/dev/null || true
+
+  case "$OS" in
+    darwin) darwin_register_tray_autostart "$TRAY_DEST" ;;
+    linux)
+      linux_register_tray_autostart "$TRAY_DEST"
+      echo "Registered ${APP_NAME} to start at login (XDG autostart)"
+      ;;
+    windows) windows_register_tray_autostart "$TRAY_DEST" ;;
+  esac
+  echo "Installed/updated tray helper: ${TRAY_DEST}"
+
+  # Launch it now, detached from this script, so the tray icon appears right
+  # away instead of only at the next login — except on darwin, where
+  # darwin_register_tray_autostart's launchctl bootstrap (RunAtLoad=true)
+  # already started it: launching it again here would leave two tray icons
+  # running side by side.
+  if [ "$OS" != "darwin" ]; then
+    nohup "$TRAY_DEST" >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+  fi
 fi
 
 echo ""
