@@ -185,4 +185,3 @@ func TestCleanupRemovesPortFile(t *testing.T) {
 		t.Fatalf("port file still present after Cleanup: err = %v", err)
 	}
 }
-
