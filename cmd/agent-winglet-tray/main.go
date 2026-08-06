@@ -101,12 +101,32 @@ func serveControl(ln net.Listener) {
 func handleControlConn(conn net.Conn) {
 	defer conn.Close()
 
-	cmd, err := appipc.ReadCommand(conn)
+	cmd, payload, err := appipc.ReadCommand(conn)
 	if err != nil {
 		return
 	}
-	if cmd == appipc.Quit {
+	switch cmd {
+	case appipc.Quit:
 		systray.Quit()
+	case appipc.Notify:
+		showToast(payload)
+	}
+}
+
+// showToast launches the dashboard binary in its ephemeral --toast mode
+// (cmd/agent-winglet-app's runToast) with payload passed straight through —
+// the tray forwards it byte-for-byte from internal/appipc's Notify command,
+// it doesn't parse it itself. Best-effort, like openDashboard: a failure
+// here (binary not installed at the expected path, exec error) just means
+// this one nudge doesn't get a toast, not a broken tray.
+func showToast(payload string) {
+	exe, err := appExecutablePath()
+	if err != nil {
+		fmt.Println("agent-winglet-tray: don't know how to launch the dashboard for a toast:", err)
+		return
+	}
+	if err := exec.Command(exe, "--toast", payload).Start(); err != nil {
+		fmt.Println("agent-winglet-tray: failed to launch toast at", exe, "-", err)
 	}
 }
 
