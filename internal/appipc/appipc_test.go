@@ -24,7 +24,7 @@ func TestSendCommandRoundTrip(t *testing.T) {
 			return
 		}
 		defer conn.Close()
-		cmd, err := ReadCommand(conn)
+		cmd, _, err := ReadCommand(conn)
 		if err != nil {
 			t.Errorf("ReadCommand errored: %v", err)
 			return
@@ -63,7 +63,7 @@ func TestSendTrayCommandRoundTrip(t *testing.T) {
 			return
 		}
 		defer conn.Close()
-		cmd, err := ReadCommand(conn)
+		cmd, _, err := ReadCommand(conn)
 		if err != nil {
 			t.Errorf("ReadCommand errored: %v", err)
 			return
@@ -82,6 +82,53 @@ func TestSendTrayCommandRoundTrip(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for the tray side to receive the command")
+	}
+}
+
+func TestSendTrayNotifyRoundTrip(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	ln, err := ListenTray()
+	if err != nil {
+		t.Fatalf("ListenTray errored: %v", err)
+	}
+	defer ln.Close()
+	defer CleanupTray()
+
+	type received struct {
+		cmd     Command
+		payload string
+	}
+	got := make(chan received, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		cmd, payload, err := ReadCommand(conn)
+		if err != nil {
+			t.Errorf("ReadCommand errored: %v", err)
+			return
+		}
+		got <- received{cmd, payload}
+	}()
+
+	const payload = `{"title":"Time to /compact","body":"Investigation looks done."}`
+	if err := SendTrayNotify(payload); err != nil {
+		t.Fatalf("SendTrayNotify errored: %v", err)
+	}
+
+	select {
+	case r := <-got:
+		if r.cmd != Notify {
+			t.Fatalf("received command = %q, want %q", r.cmd, Notify)
+		}
+		if r.payload != payload {
+			t.Fatalf("received payload = %q, want %q", r.payload, payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the tray side to receive the notification")
 	}
 }
 
