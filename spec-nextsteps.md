@@ -1,25 +1,20 @@
 # Next steps — buildable bits
 
 Follow-up to [AGENTDIET_COMPARISON.md](AGENTDIET_COMPARISON.md). That doc
-found agent-winglet's closer relatives aren't AgentDiet but two papers that
-independently validate the same non-LLM, deterministic approach:
+found agent-winglet's closest relative isn't AgentDiet but a paper that
+independently validates the same non-LLM, deterministic approach:
 
 - **"The Complexity Trap: Simple Observation Masking Is as Efficient as LLM
   Summarization for Agent Context Management"** (Lindenbauer et al.,
   JetBrains Research, DL4C @ NeurIPS 2025, arXiv:2508.21433) — deterministic
   masking of old tool observations halves cost vs. a raw agent while
   matching/beating LLM-summarization solve rate.
-- **"The Missing Memory Hierarchy: Demand Paging for LLM Context Windows"**
-  (Mason, 2026, arXiv:2603.09023) — a transparent proxy evicts stale content
-  to storage, leaves a reference behind, up to 93% context reduction in
-  production.
 
 Everything below is scoped to what fits the existing hook architecture: a
 `PostToolUse` hook's `updatedToolOutput` can only rewrite the tool call it is
 currently processing, never an earlier one, and there is no hook to force
-compaction or intercept the model mid-generation. That constraint (already
-documented in `retire.go` and `phase.go`) rules out true page-fault-style
-reinjection — it's noted below as out of scope, not forgotten.
+compaction or intercept the model mid-generation. That constraint is already
+documented in `retire.go` and `phase.go`.
 
 ## 1. Generalize output budgeting beyond Bash (do first)
 
@@ -111,29 +106,6 @@ boundary" design was specifically built to avoid?
 
 **Effort:** medium engineering, but blocked on that decision first.
 
-## 5. Already free — document it, don't build it
-
-`retire.Store` already writes archived content to a real on-disk path, and
-the receipt string already includes that path
-([main.go:430-433](cmd/ledger-hook/main.go#L430-L433)). The agent can
-already re-`Read` that path itself if it wants retired content back — that
-*is* Pichay's page-fault-refetch behavior, just initiated by the model
-issuing an ordinary tool call instead of a proxy intercepting one. Worth a
-line in the README/docs confirming this is intentional and works today;
-not a build item.
-
-## Out of scope
-
-**True demand-paging fault detection** (Pichay's proxy noticing the model is
-about to reference evicted content and silently reinjecting it before the
-model asks) is not buildable on this hook API. `PostToolUse` fires after a
-tool call completes; there's no hook that observes model reasoning or
-message drafting before it commits to a tool call, so "the model just tried
-to recall something we removed" can't be detected the way a message-stream
-proxy detects it. Same wall `retire.go`'s doc comment already names for
-retroactive transcript rewrites — this is the same constraint, different
-paper.
-
 ## Suggested order
 
-1 → 2 (same PR, small) → 3 → decide on 4 → 5 (docs-only, anytime).
+1 → 2 (same PR, small) → 3 → decide on 4.
