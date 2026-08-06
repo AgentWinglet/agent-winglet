@@ -123,23 +123,39 @@ still assert under/at/over precisely instead of guessing through a line
 count. `linesOfStdout` had no remaining callers after the swap and was
 deleted rather than left unused.
 
-## 3. Retire Bash post-boundary too
+## 3. Retire Bash post-boundary too — done
 
-**Status quo:** post-boundary, investigate tools
-(Read/Grep/Glob/WebFetch/WebSearch/Task) get fully archived via
-`retire.Store` and replaced with a receipt. Bash post-boundary still only
-gets the head/tail budget treatment (or ledger dedup) — it never gets
-archived to disk.
+Shipped. Post-boundary, a long (over `budgetTokenThreshold`) first-time Bash
+call is now archived via `retire.Store` and replaced with a compact receipt
+(`handleBashRetire`, `cmd/ledger-hook/main.go`), the same recovery guarantee
+`handleRetireInvestigate` already gives investigate-classified tools —
+instead of just keeping a head/tail slice visible via `budgetStdout`. Short
+first-time output, and exact repeats (still deduped via the ledger, cheaper
+than archiving since the content already appeared once), are unaffected.
 
-**Shape of the change:** once `pastBoundary` is true
-([main.go:493](cmd/ledger-hook/main.go#L493)), route long/first-time Bash
-output through `retire.Store` the same way investigate tools are, instead of
-just budgeting it. Requires deciding whether Bash should be reclassified as
-investigate-like post-boundary, or whether retirement should be triggered
-independent of the investigate/implement tool split.
+Went with "retirement triggered independent of the investigate/implement
+tool split," not "reclassify Bash as investigate-like": `pastBoundary` is
+threaded straight into `handleBashPostToolUse`, which picks retirement over
+budgeting on its own. Reclassifying Bash into `investigateTools` was
+rejected — that map also drives `handlePhaseBoundary`'s crossing detection,
+and Bash is deliberately excluded there for a real reason (tool_name alone
+can't tell a read-only command from a mutating one); folding it in for
+retirement's sake would have reopened that.
 
-**Effort:** medium — touches the phase/retire interaction, not just a new
-code path.
+Implementing this exposed a real, previously-latent bug: `handlePhaseBoundary`
+returned a hardcoded `pastBoundary = false` for any tool outside
+`investigateTools`/`implementTools`, without ever reading the actual phase
+state — harmless before, since Bash never consumed that return value, but
+wrong the moment it started to (caught by
+`TestHandleRetiresLongBashOutputPostBoundary` failing against real budgeted
+output instead of a retire receipt). Fixed by loading `phase.State` before
+the classification branch and returning `st.Suggested` for unclassified
+tools instead of a hardcoded `false`, while still leaving `st.Observe`
+un-called for them (they still never advance or cross the boundary
+themselves). Covered by `TestHandleRetiresLongBashOutputPostBoundary`,
+`TestHandleBashDedupTakesPrecedenceOverRetirementPostBoundary`,
+`TestHandleSessionStartInvalidatesBashRetireArchive`, and
+`TestRetiredBytesOnBashRetiredCall`.
 
 ## 4. Sliding-window masking pre-boundary
 
@@ -166,4 +182,4 @@ boundary" design was specifically built to avoid?
 
 1 → 2 (same PR, small) → 3 → decide on 4.
 
-1 and 2 are both done. Next up: 3, then decide on 4.
+1, 2, and 3 are done. Next up: decide on 4.

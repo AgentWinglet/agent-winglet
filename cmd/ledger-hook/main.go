@@ -17,9 +17,14 @@
 //     one-time suggestion to compact (see handlePhaseBoundary). Once that
 //     boundary has already been crossed, any further investigate-classified
 //     call has its own output archived to disk and replaced with a compact
-//     receipt (see handleRetireInvestigate) instead of budgeted — budgeting
-//     only ever applies pre-boundary, where retirement doesn't fire yet.
-//     Anything else passes through untouched.
+//     receipt (see handleRetireInvestigate) instead of budgeted. Bash gets
+//     the same post-boundary archive-and-receipt treatment for long
+//     first-time output (see handleBashRetire) even though it's never
+//     investigate-classified itself — pastBoundary is threaded into its own
+//     dedup/budget path independent of that tool_name split. Budgeting
+//     (head/tail, content kept visible) only ever applies pre-boundary, for
+//     both Bash and Grep/Glob — post-boundary, long output is fully
+//     retired instead. Anything else passes through untouched.
 //   - SessionStart / PostCompact: deletes the session's ledger, phase state,
 //     retired-content directory, and stats tally so no substitution,
 //     boundary suggestion, retired receipt, or session receipt survives a
@@ -490,13 +495,19 @@ var implementTools = map[string]bool{
 func handlePhaseBoundary(in hookInput, root string) (out *hookOutput, pastBoundary bool, err error) {
 	isInvestigate := investigateTools[in.ToolName]
 	isImplement := implementTools[in.ToolName]
-	if !isInvestigate && !isImplement {
-		return nil, false, nil
-	}
 
 	st, err := phase.Load(root, in.SessionID)
 	if err != nil {
 		return nil, false, err
+	}
+	if !isInvestigate && !isImplement {
+		// Unclassified tools (e.g. Bash — see investigateTools' doc comment
+		// on why it's deliberately left out of both maps) never advance
+		// phase state, but still need an accurate pastBoundary read: Bash's
+		// own post-boundary retirement path (handleBashRetire) depends on
+		// it, even though Bash itself never crosses or is retired by this
+		// function.
+		return nil, st.Suggested, nil
 	}
 	crossed := st.Observe(isInvestigate, isImplement)
 	if err := phase.Save(root, in.SessionID, st); err != nil {
@@ -646,15 +657,19 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 		return handleRetireInvestigate(in, root)
 	}
 
-	// Everything past this point is pre-boundary-only: any investigate-
-	// classified call that got this far without being retired above just
-	// means the boundary hasn't crossed yet (or this tool isn't investigate-
-	// classified at all, e.g. Bash). Budgeting and retirement are mutually
-	// exclusive by construction — never double-applied to the same call —
-	// because retirement already claimed the investigate+pastBoundary case.
+	// Everything past this point is pre-boundary-only for investigate-
+	// classified tools: any such call that got this far without being
+	// retired above just means the boundary hasn't crossed yet. Bash is the
+	// one exception — it's never investigate-classified (see
+	// investigateTools' doc comment), so it never goes through
+	// handleRetireInvestigate above, but it still needs pastBoundary to pick
+	// its own post-boundary treatment (retire long output instead of just
+	// budgeting it — see handleBashPostToolUse). Budgeting and retirement
+	// are still mutually exclusive per call: pastBoundary routes Bash to one
+	// or the other, never both.
 	switch in.ToolName {
 	case "Bash":
-		return handleBashPostToolUse(in, root)
+		return handleBashPostToolUse(in, root, pastBoundary)
 	case "Grep":
 		return handleGrepBudget(in, root)
 	case "Glob":
@@ -694,12 +709,15 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 }
 
 // handleBashPostToolUse implements the ledger's Bash-specific path: repeat
-// detection (dedup) first, output budgeting only for first-time calls that
-// don't hit the ledger. Bash is not investigate-classified (see
-// investigateTools' doc comment on why it's deliberately left
-// unclassified), so it never goes through handleRetireInvestigate — dedup
-// and budgeting are its only two suppression mechanisms.
-func handleBashPostToolUse(in hookInput, root string) (*hookOutput, error) {
+// detection (dedup) first, then — for first-time calls that don't hit the
+// ledger — either budgeting or retirement of long output, depending on
+// pastBoundary. Bash is not investigate-classified (see investigateTools'
+// doc comment on why it's deliberately left unclassified), so it never goes
+// through handleRetireInvestigate; pastBoundary is threaded in here
+// specifically so Bash can still get retirement's stronger recovery
+// guarantee post-boundary without joining that tool_name classification
+// (see handleBashRetire).
+func handleBashPostToolUse(in hookInput, root string, pastBoundary bool) (*hookOutput, error) {
 	var input struct {
 		Command string `json:"command"`
 	}
@@ -736,6 +754,9 @@ func handleBashPostToolUse(in hookInput, root string) (*hookOutput, error) {
 		if err := ledger.Save(root, in.SessionID, st); err != nil {
 			return nil, err
 		}
+		if pastBoundary {
+			return handleBashRetire(in, root, response.Stdout, input.Command)
+		}
 		budgeted, omittedLines, omittedBytes, ok, err := budgetStdout(response.Stdout, root, in.SessionID)
 		if err != nil {
 			return nil, err
@@ -771,6 +792,49 @@ func handleBashPostToolUse(in hookInput, root string) (*hookOutput, error) {
 		return nil, err
 	}
 	return repeatOut, nil
+}
+
+// handleBashRetire is handleBashPostToolUse's post-boundary counterpart to
+// budgetStdout: once the session has crossed the investigate→implement
+// boundary, a first-time Bash call's stdout — if long enough to have been
+// budgeted otherwise — is archived to disk in full via retire.Store and
+// replaced with a compact receipt, the same recovery guarantee
+// handleRetireInvestigate gives investigate-classified tools, instead of
+// just keeping a head/tail slice visible. Reached independent of the
+// investigate/implement tool_name split (see investigateTools' doc comment
+// for why Bash stays out of that classification): gating on pastBoundary
+// here, rather than folding Bash into investigateTools, keeps that
+// classification's boundary-detection role untouched while still letting
+// Bash's own output get the stronger post-boundary treatment.
+//
+// Uses the same "is this worth touching" gate budgetStdout does
+// (estimatedTokens vs. budgetTokenThreshold) — a short success message
+// (e.g. "npm install" with a two-line summary) doesn't need archiving even
+// post-boundary, matching handleBashPostToolUse's existing short-output
+// passthrough for the pre-boundary case.
+func handleBashRetire(in hookInput, root, stdout, command string) (*hookOutput, error) {
+	if estimatedTokens(stdout) <= budgetTokenThreshold {
+		return nil, nil
+	}
+
+	path, err := retire.Store(root, in.SessionID, []byte(stdout))
+	if err != nil {
+		return nil, err
+	}
+	n := len(stdout)
+	receipt := fmt.Sprintf(
+		"[agent-winglet] bash output retired post-boundary (%s, %d bytes) — full output at %s",
+		command, n, path,
+	)
+	if err := recordStat(root, in.SessionID, func(s *stats.Session) {
+		s.RecordRetire(n)
+	}); err != nil {
+		return nil, err
+	}
+	return &hookOutput{HookSpecificOutput: hookSpecificOutput{
+		HookEventName:     "PostToolUse",
+		UpdatedToolOutput: bashOutput{Stdout: receipt},
+	}}, nil
 }
 
 // handleGrepBudget budgets Grep's content-mode output (see grepResponse's

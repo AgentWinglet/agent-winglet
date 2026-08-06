@@ -923,15 +923,134 @@ func TestHandleNeverRetiresImplementOrBashCalls(t *testing.T) {
 		t.Fatalf("implement call should never be retired, got %+v", out)
 	}
 
-	// Bash is unclassified and must stay on its own repeat-check/budgeting
-	// path, never the retire path, even post-boundary.
+	// Bash is unclassified, so it never goes through handleRetireInvestigate
+	// (that path only ever fires for investigateTools). It does get its own
+	// post-boundary retirement for long output (see
+	// TestHandleRetiresLongBashOutputPostBoundary) — but short output like
+	// this should still pass through untouched, same as pre-boundary.
 	bashIn := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
 	out, err = handle(bashIn)
 	if err != nil {
 		t.Fatalf("handle errored: %v", err)
 	}
 	if out != nil {
-		t.Fatalf("first-time Bash call post-boundary should still pass through untouched, got %+v", out)
+		t.Fatalf("short first-time Bash call post-boundary should still pass through untouched, got %+v", out)
+	}
+}
+
+// TestHandleRetiresLongBashOutputPostBoundary covers spec-nextsteps.md's
+// item 3: post-boundary, a long first-time Bash call should be fully
+// retired (archived + compact receipt), not just head/tail budgeted —
+// matching the recovery guarantee handleRetireInvestigate already gives
+// investigate-classified tools.
+func TestHandleRetiresLongBashOutputPostBoundary(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
+		t.Fatalf("seeding investigate call errored: %v", err)
+	}
+	if _, err := handle(toolCallInput("sess1", dir, "Edit")); err != nil {
+		t.Fatalf("crossing call errored: %v", err)
+	}
+
+	longOutput := linesOfApproxTokens(budgetTokenThreshold + 1)
+	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("long first-time Bash output post-boundary should be retired, got nil")
+	}
+	updated, ok := out.HookSpecificOutput.UpdatedToolOutput.(bashOutput)
+	if !ok {
+		t.Fatalf("updatedToolOutput is not a bashOutput: %#v", out.HookSpecificOutput.UpdatedToolOutput)
+	}
+	if !strings.Contains(updated.Stdout, "retired post-boundary") {
+		t.Fatalf("receipt missing the expected marker, got %q", updated.Stdout)
+	}
+	if strings.Contains(updated.Stdout, "lines omitted") {
+		t.Fatalf("post-boundary long output should be fully retired, not head/tail budgeted, got %q", updated.Stdout)
+	}
+
+	idx := strings.Index(updated.Stdout, "full output at ")
+	if idx == -1 {
+		t.Fatalf("receipt missing an archive path, got %q", updated.Stdout)
+	}
+	path := updated.Stdout[idx+len("full output at "):]
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading archived output at %q errored: %v", path, err)
+	}
+	if string(stored) != longOutput {
+		t.Fatalf("archived output = %q, want the original stdout %q", stored, longOutput)
+	}
+}
+
+// TestHandleBashDedupTakesPrecedenceOverRetirementPostBoundary asserts an
+// exact-repeat Bash call post-boundary still hits the ledger's cheap
+// "unchanged since turn N" substitution instead of being archived — the
+// content already appeared once in the transcript, so there's nothing new
+// worth retiring to disk.
+func TestHandleBashDedupTakesPrecedenceOverRetirementPostBoundary(t *testing.T) {
+	dir := t.TempDir()
+	longOutput := linesOfApproxTokens(budgetTokenThreshold + 1)
+	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
+
+	if _, err := handle(in); err != nil {
+		t.Fatalf("seeding first call errored: %v", err)
+	}
+	if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
+		t.Fatalf("seeding investigate call errored: %v", err)
+	}
+	if _, err := handle(toolCallInput("sess1", dir, "Edit")); err != nil {
+		t.Fatalf("crossing call errored: %v", err)
+	}
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("repeat Bash call post-boundary should still be deduped, got nil")
+	}
+	updated := out.HookSpecificOutput.UpdatedToolOutput.(bashOutput)
+	if !strings.Contains(updated.Stdout, "unchanged since turn") {
+		t.Fatalf("expected a dedup receipt, got %q", updated.Stdout)
+	}
+	if strings.Contains(updated.Stdout, "retired post-boundary") {
+		t.Fatalf("repeat call should be deduped, not retired, got %q", updated.Stdout)
+	}
+}
+
+// TestHandleSessionStartInvalidatesBashRetireArchive covers the same "hard
+// constraint" as TestHandleSessionStartInvalidatesBudgetArchive, for the new
+// post-boundary Bash retire path's own retire.Store call.
+func TestHandleSessionStartInvalidatesBashRetireArchive(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
+		t.Fatalf("seeding investigate call errored: %v", err)
+	}
+	if _, err := handle(toolCallInput("sess1", dir, "Edit")); err != nil {
+		t.Fatalf("crossing call errored: %v", err)
+	}
+
+	longOutput := linesOfApproxTokens(budgetTokenThreshold + 1)
+	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	updated := out.HookSpecificOutput.UpdatedToolOutput.(bashOutput)
+	idx := strings.Index(updated.Stdout, "full output at ")
+	path := updated.Stdout[idx+len("full output at "):]
+
+	if _, err := handle(hookInput{SessionID: "sess1", Cwd: dir, HookEventName: "SessionStart"}); err != nil {
+		t.Fatalf("SessionStart handling errored: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("bash retire archive survived SessionStart: err=%v", err)
 	}
 }
 
@@ -1734,6 +1853,36 @@ func TestRetiredBytesOnRetiredCall(t *testing.T) {
 	}
 	if s.RetiredBytes != int64(len(response)) {
 		t.Fatalf("RetiredBytes = %d, want %d", s.RetiredBytes, len(response))
+	}
+}
+
+// TestRetiredBytesOnBashRetiredCall is TestRetiredBytesOnRetiredCall's
+// counterpart for the new post-boundary Bash retire path — it shares
+// RecordRetire/RetiredCalls/RetiredBytes with handleRetireInvestigate, so
+// this guards that Bash's own call site records against the same counters.
+func TestRetiredBytesOnBashRetiredCall(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
+		t.Fatalf("seeding investigate call errored: %v", err)
+	}
+	if _, err := handle(toolCallInput("sess1", dir, "Edit")); err != nil {
+		t.Fatalf("crossing call errored: %v", err)
+	}
+	longOutput := linesOfApproxTokens(budgetTokenThreshold + 1)
+	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
+	if _, err := handle(in); err != nil {
+		t.Fatalf("retiring call errored: %v", err)
+	}
+
+	s, err := stats.LoadSession(dir, "sess1")
+	if err != nil {
+		t.Fatalf("LoadSession errored: %v", err)
+	}
+	if s.RetiredBytes != int64(len(longOutput)) {
+		t.Fatalf("RetiredBytes = %d, want %d", s.RetiredBytes, len(longOutput))
+	}
+	if s.RetiredCalls != 1 {
+		t.Fatalf("RetiredCalls = %d, want 1", s.RetiredCalls)
 	}
 }
 
