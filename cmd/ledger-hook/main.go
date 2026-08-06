@@ -6,14 +6,20 @@
 //     replaces the output with a compact "unchanged since turn N" reference
 //     via updatedToolOutput; a first-time, successful command whose stdout
 //     is long is replaced with a head/tail receipt (output budgeting by
-//     outcome). On the first implement-classified call (Edit/Write/
+//     outcome). Pre-boundary, Grep's content field and Glob's filenames
+//     array get the same head/tail budgeting treatment as Bash stdout once
+//     they cross the line-count threshold (see
+//     handleGrepBudget/handleGlobBudget) — WebFetch, WebSearch, and Read are
+//     deliberately excluded, see handlePostToolUse's default case for why.
+//     On the first implement-classified call (Edit/Write/
 //     NotebookEdit) after at least one investigate-classified call
 //     (Read/Grep/Glob/WebFetch/WebSearch/Task) this session, emits a
 //     one-time suggestion to compact (see handlePhaseBoundary). Once that
 //     boundary has already been crossed, any further investigate-classified
 //     call has its own output archived to disk and replaced with a compact
-//     receipt (see handleRetireInvestigate). Anything else passes through
-//     untouched.
+//     receipt (see handleRetireInvestigate) instead of budgeted — budgeting
+//     only ever applies pre-boundary, where retirement doesn't fire yet.
+//     Anything else passes through untouched.
 //   - SessionStart / PostCompact: deletes the session's ledger, phase state,
 //     retired-content directory, and stats tally so no substitution,
 //     boundary suggestion, retired receipt, or session receipt survives a
@@ -94,22 +100,54 @@ const (
 	budgetTailLines     = 15
 )
 
-// budgetStdout collapses stdout to its first budgetHeadLines and last
+// budgetBody collapses body to its first budgetHeadLines and last
 // budgetTailLines lines if it has more than budgetLineThreshold lines. It
-// reports ok == false when stdout is short enough to leave untouched, and
+// reports ok == false when body is short enough to leave untouched, and
 // omittedLines/omittedBytes as the size of the dropped middle section (both
 // 0 when ok is false). omittedBytes is the "\n"-joined byte length of just
 // the dropped lines — the same original-size unit RecordDedup/RecordRetire
 // use — so budget-trims can contribute to the same suppressed-bytes total.
-func budgetStdout(stdout string) (budgeted string, omittedLines int, omittedBytes int64, ok bool) {
-	lines := strings.Split(stdout, "\n")
+//
+// Unlike handleRetireInvestigate's archive-then-receipt pattern, budgeting
+// used to just discard the dropped middle outright — recoverable only by
+// re-issuing the same tool call. That's a real gap: both papers this
+// mechanism is modeled on (see AGENTDIET_COMPARISON.md) only ever act on
+// content that's already aged out — AgentDiet's reflection module has a
+// mandatory 2-step delay before it will touch a step, and Complexity Trap's
+// Observation Masking only masks observations older than its rolling
+// window — never the freshest turn. AgentDiet's own Step/PStep metrics
+// (Table 2) confirm the failure mode directly: cutting too aggressively
+// measurably increases the number of steps an agent needs, because it has
+// to "recover the disrupted information through additional tool calls."
+// Budgeting fires on arrival, before the agent has even read the output
+// once, which is exactly the risky case those papers avoid — so every trim
+// now archives the full pre-trim body via retire.Store (root/sessionID) and
+// names that path in the notice line, the same way a retired investigate
+// call does. If the agent needed what got cut, recovery is one cheap Read
+// of a local path instead of re-running the tool.
+//
+// notice composes the omission marker's text (everything after "N <unit>
+// omitted" in the receipt line) — callers vary it because Bash's marker also
+// carries an outcome ("exit 0") that other tools' bodies have no equivalent
+// of; archivePath is threaded through so every notice can point at the same
+// recovery path. This is the tool-agnostic core behind budgetStdout (Bash)
+// and the Grep/Glob budget handlers below (see handlePostToolUse's package
+// doc for which tool_response field each one budgets and why
+// WebFetch/WebSearch/Read are deliberately not among them).
+func budgetBody(body, root, sessionID string, notice func(omitted int, archivePath string) string) (budgeted string, omittedLines int, omittedBytes int64, ok bool, err error) {
+	lines := strings.Split(body, "\n")
 	trailingNewline := len(lines) > 0 && lines[len(lines)-1] == ""
 	if trailingNewline {
 		lines = lines[:len(lines)-1]
 	}
 	n := len(lines)
 	if n <= budgetLineThreshold {
-		return "", 0, 0, false
+		return "", 0, 0, false, nil
+	}
+
+	archivePath, err := retire.Store(root, sessionID, []byte(body))
+	if err != nil {
+		return "", 0, 0, false, err
 	}
 
 	dropped := lines[budgetHeadLines : n-budgetTailLines]
@@ -119,13 +157,45 @@ func budgetStdout(stdout string) (budgeted string, omittedLines int, omittedByte
 	var b strings.Builder
 	b.WriteString(strings.Join(lines[:budgetHeadLines], "\n"))
 	b.WriteString("\n")
-	fmt.Fprintf(&b, "[agent-winglet] %d lines omitted, exit 0 (showing first %d/last %d)\n",
-		omittedLines, budgetHeadLines, budgetTailLines)
+	fmt.Fprintf(&b, "[agent-winglet] %s\n", notice(omittedLines, archivePath))
 	b.WriteString(strings.Join(lines[n-budgetTailLines:], "\n"))
 	if trailingNewline {
 		b.WriteString("\n")
 	}
-	return b.String(), omittedLines, omittedBytes, true
+	return b.String(), omittedLines, omittedBytes, true, nil
+}
+
+// budgetStdout is budgetBody specialized for Bash stdout: same head/tail
+// collapse, plus the "exit 0" outcome tag in the marker (this call site
+// already knows the command succeeded — see its caller in
+// handleBashPostToolUse).
+func budgetStdout(stdout, root, sessionID string) (budgeted string, omittedLines int, omittedBytes int64, ok bool, err error) {
+	return budgetBody(stdout, root, sessionID, func(omitted int, archivePath string) string {
+		return fmt.Sprintf("%d lines omitted, exit 0 (showing first %d/last %d) — full output at %s",
+			omitted, budgetHeadLines, budgetTailLines, archivePath)
+	})
+}
+
+// budgetTextField is budgetBody specialized for a tool_response field that's
+// just freeform text with no Bash-style outcome to report (Grep's content
+// field) — same marker as budgetStdout minus the ", exit 0" clause.
+func budgetTextField(body, root, sessionID string) (budgeted string, omittedLines int, omittedBytes int64, ok bool, err error) {
+	return budgetBody(body, root, sessionID, func(omitted int, archivePath string) string {
+		return fmt.Sprintf("%d lines omitted (showing first %d/last %d) — full output at %s",
+			omitted, budgetHeadLines, budgetTailLines, archivePath)
+	})
+}
+
+// budgetEntryList is budgetBody specialized for a tool_response field that's
+// an array of short entries rather than freeform text (Glob's filenames) —
+// the array is newline-joined into a body budgetBody can operate on line by
+// line (one path per line), and the marker calls the unit "entries" instead
+// of "lines" since that's what a reader actually sees collapsed.
+func budgetEntryList(entries []string, root, sessionID string) (budgeted string, omittedEntries int, omittedBytes int64, ok bool, err error) {
+	return budgetBody(strings.Join(entries, "\n"), root, sessionID, func(omitted int, archivePath string) string {
+		return fmt.Sprintf("%d entries omitted (showing first %d/last %d) — full list at %s",
+			omitted, budgetHeadLines, budgetTailLines, archivePath)
+	})
 }
 
 type hookInput struct {
@@ -143,6 +213,41 @@ type bashOutput struct {
 	Stderr      string `json:"stderr"`
 	Interrupted bool   `json:"interrupted"`
 	IsImage     bool   `json:"isImage"`
+}
+
+// grepResponse and globResponse mirror GrepOutput and GlobOutput from the
+// Claude Code CLI's own sdk-tools.d.ts (the installed @anthropic-ai/claude-
+// code npm package ships this file; there is no public docs page for
+// tool_response schemas — same gap the bashOutput comment above already
+// notes for Bash). Confirmed against the shipped .d.ts rather than a live
+// capture — no Grep/Glob tools were available to trigger live in the
+// session this was developed in — but still a confirmed schema, not a
+// guess, just from a different source than a live capture would be.
+//
+// Each struct round-trips every field the real output can carry (not just
+// the one being budgeted), so replacing UpdatedToolOutput with one of these
+// after budgeting never drops information the original response had, unlike
+// bashOutput's deliberately-minimal 4-field subset above.
+type grepResponse struct {
+	Mode          string   `json:"mode,omitempty"`
+	NumFiles      int      `json:"numFiles"`
+	Filenames     []string `json:"filenames"`
+	Content       string   `json:"content,omitempty"`
+	NumLines      int      `json:"numLines,omitempty"`
+	NumMatches    int      `json:"numMatches,omitempty"`
+	TotalFiles    int      `json:"totalFiles,omitempty"`
+	TotalLines    int      `json:"totalLines,omitempty"`
+	AppliedLimit  int      `json:"appliedLimit,omitempty"`
+	AppliedOffset int      `json:"appliedOffset,omitempty"`
+}
+
+type globResponse struct {
+	DurationMs      int64    `json:"durationMs"`
+	NumFiles        int      `json:"numFiles"`
+	Filenames       []string `json:"filenames"`
+	Truncated       bool     `json:"truncated"`
+	TotalMatches    int      `json:"totalMatches,omitempty"`
+	CountIsComplete bool     `json:"countIsComplete,omitempty"`
 }
 
 type hookSpecificOutput struct {
@@ -517,10 +622,60 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 		return handleRetireInvestigate(in, root)
 	}
 
-	if in.ToolName != "Bash" {
+	// Everything past this point is pre-boundary-only: any investigate-
+	// classified call that got this far without being retired above just
+	// means the boundary hasn't crossed yet (or this tool isn't investigate-
+	// classified at all, e.g. Bash). Budgeting and retirement are mutually
+	// exclusive by construction — never double-applied to the same call —
+	// because retirement already claimed the investigate+pastBoundary case.
+	switch in.ToolName {
+	case "Bash":
+		return handleBashPostToolUse(in, root)
+	case "Grep":
+		return handleGrepBudget(in, root)
+	case "Glob":
+		return handleGlobBudget(in, root)
+	default:
+		// Notably absent: WebFetch, WebSearch, and Read.
+		//
+		// WebFetch's result field (confirmed live, via a real WebFetch call
+		// in the session this was developed in — the WebFetchOutput shape in
+		// the CLI's sdk-tools.d.ts matched exactly) isn't raw page content:
+		// per the tool's own description, it's already been fetched,
+		// converted to markdown, and answered by a small model against the
+		// caller's specific prompt — plus the tool self-summarizes when the
+		// source page is huge. That means it's rarely long enough to need
+		// budgeting in the first place, and on the rare occasions it is,
+		// it's because the prompt asked for something extensive — head/tail
+		// truncation would be cutting the requested content itself, not
+		// waste, unlike Bash's setup/noise/result shape or Grep/Glob's
+		// independent, interchangeable entries.
+		//
+		// WebSearch's tool_response (also confirmed live) is a heterogeneous
+		// results array mixing a {tool_use_id, content: [{title,url}]} block
+		// with a plain-string commentary element — no single freeform field
+		// budgetBody can act on the way it can for Grep's content, and
+		// Claude Code's own search result counts are already small in
+		// practice.
+		//
+		// Read has no confirmed tool_response schema at all — it's absent
+		// from the CLI's shipped sdk-tools.d.ts output types entirely
+		// (unlike Grep/Glob, which are both there) — and guessing a
+		// file-content field to truncate risks silently corrupting real
+		// file content, a worse failure mode than leaving it untouched.
+		//
+		// All three are deliberate scope cuts, not oversights.
 		return nil, nil
 	}
+}
 
+// handleBashPostToolUse implements the ledger's Bash-specific path: repeat
+// detection (dedup) first, output budgeting only for first-time calls that
+// don't hit the ledger. Bash is not investigate-classified (see
+// investigateTools' doc comment on why it's deliberately left
+// unclassified), so it never goes through handleRetireInvestigate — dedup
+// and budgeting are its only two suppression mechanisms.
+func handleBashPostToolUse(in hookInput, root string) (*hookOutput, error) {
 	var input struct {
 		Command string `json:"command"`
 	}
@@ -557,7 +712,10 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 		if err := ledger.Save(root, in.SessionID, st); err != nil {
 			return nil, err
 		}
-		budgeted, omittedLines, omittedBytes, ok := budgetStdout(response.Stdout)
+		budgeted, omittedLines, omittedBytes, ok, err := budgetStdout(response.Stdout, root, in.SessionID)
+		if err != nil {
+			return nil, err
+		}
 		if !ok {
 			// Short enough to leave untouched — nothing suppressed, nothing
 			// to record.
@@ -589,6 +747,69 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 		return nil, err
 	}
 	return repeatOut, nil
+}
+
+// handleGrepBudget budgets Grep's content-mode output (see grepResponse's
+// doc comment for the confirmed schema). files_with_matches/count mode
+// responses have no Content to speak of — NumFiles/Filenames/NumMatches are
+// already compact — so an empty Content is treated the same as "too short
+// to budget," matching handleBashPostToolUse's own empty-stdout check.
+func handleGrepBudget(in hookInput, root string) (*hookOutput, error) {
+	var resp grepResponse
+	if err := json.Unmarshal(in.ToolResponse, &resp); err != nil {
+		return nil, nil
+	}
+	if resp.Content == "" {
+		return nil, nil
+	}
+	budgeted, omittedLines, omittedBytes, ok, err := budgetTextField(resp.Content, root, in.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+	if err := recordStat(root, in.SessionID, func(s *stats.Session) {
+		s.RecordBudgetTrim(omittedLines, omittedBytes)
+	}); err != nil {
+		return nil, err
+	}
+	resp.Content = budgeted
+	return &hookOutput{HookSpecificOutput: hookSpecificOutput{
+		HookEventName:     "PostToolUse",
+		UpdatedToolOutput: resp,
+	}}, nil
+}
+
+// handleGlobBudget budgets Glob's filenames array (see globResponse's doc
+// comment for the confirmed schema) by collapsing it to its first/last
+// entries, the same head/tail shape budgetStdout applies to Bash — just
+// over path entries instead of output lines.
+func handleGlobBudget(in hookInput, root string) (*hookOutput, error) {
+	var resp globResponse
+	if err := json.Unmarshal(in.ToolResponse, &resp); err != nil {
+		return nil, nil
+	}
+	if len(resp.Filenames) == 0 {
+		return nil, nil
+	}
+	budgeted, omittedEntries, omittedBytes, ok, err := budgetEntryList(resp.Filenames, root, in.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+	if err := recordStat(root, in.SessionID, func(s *stats.Session) {
+		s.RecordBudgetTrim(omittedEntries, omittedBytes)
+	}); err != nil {
+		return nil, err
+	}
+	resp.Filenames = strings.Split(budgeted, "\n")
+	return &hookOutput{HookSpecificOutput: hookSpecificOutput{
+		HookEventName:     "PostToolUse",
+		UpdatedToolOutput: resp,
+	}}, nil
 }
 
 // quietEnvVar is the one piece of configurability in scope for the savings

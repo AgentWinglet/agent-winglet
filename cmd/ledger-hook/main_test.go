@@ -230,7 +230,10 @@ func TestBudgetStdoutThresholdBoundary(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, _, _, ok := budgetStdout(linesOfStdout(c.lineCount))
+			_, _, _, ok, err := budgetStdout(linesOfStdout(c.lineCount), t.TempDir(), "sess1")
+			if err != nil {
+				t.Fatalf("budgetStdout errored: %v", err)
+			}
 			if ok != c.wantBudget {
 				t.Fatalf("%d lines: budgetStdout ok = %v, want %v", c.lineCount, ok, c.wantBudget)
 			}
@@ -259,6 +262,41 @@ func TestHandleBudgetsLongFirstTimeOutput(t *testing.T) {
 	}
 	if !strings.Contains(updated.Stdout, "lines omitted") {
 		t.Fatalf("budgeted output missing omission marker: %q", updated.Stdout)
+	}
+}
+
+// TestHandleBashBudgetArchivesFullOutputForRecovery guards the gap plain
+// head/tail truncation used to leave open: if the agent actually needed
+// something from the dropped middle, its only recovery was re-running the
+// same Bash command. Budgeting now archives the full pre-trim stdout the
+// same way handleRetireInvestigate archives investigate output, and names
+// the path in the notice line — this asserts that path is present and
+// reading it back returns the exact original stdout.
+func TestHandleBashBudgetArchivesFullOutputForRecovery(t *testing.T) {
+	dir := t.TempDir()
+	longOutput := linesOfStdout(budgetLineThreshold + 1)
+	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle returned error: %v", err)
+	}
+	updated := out.HookSpecificOutput.UpdatedToolOutput.(bashOutput)
+
+	idx := strings.Index(updated.Stdout, "full output at ")
+	if idx == -1 {
+		t.Fatalf("budgeted stdout missing an archive path, got %q", updated.Stdout)
+	}
+	path := updated.Stdout[idx+len("full output at "):]
+	if nl := strings.IndexByte(path, '\n'); nl != -1 {
+		path = path[:nl]
+	}
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading archived output at %q errored: %v", path, err)
+	}
+	if string(stored) != longOutput {
+		t.Fatalf("archived output = %q, want the original unbudgeted stdout %q", stored, longOutput)
 	}
 }
 
@@ -318,6 +356,296 @@ func TestHandleRepeatCheckTakesPrecedenceOverBudgeting(t *testing.T) {
 	updated := second.HookSpecificOutput.UpdatedToolOutput.(bashOutput)
 	if !strings.HasPrefix(updated.Stdout, "[agent-winglet] unchanged since turn") {
 		t.Fatalf("repeat should use the 'unchanged since turn N' message, not a budget receipt, got %q", updated.Stdout)
+	}
+}
+
+func linesOfEntries(n int) []string {
+	entries := make([]string, n)
+	for i := range entries {
+		entries[i] = fmt.Sprintf("file%d.go", i)
+	}
+	return entries
+}
+
+func grepInput(t *testing.T, dir, sessionID string, response grepResponse) hookInput {
+	t.Helper()
+	toolResponse, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal tool_response: %v", err)
+	}
+	return hookInput{
+		SessionID:     sessionID,
+		Cwd:           dir,
+		HookEventName: "PostToolUse",
+		ToolName:      "Grep",
+		ToolInput:     json.RawMessage(`{"pattern":"TODO"}`),
+		ToolResponse:  toolResponse,
+	}
+}
+
+func globInput(t *testing.T, dir, sessionID string, response globResponse) hookInput {
+	t.Helper()
+	toolResponse, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal tool_response: %v", err)
+	}
+	return hookInput{
+		SessionID:     sessionID,
+		Cwd:           dir,
+		HookEventName: "PostToolUse",
+		ToolName:      "Glob",
+		ToolInput:     json.RawMessage(`{"pattern":"**/*.go"}`),
+		ToolResponse:  toolResponse,
+	}
+}
+
+func TestBudgetTextFieldThresholdBoundary(t *testing.T) {
+	cases := []struct {
+		name       string
+		lineCount  int
+		wantBudget bool
+	}{
+		{"just under threshold", budgetLineThreshold - 1, false},
+		{"at threshold", budgetLineThreshold, false},
+		{"just over threshold", budgetLineThreshold + 1, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, _, _, ok, err := budgetTextField(linesOfStdout(c.lineCount), t.TempDir(), "sess1")
+			if err != nil {
+				t.Fatalf("budgetTextField errored: %v", err)
+			}
+			if ok != c.wantBudget {
+				t.Fatalf("%d lines: budgetTextField ok = %v, want %v", c.lineCount, ok, c.wantBudget)
+			}
+		})
+	}
+}
+
+func TestBudgetEntryListThresholdBoundary(t *testing.T) {
+	cases := []struct {
+		name       string
+		entryCount int
+		wantBudget bool
+	}{
+		{"just under threshold", budgetLineThreshold - 1, false},
+		{"at threshold", budgetLineThreshold, false},
+		{"just over threshold", budgetLineThreshold + 1, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, _, _, ok, err := budgetEntryList(linesOfEntries(c.entryCount), t.TempDir(), "sess1")
+			if err != nil {
+				t.Fatalf("budgetEntryList errored: %v", err)
+			}
+			if ok != c.wantBudget {
+				t.Fatalf("%d entries: budgetEntryList ok = %v, want %v", c.entryCount, ok, c.wantBudget)
+			}
+		})
+	}
+}
+
+func TestHandleBudgetsLongGrepContent(t *testing.T) {
+	dir := t.TempDir()
+	longContent := linesOfStdout(budgetLineThreshold + 1)
+	in := grepInput(t, dir, "sess1", grepResponse{Mode: "content", NumFiles: 3, Content: longContent})
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle returned error: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("long Grep content should be budgeted, got nil")
+	}
+	updated, ok := out.HookSpecificOutput.UpdatedToolOutput.(grepResponse)
+	if !ok {
+		t.Fatalf("updatedToolOutput is not a grepResponse: %#v", out.HookSpecificOutput.UpdatedToolOutput)
+	}
+	if updated.Content == longContent {
+		t.Fatalf("budgeting did not replace the original content")
+	}
+	if !strings.Contains(updated.Content, "lines omitted") {
+		t.Fatalf("budgeted content missing omission marker: %q", updated.Content)
+	}
+	// Fields other than Content must survive the round-trip untouched.
+	if updated.NumFiles != 3 || updated.Mode != "content" {
+		t.Fatalf("budgeting dropped other fields, got %+v", updated)
+	}
+
+	idx := strings.Index(updated.Content, "full output at ")
+	if idx == -1 {
+		t.Fatalf("budgeted content missing an archive path, got %q", updated.Content)
+	}
+	path := updated.Content[idx+len("full output at "):]
+	if nl := strings.IndexByte(path, '\n'); nl != -1 {
+		path = path[:nl]
+	}
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading archived content at %q errored: %v", path, err)
+	}
+	if string(stored) != longContent {
+		t.Fatalf("archived content = %q, want the original unbudgeted content %q", stored, longContent)
+	}
+}
+
+func TestHandleDoesNotBudgetShortGrepContent(t *testing.T) {
+	dir := t.TempDir()
+	in := grepInput(t, dir, "sess1", grepResponse{Mode: "content", Content: linesOfStdout(budgetLineThreshold)})
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle returned error: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("content at/under threshold should pass through untouched, got %+v", out)
+	}
+}
+
+func TestHandleDoesNotBudgetGrepFilesWithMatchesMode(t *testing.T) {
+	dir := t.TempDir()
+	// files_with_matches/count mode carries no Content — just filenames and
+	// counts, already compact — so there's nothing for this path to budget.
+	in := grepInput(t, dir, "sess1", grepResponse{Mode: "files_with_matches", NumFiles: 200, Filenames: linesOfEntries(200)})
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle returned error: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("files_with_matches mode (no Content field) should pass through untouched, got %+v", out)
+	}
+}
+
+func TestHandleBudgetsLongGlobFilenames(t *testing.T) {
+	dir := t.TempDir()
+	longFilenames := linesOfEntries(budgetLineThreshold + 1)
+	in := globInput(t, dir, "sess1", globResponse{NumFiles: len(longFilenames), Filenames: longFilenames})
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle returned error: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("long Glob filenames should be budgeted, got nil")
+	}
+	updated, ok := out.HookSpecificOutput.UpdatedToolOutput.(globResponse)
+	if !ok {
+		t.Fatalf("updatedToolOutput is not a globResponse: %#v", out.HookSpecificOutput.UpdatedToolOutput)
+	}
+	if len(updated.Filenames) >= len(longFilenames) {
+		t.Fatalf("budgeting did not shrink the filenames array: got %d entries, want fewer than %d", len(updated.Filenames), len(longFilenames))
+	}
+	found := false
+	for _, f := range updated.Filenames {
+		if strings.Contains(f, "entries omitted") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("budgeted filenames missing omission marker entry: %v", updated.Filenames)
+	}
+
+	var archiveEntry string
+	for _, f := range updated.Filenames {
+		if strings.Contains(f, "full list at ") {
+			archiveEntry = f
+		}
+	}
+	if archiveEntry == "" {
+		t.Fatalf("budgeted filenames missing an archive path entry: %v", updated.Filenames)
+	}
+	path := archiveEntry[strings.Index(archiveEntry, "full list at ")+len("full list at "):]
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading archived filenames at %q errored: %v", path, err)
+	}
+	if string(stored) != strings.Join(longFilenames, "\n") {
+		t.Fatalf("archived filenames don't match the original list")
+	}
+}
+
+func TestHandleDoesNotBudgetShortGlobFilenames(t *testing.T) {
+	dir := t.TempDir()
+	in := globInput(t, dir, "sess1", globResponse{Filenames: linesOfEntries(budgetLineThreshold)})
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle returned error: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("filenames at/under threshold should pass through untouched, got %+v", out)
+	}
+}
+
+func TestHandleWebSearchIsNeverBudgeted(t *testing.T) {
+	dir := t.TempDir()
+	// WebSearch is deliberately excluded (see handlePostToolUse's default
+	// case): its results array has no single freeform field to budget.
+	// Regression guard: a long tool_response must still pass through
+	// untouched rather than erroring or being silently mangled.
+	longResponse := json.RawMessage(`{"query":"x","results":[{"tool_use_id":"t1","content":[{"title":"a","url":"https://a"}]},"` + linesOfStdout(budgetLineThreshold+1) + `"],"durationSeconds":1,"searchCount":1}`)
+	in := hookInput{
+		SessionID:     "sess1",
+		Cwd:           dir,
+		HookEventName: "PostToolUse",
+		ToolName:      "WebSearch",
+		ToolInput:     json.RawMessage(`{"query":"x"}`),
+		ToolResponse:  longResponse,
+	}
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle returned error: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("WebSearch should never be budgeted, got %+v", out)
+	}
+}
+
+func TestHandleGrepBudgetingDoesNotFirePostBoundary(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
+		t.Fatalf("seeding investigate call errored: %v", err)
+	}
+	if _, err := handle(toolCallInput("sess1", dir, "Edit")); err != nil {
+		t.Fatalf("crossing call errored: %v", err)
+	}
+
+	// Post-boundary, a long Grep content field must go through retirement
+	// (a string receipt), never through budgeting (a grepResponse) — the two
+	// mechanisms are mutually exclusive by construction.
+	longContent := linesOfStdout(budgetLineThreshold + 1)
+	in := grepInput(t, dir, "sess1", grepResponse{Mode: "content", Content: longContent})
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle returned error: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("post-boundary investigate call should be retired, got nil")
+	}
+	if _, ok := out.HookSpecificOutput.UpdatedToolOutput.(string); !ok {
+		t.Fatalf("post-boundary Grep should be retired (string receipt), not budgeted, got %#v", out.HookSpecificOutput.UpdatedToolOutput)
+	}
+}
+
+func TestHandleGrepBudgetTrimRecordsStat(t *testing.T) {
+	dir := t.TempDir()
+	longContent := linesOfStdout(budgetLineThreshold + 1)
+	in := grepInput(t, dir, "sess1", grepResponse{Mode: "content", Content: longContent})
+	if _, err := handle(in); err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+
+	s, err := stats.LoadSession(dir, "sess1")
+	if err != nil {
+		t.Fatalf("LoadSession errored: %v", err)
+	}
+	if s.BudgetTrims != 1 {
+		t.Fatalf("BudgetTrims = %d, want 1", s.BudgetTrims)
+	}
+	if s.BudgetBytesOmitted <= 0 {
+		t.Fatalf("BudgetBytesOmitted = %d, want positive", s.BudgetBytesOmitted)
 	}
 }
 
@@ -621,6 +949,42 @@ func TestHandleSessionStartInvalidatesRetiredContent(t *testing.T) {
 	}
 	if out != nil {
 		t.Fatalf("investigate call after SessionStart should not be retired (boundary forgotten), got %+v", out)
+	}
+}
+
+// TestHandleSessionStartInvalidatesBudgetArchive covers the same "hard
+// constraint" (see the package doc's SessionStart/PostCompact entry) for
+// budgeting's new archive-for-recovery path as
+// TestHandleSessionStartInvalidatesRetiredContent already covers for
+// handleRetireInvestigate — both go through retire.Store/Invalidate, but
+// this is a distinct call site added later, so it gets its own regression
+// guard rather than assuming coverage transfers.
+func TestHandleSessionStartInvalidatesBudgetArchive(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	longOutput := linesOfStdout(budgetLineThreshold + 1)
+	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle returned error: %v", err)
+	}
+	updated := out.HookSpecificOutput.UpdatedToolOutput.(bashOutput)
+	idx := strings.Index(updated.Stdout, "full output at ")
+	if idx == -1 {
+		t.Fatalf("budgeted stdout missing an archive path, got %q", updated.Stdout)
+	}
+	path := updated.Stdout[idx+len("full output at "):]
+	if nl := strings.IndexByte(path, '\n'); nl != -1 {
+		path = path[:nl]
+	}
+
+	if _, err := handle(hookInput{SessionID: "sess1", Cwd: dir, HookEventName: "SessionStart"}); err != nil {
+		t.Fatalf("SessionStart handling errored: %v", err)
+	}
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("budget archive survived SessionStart: err=%v", err)
 	}
 }
 
