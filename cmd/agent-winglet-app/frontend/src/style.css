@@ -77,6 +77,120 @@ body {
   height: 100vh;
 }
 
+/* --- Toast (--toast mode only, see toast.go/renderToast) ---
+   A --toast process' window has a transparent BackgroundColour (toast.go)
+   so the frameless, centered frame reads as a floating card against the
+   desktop, not a filled rectangle the size of the window — html/body's own
+   opaque --bg fill (above) is overridden here specifically, scoped to this
+   one body class so it never leaks into the ordinary dashboard. */
+body.toast-mode,
+body.toast-mode #app {
+  background: transparent;
+}
+
+body.toast-mode #app {
+  display: block;
+  padding: 14px; /* keeps .toast's box-shadow from being clipped by the window edge */
+}
+
+.toast {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  background: var(--bg-elevated);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  padding: 18px 20px 16px;
+  opacity: 0;
+  transform: scale(0.97);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.toast.toast-in {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.toast-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+}
+
+.toast-dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: var(--accent-glow);
+  flex-shrink: 0;
+}
+
+.toast-copy {
+  min-width: 0;
+}
+
+.toast-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: -0.01em;
+  margin-bottom: 4px;
+}
+
+.toast-text {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.toast-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.toast-btn {
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  border: none;
+  border-radius: 8px;
+  padding: 7px 12px;
+  cursor: default;
+}
+
+.toast-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.toast-btn-muted {
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.toast-btn-muted:hover {
+  color: var(--text-primary);
+}
+
+.toast-btn-primary {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.toast-btn-primary:hover {
+  box-shadow: var(--accent-glow);
+}
+
 /* --- Sidebar --- */
 
 .sidebar {
@@ -680,6 +794,10 @@ body {
   max-width: 480px;
 }
 
+.settings-row + .settings-row {
+  margin-top: 12px;
+}
+
 .settings-row-label {
   font-weight: 600;
   font-size: 13px;
@@ -744,7 +862,16 @@ body {
   .toggle-knob,
   .project-row-chevron,
   .nav-item svg,
-  .info-affordance .tooltip {
+  .info-affordance .tooltip,
+  .toast {
     transition: none !important;
+  }
+
+  /* Without a transition to skip past, .toast would otherwise stay at its
+     resting opacity: 0 forever — reduced motion means no animated motion,
+     not an invisible toast, so this shows it at rest immediately instead. */
+  .toast {
+    opacity: 1;
+    transform: none;
   }
 }
