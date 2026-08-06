@@ -32,6 +32,21 @@ func TestSaveThenLoadRoundTripsExplicitFalse(t *testing.T) {
 	}
 }
 
+func TestSaveThenLoadRoundTripsCompactNudgeDisabled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	if err := Save(&Config{CompactNudgeDisabled: true}); err != nil {
+		t.Fatalf("Save errored: %v", err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load errored: %v", err)
+	}
+	if !c.CompactNudgeDisabled {
+		t.Fatalf("expected CompactNudgeDisabled=true after Save, got %+v", c)
+	}
+}
+
 func TestLoadCorruptFileDefaultsToQuiet(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

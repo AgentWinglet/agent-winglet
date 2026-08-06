@@ -197,13 +197,16 @@ body {
   font-size: 22px;
   font-weight: 600;
   letter-spacing: 0.01em;
-  margin: 0 0 4px;
+  margin: 0 0 24px;
 }
 
 .screen-subtitle {
   font-size: 13px;
   color: var(--text-secondary);
-  margin: 0 0 28px;
+  /* Pulls back up against .screen-title's own margin (24px) to keep the
+     title+subtitle pairing tight — screens without a subtitle still get
+     the full 24px breathing room before their content starts. */
+  margin: -20px 0 28px;
 }
 
 /* --- Hero --- */
@@ -482,34 +485,6 @@ body {
   padding: 16px 18px;
 }
 
-.settings-row-title {
-  font-weight: 600;
-  font-size: 14px;
-}
-
-.settings-row-detail {
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin-top: 2px;
-}
-
-.quit-button {
-  flex-shrink: 0;
-  font-family: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  color: #e5484d;
-  background: rgba(229, 72, 77, 0.1);
-  border: 1px solid rgba(229, 72, 77, 0.25);
-  border-radius: 8px;
-  padding: 8px 14px;
-  cursor: default;
-}
-
-.quit-button:hover {
-  background: rgba(229, 72, 77, 0.18);
-}
-
 /* --- Projects list --- */
 
 .project-row {
@@ -678,6 +653,10 @@ body {
   align-items: center;
   justify-content: space-between;
   max-width: 480px;
+}
+
+.settings-row + .settings-row {
+  margin-top: 12px;
 }
 
 .settings-row-label {

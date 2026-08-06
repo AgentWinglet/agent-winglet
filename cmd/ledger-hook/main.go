@@ -503,15 +503,30 @@ func handlePhaseBoundary(in hookInput, root string) (out *hookOutput, pastBounda
 		return nil, pastBoundary, overInvestigateThreshold, nil
 	}
 
-	const msg = "[agent-winglet] investigation looks done and implementation is " +
-		"starting — this is a natural point to run /compact, while what's " +
-		"still relevant is still clear, rather than waiting for the context " +
-		"window to fill up."
+	if cfg, err := config.Load(); err == nil && cfg.CompactNudgeDisabled {
+		return nil, pastBoundary, overInvestigateThreshold, nil
+	}
+
+	const msg = "[agent-winglet] /compact nudge - you can compact the " +
+		"session ahead of implementation, to save context while what's " +
+		"still relevant is still clear."
+	// additionalContext reaches the model, not the user directly (unlike
+	// systemMessage, which the user already sees on its own) — so it spells
+	// out that the model must act on this now, before any further tool
+	// calls, rather than silently folding it into whatever else it's
+	// already doing. Directing it at the AskUserQuestion tool specifically
+	// (rather than just "tell the user") turns this from text the user
+	// might skim past into an explicit decision they have to make one way
+	// or the other.
+	const modelInstruction = msg + " Before continuing with any further " +
+		"work, ask the user now via the AskUserQuestion tool whether " +
+		"they'd like to run /compact now."
+
 	return &hookOutput{
 		SystemMessage: msg,
 		HookSpecificOutput: hookSpecificOutput{
 			HookEventName:     "PostToolUse",
-			AdditionalContext: msg,
+			AdditionalContext: modelInstruction,
 		},
 	}, pastBoundary, overInvestigateThreshold, nil
 }

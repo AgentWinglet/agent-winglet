@@ -12,6 +12,7 @@ import (
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"github.com/umitkaanusta/agent-winglet/internal/appipc"
+	"github.com/umitkaanusta/agent-winglet/internal/config"
 	"github.com/umitkaanusta/agent-winglet/internal/registry"
 	"github.com/umitkaanusta/agent-winglet/internal/stats"
 )
@@ -29,6 +30,30 @@ type App struct {
 
 func NewApp() *App {
 	return &App{}
+}
+
+// GetCompactNudgesEnabled and SetCompactNudgesEnabled expose
+// config.Config.CompactNudgeDisabled (inverted, so the Settings screen's
+// toggle can talk in on/off terms without re-deriving the double negative).
+// The compact nudge itself is a systemMessage/additionalContext emitted
+// directly by cmd/ledger-hook (see its handlePhaseBoundary) — this
+// dashboard has no part in showing it, only in this one preference for
+// turning it off.
+func (a *App) GetCompactNudgesEnabled() bool {
+	cfg, err := config.Load()
+	if err != nil {
+		return true
+	}
+	return !cfg.CompactNudgeDisabled
+}
+
+func (a *App) SetCompactNudgesEnabled(enabled bool) error {
+	cfg, err := config.Load()
+	if err != nil {
+		cfg = &config.Config{Quiet: true}
+	}
+	cfg.CompactNudgeDisabled = !enabled
+	return config.Save(cfg)
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -111,16 +136,6 @@ func (a *App) handleIPCConn(conn net.Conn) {
 	case appipc.Quit:
 		wailsruntime.Quit(a.ctx)
 	}
-}
-
-// QuitApp is the dashboard's Settings-screen "Quit Winglet" affordance. It
-// tears down both halves — this dashboard and a reachable tray helper —
-// unlike closing the window (beforeClose below), which only ever exits the
-// dashboard itself and leaves the tray running so its own "Open Winglet" can
-// relaunch the dashboard later.
-func (a *App) QuitApp() {
-	_ = appipc.SendTrayCommand(appipc.Quit)
-	wailsruntime.Quit(a.ctx)
 }
 
 // beforeClose implements options.App.OnBeforeClose: closing the window —
@@ -335,13 +350,13 @@ type mechanism struct {
 const (
 	dedupTooltip = "When Claude re-runs a shell command it's already run with identical output this session, " +
 		"agent-winglet replaces the repeat with a short reference instead of sending it to the model again."
-	budgetTrimTooltip = "Commands that succeed but print more than 60 lines have their middle section collapsed " +
-		"to a head/tail summary."
+	budgetTrimTooltip = "Commands that succeed but print more than 500 tokens (AgentDiet recommendation) have " +
+		"their middle section collapsed to a head/tail summary."
 	retireTooltip = "Once a session moves from investigating to editing, earlier read/search/fetch output is " +
 		"assumed to have served its purpose and is archived instead of replayed."
 
 	bytesSavedTooltip = "This is a real measurement, not an estimate. It is the size of the tool output " +
-		"(command results, file reads, search results) that agent-winglet removed from the model's context."
+		"(command results, file reads, search results) that Winglet removed from the model's context."
 	tokensSavedTooltip = "This is an estimate. It applies the percent saved above to the real token count " +
 		"from the transcript."
 	moneySavedTooltip = "Based on official API usage rates for the model in this session. Cache-read tokens " +
@@ -490,12 +505,15 @@ func buildOverview(t overviewTotals, projectCount, sessionCount int) Overview {
 		HasActivity:         hasActivity,
 		BytesSavedCard: Card{
 			Label: "Bytes saved", Tooltip: bytesSavedTooltip, Detail: bytesSavedDetail,
+			Sub: "Directly measured",
 		},
 		TokensSavedCard: Card{
-			Label: "Tokens saved", Tooltip: tokensSavedTooltip, Detail: tokensSavedDetail,
+			Label: "EST. Tokens saved", Tooltip: tokensSavedTooltip, Detail: tokensSavedDetail,
+			Sub: "Scaled from bytes saved",
 		},
 		DollarSavedCard: Card{
-			Label: "Money saved", Tooltip: moneySavedTooltip, Detail: dollarDetail,
+			Label: "EST. Money saved", Tooltip: moneySavedTooltip, Detail: dollarDetail,
+			Sub: "Uses API pricing",
 		},
 		Bars:         barRows(t, total),
 		ProjectCount: projectCount,

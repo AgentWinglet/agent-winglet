@@ -1,6 +1,13 @@
 import './style.css';
 import { icons } from './icons.js';
-import { GetOverview, GetPlatform, GetProjects, GetSessionStats, QuitApp } from '../wailsjs/go/main/App';
+import {
+  GetCompactNudgesEnabled,
+  GetOverview,
+  GetPlatform,
+  GetProjects,
+  GetSessionStats,
+  SetCompactNudgesEnabled,
+} from '../wailsjs/go/main/App';
 
 const state = {
   screen: 'overview',
@@ -509,24 +516,34 @@ async function renderSessionsSection(container, projectPath) {
   });
 }
 
-// renderSettingsScreen's Quit row is the dashboard's own "quit everything"
-// affordance (App.QuitApp) — closing the window itself (titlebar button,
-// Cmd+Q/Alt+F4, Dock Quit) already exits the dashboard for real, but leaves
-// a running tray helper alone so its "Open Winglet" can relaunch the
-// dashboard later. This additionally tears down that tray, so "quit" here
-// means the same thing it does from the tray's own menu.
-function renderSettingsScreen(container) {
+// The compact-nudges toggle controls the systemMessage/additionalContext
+// cmd/ledger-hook emits directly (handlePhaseBoundary) — this dashboard has
+// no part in showing it, only in this preference. Reading its state needs a
+// round-trip (GetCompactNudgesEnabled), so this is async like the other
+// screens, not fetched synchronously.
+async function renderSettingsScreen(container) {
+  const enabled = await GetCompactNudgesEnabled();
+  if (state.screen !== 'settings') return;
+
   container.innerHTML = `
     <h1 class="screen-title">Settings</h1>
     <div class="settings-row">
       <div>
-        <div class="settings-row-title">Quit Winglet</div>
-        <div class="settings-row-detail">Closes the dashboard and the menu-bar icon together.</div>
+        <div class="settings-row-label">Compact nudges</div>
+        <div class="settings-row-desc">Tell Claude to nudge you, inside the session, to run /compact once it moves from investigating to editing.</div>
       </div>
-      <button class="quit-button" data-quit>Quit Winglet</button>
+      <button class="toggle ${enabled ? 'on' : ''}" data-toggle-nudges aria-pressed="${enabled}">
+        <span class="toggle-knob"></span>
+      </button>
     </div>
   `;
-  container.querySelector('[data-quit]').addEventListener('click', () => QuitApp());
+  container.querySelector('[data-toggle-nudges]').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    const next = !btn.classList.contains('on');
+    btn.classList.toggle('on', next);
+    btn.setAttribute('aria-pressed', String(next));
+    await SetCompactNudgesEnabled(next);
+  });
 }
 
 function renderMain(container) {

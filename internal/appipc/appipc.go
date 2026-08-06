@@ -187,8 +187,7 @@ func sendCommand(name string, cmd Command) error {
 func SendCommand(cmd Command) error { return sendCommand(appPortFile, cmd) }
 
 // SendTrayCommand dials the tray helper, sends cmd, and waits for its
-// acknowledgement — currently only ever Quit (see App.QuitApp). See
-// sendCommand.
+// acknowledgement. See sendCommand.
 func SendTrayCommand(cmd Command) error { return sendCommand(trayPortFile, cmd) }
 
 // ReadCommand reads one command off an accepted connection and acknowledges
