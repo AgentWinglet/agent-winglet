@@ -512,11 +512,15 @@ func handlePhaseBoundary(in hookInput, root string) (out *hookOutput, pastBounda
 		"still relevant is still clear."
 	// additionalContext reaches the model, not the user directly (unlike
 	// systemMessage, which the user already sees on its own) — so it spells
-	// out that the model must relay this to the user first, before any
-	// further tool calls, rather than silently folding it into whatever
-	// else it's already doing.
-	const modelInstruction = msg + " Tell the user this now, first and " +
-		"foremost, before continuing with any further work."
+	// out that the model must act on this now, before any further tool
+	// calls, rather than silently folding it into whatever else it's
+	// already doing. Directing it at the AskUserQuestion tool specifically
+	// (rather than just "tell the user") turns this from text the user
+	// might skim past into an explicit decision they have to make one way
+	// or the other.
+	const modelInstruction = msg + " Before continuing with any further " +
+		"work, ask the user now via the AskUserQuestion tool whether " +
+		"they'd like to run /compact now."
 
 	return &hookOutput{
 		SystemMessage: msg,
