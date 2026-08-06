@@ -401,23 +401,19 @@ func barRows(t overviewTotals, total int64) []BarRow {
 // suppressed-by-mechanism bars from a totals tally.
 //
 // HeroHeadline is always the headline percent-saved figure. The tokens and
-// dollar cards both price the suppressed-byte figure as a proxy for tokens
-// saved, ccusage-style: extrapolate from the same percent-saved figure as
-// the hero headline (suppressed / (suppressed+actual)) rather than a second,
-// independently-computed bytes-per-token ratio — pct/(100-pct) is the odds
-// form of that percentage, which is algebraically the same suppressed/actual
-// scale factor a separate ratio would give, just derived from the number
-// already on screen instead of recomputed. Those priced tokens are then
-// converted to dollars at this rollup's own cost-per-token rate. Both
-// TranscriptTokens and TranscriptCostUSD (see internal/transcript's
-// SessionUsage doc) count only content newly fed to the model — cache-read
-// replays of earlier turns and output tokens are excluded at the source —
-// so the price-per-token rate stays a stable per-content-unit price instead
-// of one that inflates with how many turns a session ran. Cost, tokens, and
-// content bytes are all summed independently across sessions before
-// dividing, so a lifetime/project rollup mixing sessions of different sizes
-// still comes out as a weighted average, not distorted by any single
-// outlier session.
+// dollar cards price the suppressed-byte figure as a proxy for tokens
+// saved, ccusage-style: pct/(100-pct) is the odds form of the same
+// percent-saved figure the hero already shows (suppressed /
+// (suppressed+actual)), so it's algebraically the same scale factor a
+// separately-computed bytes-per-token ratio would give, just derived from
+// the number already on screen. Those priced tokens then convert to
+// dollars at this rollup's own cost-per-token rate. TranscriptTokens and
+// TranscriptCostUSD count only content newly fed to the model — cache-read
+// replays and output tokens are excluded at the source — so the rate stays
+// a stable per-content-unit price instead of inflating with turn count.
+// Cost, tokens, and content bytes are summed independently across sessions
+// before dividing, so a lifetime/project rollup comes out as a weighted
+// average, not distorted by any single outlier session.
 func buildOverview(t overviewTotals, projectCount, sessionCount int) Overview {
 	suppressed := t.DedupBytes + t.BudgetBytesOmitted + t.RetiredBytes
 	total := t.TranscriptContentBytes + suppressed

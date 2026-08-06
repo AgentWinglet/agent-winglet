@@ -1,10 +1,9 @@
 // Package pricing is an embedded, no-network-fetch table of USD-per-million-
 // token rates for the models agent-winglet is likely to see in a
 // transcript's message.model field. It exists to price already-known
-// suppressed-byte counts at real rates (see internal/transcript and
-// spec.md's §2 framing of "$X of tool output never sent," not "saved you
-// $X") — not to re-measure total session cost, which the deleted
-// internal/harness paired-run gate already tried and found inconclusive.
+// suppressed-byte counts at real rates (see internal/transcript) — framed as
+// "$X of tool output never sent," not "saved you $X": a paired-run test of
+// total session cost came back inconclusive, so no such claim is made here.
 package pricing
 
 // Rate is one model's per-million-token USD pricing, split by token type.
@@ -30,7 +29,7 @@ const fallbackModel = "claude-sonnet-5"
 // table is USD per million tokens. Sonnet 5's $2/$10 input/output rate is
 // promo pricing confirmed through 2026-08-31; this table isn't wired to any
 // auto-expiring switch (out of scope — revisit if pricing drifts noticeably
-// before then, per spec.md §3).
+// before then).
 var table = map[string]Rate{
 	"claude-opus-5": {
 		Input: 5, Output: 25,
