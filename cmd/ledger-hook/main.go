@@ -8,7 +8,7 @@
 //     is long is replaced with a head/tail receipt (output budgeting by
 //     outcome). Pre-boundary, Grep's content field and Glob's filenames
 //     array get the same head/tail budgeting treatment as Bash stdout once
-//     they cross the line-count threshold (see
+//     they cross the token-count threshold (see
 //     handleGrepBudget/handleGlobBudget) — WebFetch, WebSearch, and Read are
 //     deliberately excluded, see handlePostToolUse's default case for why.
 //     On the first implement-classified call (Edit/Write/
@@ -95,16 +95,33 @@ const legacySessionID = "legacy-migrated"
 // uses the same proxy the repeat-check already relies on: empty stderr, not
 // interrupted, not an image.
 const (
-	budgetLineThreshold = 60
-	budgetHeadLines     = 15
-	budgetTailLines     = 15
+	// budgetTokenThreshold mirrors AgentDiet's token-based trigger (θ=500)
+	// rather than a raw line count, which a caller can dodge just by
+	// wrapping output onto fewer, longer lines. estimatedTokens below is
+	// the same cheap chars/4 proxy AgentDiet itself notes needs no
+	// tokenizer dependency to be useful as a trigger.
+	budgetTokenThreshold = 500
+	budgetHeadLines      = 15
+	budgetTailLines      = 15
 )
 
+// estimatedTokens is a cheap, tokenizer-free proxy (chars/4) used only to
+// decide *whether* to budget — see budgetTokenThreshold. It doesn't need to
+// be accurate, just monotonic with real size and hard to game the way a
+// line count is (a caller can't dodge it by rewrapping output onto fewer,
+// longer lines).
+func estimatedTokens(body string) int {
+	return len(body) / 4
+}
+
 // budgetBody collapses body to its first budgetHeadLines and last
-// budgetTailLines lines if it has more than budgetLineThreshold lines. It
-// reports ok == false when body is short enough to leave untouched, and
-// omittedLines/omittedBytes as the size of the dropped middle section (both
-// 0 when ok is false). omittedBytes is the "\n"-joined byte length of just
+// budgetTailLines lines if its estimated token count exceeds
+// budgetTokenThreshold. It reports ok == false when body is short enough to
+// leave untouched, or too short in *lines* to split into a head and a tail
+// (a pathological single huge line would otherwise have nothing to
+// truncate), and omittedLines/omittedBytes as the size of the dropped
+// middle section (both 0 when ok is false). omittedBytes is the
+// "\n"-joined byte length of just
 // the dropped lines — the same original-size unit RecordDedup/RecordRetire
 // use — so budget-trims can contribute to the same suppressed-bytes total.
 //
@@ -141,7 +158,14 @@ func budgetBody(body, root, sessionID string, notice func(omitted int, archivePa
 		lines = lines[:len(lines)-1]
 	}
 	n := len(lines)
-	if n <= budgetLineThreshold {
+	if estimatedTokens(body) <= budgetTokenThreshold {
+		return "", 0, 0, false, nil
+	}
+	if n <= budgetHeadLines+budgetTailLines {
+		// Too few lines to carve a head and a tail out of — e.g. one
+		// pathologically long line that trips the token estimate. Nothing
+		// sensible to truncate, so leave it untouched rather than slicing
+		// out of range.
 		return "", 0, 0, false, nil
 	}
 

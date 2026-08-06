@@ -35,10 +35,19 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func linesOfStdout(n int) string {
-	lines := make([]string, n)
+// linesOfApproxTokens returns 2*tokens single-character lines ("x",
+// newline-joined, trailing newline included). budgetBody's estimatedTokens
+// proxy is len(body)/4 (integer division); a body built this way is always
+// exactly 4*tokens bytes long, so estimatedTokens(body) == tokens exactly —
+// letting boundary tests target budgetTokenThreshold precisely instead of
+// guessing through an arbitrary line count the way the old line-count
+// threshold could be tested directly. The line count (2*tokens) is also
+// always comfortably above budgetHeadLines+budgetTailLines, so these bodies
+// never trip budgetBody's separate too-few-lines-to-split guard.
+func linesOfApproxTokens(tokens int) string {
+	lines := make([]string, 2*tokens)
 	for i := range lines {
-		lines[i] = "line"
+		lines[i] = "x"
 	}
 	return strings.Join(lines, "\n") + "\n"
 }
@@ -221,21 +230,21 @@ func TestHandlePostCompactInvalidatesLedger(t *testing.T) {
 func TestBudgetStdoutThresholdBoundary(t *testing.T) {
 	cases := []struct {
 		name       string
-		lineCount  int
+		tokens     int
 		wantBudget bool
 	}{
-		{"just under threshold", budgetLineThreshold - 1, false},
-		{"at threshold", budgetLineThreshold, false},
-		{"just over threshold", budgetLineThreshold + 1, true},
+		{"just under threshold", budgetTokenThreshold - 1, false},
+		{"at threshold", budgetTokenThreshold, false},
+		{"just over threshold", budgetTokenThreshold + 1, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, _, _, ok, err := budgetStdout(linesOfStdout(c.lineCount), t.TempDir(), "sess1")
+			_, _, _, ok, err := budgetStdout(linesOfApproxTokens(c.tokens), t.TempDir(), "sess1")
 			if err != nil {
 				t.Fatalf("budgetStdout errored: %v", err)
 			}
 			if ok != c.wantBudget {
-				t.Fatalf("%d lines: budgetStdout ok = %v, want %v", c.lineCount, ok, c.wantBudget)
+				t.Fatalf("%d tokens: budgetStdout ok = %v, want %v", c.tokens, ok, c.wantBudget)
 			}
 		})
 	}
@@ -243,7 +252,7 @@ func TestBudgetStdoutThresholdBoundary(t *testing.T) {
 
 func TestHandleBudgetsLongFirstTimeOutput(t *testing.T) {
 	dir := t.TempDir()
-	longOutput := linesOfStdout(budgetLineThreshold + 1)
+	longOutput := linesOfApproxTokens(budgetTokenThreshold + 1)
 	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
 
 	out, err := handle(in)
@@ -274,7 +283,7 @@ func TestHandleBudgetsLongFirstTimeOutput(t *testing.T) {
 // reading it back returns the exact original stdout.
 func TestHandleBashBudgetArchivesFullOutputForRecovery(t *testing.T) {
 	dir := t.TempDir()
-	longOutput := linesOfStdout(budgetLineThreshold + 1)
+	longOutput := linesOfApproxTokens(budgetTokenThreshold + 1)
 	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
 
 	out, err := handle(in)
@@ -302,7 +311,7 @@ func TestHandleBashBudgetArchivesFullOutputForRecovery(t *testing.T) {
 
 func TestHandleDoesNotBudgetShortFirstTimeOutput(t *testing.T) {
 	dir := t.TempDir()
-	in := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: linesOfStdout(budgetLineThreshold)})
+	in := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: linesOfApproxTokens(budgetTokenThreshold)})
 
 	out, err := handle(in)
 	if err != nil {
@@ -315,7 +324,7 @@ func TestHandleDoesNotBudgetShortFirstTimeOutput(t *testing.T) {
 
 func TestHandleDoesNotBudgetFailedInterruptedOrImageOutput(t *testing.T) {
 	dir := t.TempDir()
-	longOutput := linesOfStdout(budgetLineThreshold + 1)
+	longOutput := linesOfApproxTokens(budgetTokenThreshold + 1)
 	cases := []bashOutput{
 		{Stdout: longOutput, Stderr: "build failed"},
 		{Stdout: longOutput, Interrupted: true},
@@ -335,7 +344,7 @@ func TestHandleDoesNotBudgetFailedInterruptedOrImageOutput(t *testing.T) {
 
 func TestHandleRepeatCheckTakesPrecedenceOverBudgeting(t *testing.T) {
 	dir := t.TempDir()
-	longOutput := linesOfStdout(budgetLineThreshold + 1)
+	longOutput := linesOfApproxTokens(budgetTokenThreshold + 1)
 	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
 
 	first, err := handle(in)
@@ -363,6 +372,21 @@ func linesOfEntries(n int) []string {
 	entries := make([]string, n)
 	for i := range entries {
 		entries[i] = fmt.Sprintf("file%d.go", i)
+	}
+	return entries
+}
+
+// entriesOfApproxTokens returns 2*tokens+1 single-character entries. Joined
+// by budgetEntryList with "\n" (the same join budgetBody's caller performs)
+// that's exactly 4*tokens+1 bytes — one more than linesOfApproxTokens'
+// 4*tokens because strings.Join has no trailing separator — but integer
+// division still floors len/4 to exactly tokens, so this hits the same
+// token-threshold boundary precisely for the entry-list shape (Glob's
+// filenames) that linesOfApproxTokens hits for freeform text bodies.
+func entriesOfApproxTokens(tokens int) []string {
+	entries := make([]string, 2*tokens+1)
+	for i := range entries {
+		entries[i] = "x"
 	}
 	return entries
 }
@@ -402,21 +426,21 @@ func globInput(t *testing.T, dir, sessionID string, response globResponse) hookI
 func TestBudgetTextFieldThresholdBoundary(t *testing.T) {
 	cases := []struct {
 		name       string
-		lineCount  int
+		tokens     int
 		wantBudget bool
 	}{
-		{"just under threshold", budgetLineThreshold - 1, false},
-		{"at threshold", budgetLineThreshold, false},
-		{"just over threshold", budgetLineThreshold + 1, true},
+		{"just under threshold", budgetTokenThreshold - 1, false},
+		{"at threshold", budgetTokenThreshold, false},
+		{"just over threshold", budgetTokenThreshold + 1, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, _, _, ok, err := budgetTextField(linesOfStdout(c.lineCount), t.TempDir(), "sess1")
+			_, _, _, ok, err := budgetTextField(linesOfApproxTokens(c.tokens), t.TempDir(), "sess1")
 			if err != nil {
 				t.Fatalf("budgetTextField errored: %v", err)
 			}
 			if ok != c.wantBudget {
-				t.Fatalf("%d lines: budgetTextField ok = %v, want %v", c.lineCount, ok, c.wantBudget)
+				t.Fatalf("%d tokens: budgetTextField ok = %v, want %v", c.tokens, ok, c.wantBudget)
 			}
 		})
 	}
@@ -425,21 +449,21 @@ func TestBudgetTextFieldThresholdBoundary(t *testing.T) {
 func TestBudgetEntryListThresholdBoundary(t *testing.T) {
 	cases := []struct {
 		name       string
-		entryCount int
+		tokens     int
 		wantBudget bool
 	}{
-		{"just under threshold", budgetLineThreshold - 1, false},
-		{"at threshold", budgetLineThreshold, false},
-		{"just over threshold", budgetLineThreshold + 1, true},
+		{"just under threshold", budgetTokenThreshold - 1, false},
+		{"at threshold", budgetTokenThreshold, false},
+		{"just over threshold", budgetTokenThreshold + 1, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, _, _, ok, err := budgetEntryList(linesOfEntries(c.entryCount), t.TempDir(), "sess1")
+			_, _, _, ok, err := budgetEntryList(entriesOfApproxTokens(c.tokens), t.TempDir(), "sess1")
 			if err != nil {
 				t.Fatalf("budgetEntryList errored: %v", err)
 			}
 			if ok != c.wantBudget {
-				t.Fatalf("%d entries: budgetEntryList ok = %v, want %v", c.entryCount, ok, c.wantBudget)
+				t.Fatalf("%d tokens: budgetEntryList ok = %v, want %v", c.tokens, ok, c.wantBudget)
 			}
 		})
 	}
@@ -447,7 +471,7 @@ func TestBudgetEntryListThresholdBoundary(t *testing.T) {
 
 func TestHandleBudgetsLongGrepContent(t *testing.T) {
 	dir := t.TempDir()
-	longContent := linesOfStdout(budgetLineThreshold + 1)
+	longContent := linesOfApproxTokens(budgetTokenThreshold + 1)
 	in := grepInput(t, dir, "sess1", grepResponse{Mode: "content", NumFiles: 3, Content: longContent})
 
 	out, err := handle(in)
@@ -491,7 +515,7 @@ func TestHandleBudgetsLongGrepContent(t *testing.T) {
 
 func TestHandleDoesNotBudgetShortGrepContent(t *testing.T) {
 	dir := t.TempDir()
-	in := grepInput(t, dir, "sess1", grepResponse{Mode: "content", Content: linesOfStdout(budgetLineThreshold)})
+	in := grepInput(t, dir, "sess1", grepResponse{Mode: "content", Content: linesOfApproxTokens(budgetTokenThreshold)})
 
 	out, err := handle(in)
 	if err != nil {
@@ -519,7 +543,7 @@ func TestHandleDoesNotBudgetGrepFilesWithMatchesMode(t *testing.T) {
 
 func TestHandleBudgetsLongGlobFilenames(t *testing.T) {
 	dir := t.TempDir()
-	longFilenames := linesOfEntries(budgetLineThreshold + 1)
+	longFilenames := entriesOfApproxTokens(budgetTokenThreshold + 1)
 	in := globInput(t, dir, "sess1", globResponse{NumFiles: len(longFilenames), Filenames: longFilenames})
 
 	out, err := handle(in)
@@ -567,7 +591,7 @@ func TestHandleBudgetsLongGlobFilenames(t *testing.T) {
 
 func TestHandleDoesNotBudgetShortGlobFilenames(t *testing.T) {
 	dir := t.TempDir()
-	in := globInput(t, dir, "sess1", globResponse{Filenames: linesOfEntries(budgetLineThreshold)})
+	in := globInput(t, dir, "sess1", globResponse{Filenames: entriesOfApproxTokens(budgetTokenThreshold)})
 
 	out, err := handle(in)
 	if err != nil {
@@ -584,7 +608,7 @@ func TestHandleWebSearchIsNeverBudgeted(t *testing.T) {
 	// case): its results array has no single freeform field to budget.
 	// Regression guard: a long tool_response must still pass through
 	// untouched rather than erroring or being silently mangled.
-	longResponse := json.RawMessage(`{"query":"x","results":[{"tool_use_id":"t1","content":[{"title":"a","url":"https://a"}]},"` + linesOfStdout(budgetLineThreshold+1) + `"],"durationSeconds":1,"searchCount":1}`)
+	longResponse := json.RawMessage(`{"query":"x","results":[{"tool_use_id":"t1","content":[{"title":"a","url":"https://a"}]},"` + linesOfApproxTokens(budgetTokenThreshold+1) + `"],"durationSeconds":1,"searchCount":1}`)
 	in := hookInput{
 		SessionID:     "sess1",
 		Cwd:           dir,
@@ -615,7 +639,7 @@ func TestHandleGrepBudgetingDoesNotFirePostBoundary(t *testing.T) {
 	// Post-boundary, a long Grep content field must go through retirement
 	// (a string receipt), never through budgeting (a grepResponse) — the two
 	// mechanisms are mutually exclusive by construction.
-	longContent := linesOfStdout(budgetLineThreshold + 1)
+	longContent := linesOfApproxTokens(budgetTokenThreshold + 1)
 	in := grepInput(t, dir, "sess1", grepResponse{Mode: "content", Content: longContent})
 	out, err := handle(in)
 	if err != nil {
@@ -631,7 +655,7 @@ func TestHandleGrepBudgetingDoesNotFirePostBoundary(t *testing.T) {
 
 func TestHandleGrepBudgetTrimRecordsStat(t *testing.T) {
 	dir := t.TempDir()
-	longContent := linesOfStdout(budgetLineThreshold + 1)
+	longContent := linesOfApproxTokens(budgetTokenThreshold + 1)
 	in := grepInput(t, dir, "sess1", grepResponse{Mode: "content", Content: longContent})
 	if _, err := handle(in); err != nil {
 		t.Fatalf("handle errored: %v", err)
@@ -962,7 +986,7 @@ func TestHandleSessionStartInvalidatesRetiredContent(t *testing.T) {
 func TestHandleSessionStartInvalidatesBudgetArchive(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
-	longOutput := linesOfStdout(budgetLineThreshold + 1)
+	longOutput := linesOfApproxTokens(budgetTokenThreshold + 1)
 	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
 
 	out, err := handle(in)
@@ -1032,7 +1056,7 @@ func TestHandleSessionEndReportsDedupHit(t *testing.T) {
 func TestHandleSessionEndReportsBudgetTrim(t *testing.T) {
 	t.Setenv(quietEnvVar, "0")
 	dir := t.TempDir()
-	longOutput := linesOfStdout(budgetLineThreshold + 1)
+	longOutput := linesOfApproxTokens(budgetTokenThreshold + 1)
 	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
 	if _, err := handle(in); err != nil {
 		t.Fatalf("budgeted call errored: %v", err)
@@ -1655,7 +1679,7 @@ func TestPassthroughBashCallRecordsNoActivity(t *testing.T) {
 
 func TestBudgetBytesOmittedOnTrim(t *testing.T) {
 	dir := t.TempDir()
-	longOutput := linesOfStdout(budgetLineThreshold + 1)
+	longOutput := linesOfApproxTokens(budgetTokenThreshold + 1)
 	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
 
 	if _, err := handle(in); err != nil {

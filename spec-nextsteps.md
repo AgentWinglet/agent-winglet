@@ -92,20 +92,36 @@ assertions added to the Grep/Glob budget tests, plus
 `SessionStart`/`PostCompact` same as everything else — no substitute
 survives a restart or compaction).
 
-## 2. Token-based threshold instead of line count
+## 2. Token-based threshold instead of line count — done
 
-**Status quo:** `budgetLineThreshold = 60`
-([main.go:98](cmd/ledger-hook/main.go#L98)) is a line-count proxy — gameable
-by output with unusually long or short lines, and not comparable to
-AgentDiet's token-based `θ=500` trigger. Now shared across all four budgeted
-tools (§1), so this affects Grep/Glob/WebFetch the same way it affects Bash.
+Shipped. `budgetLineThreshold = 60` is now `budgetTokenThreshold = 500`
+([main.go:103](cmd/ledger-hook/main.go#L103)) — the same magnitude as
+AgentDiet's `θ=500` — checked against `estimatedTokens(body)`, a `len(body)/4`
+proxy (no tokenizer dependency, doesn't need to be exact, just monotonic and
+hard to dodge by rewrapping output onto fewer/longer lines the way a raw
+line count was). `budgetBody`'s head/tail split still counts in lines
+(`budgetHeadLines`/`budgetTailLines` unchanged at 15/15 — that's a display
+concern, not the trigger), so it gained a second guard: if the token
+estimate trips but the body is too short in *lines* to carve a head and a
+tail out of (a pathological single huge line), it's left untouched rather
+than slicing out of range. Applies uniformly to all four callers from §1
+(`budgetStdout`/`budgetTextField`/`budgetEntryList`, i.e. Bash/Grep/Glob —
+WebFetch and WebSearch remain excluded per §1's own scoping).
 
-**Shape of the change:** swap the threshold check to a rough token estimate
-(e.g. `len(content)/4` as a cheap proxy — no tokenizer dependency needed,
-this doesn't have to be exact) applied uniformly across whichever tools #1
-covers.
-
-**Effort:** small, best done alongside #1 rather than as a separate PR.
+Test fallout: the three `*ThresholdBoundary` tests and every "clearly long
+output" test previously hit the boundary by counting fixed-width lines
+(`linesOfStdout`/`linesOfEntries` plus `budgetLineThreshold`). Byte-width
+per line varied per generator (`"line"` vs `"file123.go"`), so there was no
+single line count that maps onto a token threshold across all of them.
+Replaced with `linesOfApproxTokens`/`entriesOfApproxTokens`
+(`cmd/ledger-hook/main_test.go`), which build single-character-per-line
+bodies sized so `len(body)` lands on an exact multiple that makes
+`estimatedTokens(body)` equal the requested token count exactly (verified
+by hand: `4*tokens` bytes for the freeform-body shape, `4*tokens+1` for the
+join-with-no-trailing-newline entry-list shape) — so boundary tests can
+still assert under/at/over precisely instead of guessing through a line
+count. `linesOfStdout` had no remaining callers after the swap and was
+deleted rather than left unused.
 
 ## 3. Retire Bash post-boundary too
 
@@ -149,3 +165,5 @@ boundary" design was specifically built to avoid?
 ## Suggested order
 
 1 → 2 (same PR, small) → 3 → decide on 4.
+
+1 and 2 are both done. Next up: 3, then decide on 4.
