@@ -96,8 +96,8 @@ func TestBuildOverviewComputesBytesAndStretch(t *testing.T) {
 	if o.BytesSavedCard.Detail != "38 B" {
 		t.Fatalf("BytesSavedCard.Detail = %q, want %q", o.BytesSavedCard.Detail, "38 B")
 	}
-	if o.BytesSavedCard.Sub != "" {
-		t.Fatalf("BytesSavedCard.Sub = %q, want empty (percentage sub-line removed)", o.BytesSavedCard.Sub)
+	if o.BytesSavedCard.Sub != "Directly measured" {
+		t.Fatalf("BytesSavedCard.Sub = %q, want %q", o.BytesSavedCard.Sub, "Directly measured")
 	}
 	if o.TokensSavedCard.Detail != "no data yet" {
 		t.Fatalf("TokensSavedCard.Detail = %q, want %q (no TranscriptTokens seeded)", o.TokensSavedCard.Detail, "no data yet")
@@ -156,8 +156,8 @@ func TestBuildOverviewWithTranscriptDataPricesDollarCard(t *testing.T) {
 	if o.DollarSavedCard.Detail != "$0.03" {
 		t.Fatalf("DollarSavedCard.Detail = %q, want %q", o.DollarSavedCard.Detail, "$0.03")
 	}
-	if o.DollarSavedCard.Sub != "" {
-		t.Fatalf("DollarSavedCard.Sub = %q, want empty (percentage sub-line removed)", o.DollarSavedCard.Sub)
+	if o.DollarSavedCard.Sub != "Uses API pricing" {
+		t.Fatalf("DollarSavedCard.Sub = %q, want %q", o.DollarSavedCard.Sub, "Uses API pricing")
 	}
 }
 

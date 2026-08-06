@@ -360,13 +360,13 @@ type mechanism struct {
 const (
 	dedupTooltip = "When Claude re-runs a shell command it's already run with identical output this session, " +
 		"agent-winglet replaces the repeat with a short reference instead of sending it to the model again."
-	budgetTrimTooltip = "Commands that succeed but print more than 60 lines have their middle section collapsed " +
-		"to a head/tail summary."
+	budgetTrimTooltip = "Commands that succeed but print more than 500 tokens (AgentDiet recommendation) have " +
+		"their middle section collapsed to a head/tail summary."
 	retireTooltip = "Once a session moves from investigating to editing, earlier read/search/fetch output is " +
 		"assumed to have served its purpose and is archived instead of replayed."
 
 	bytesSavedTooltip = "This is a real measurement, not an estimate. It is the size of the tool output " +
-		"(command results, file reads, search results) that agent-winglet removed from the model's context."
+		"(command results, file reads, search results) that Winglet removed from the model's context."
 	tokensSavedTooltip = "This is an estimate. It applies the percent saved above to the real token count " +
 		"from the transcript."
 	moneySavedTooltip = "Based on official API usage rates for the model in this session. Cache-read tokens " +
@@ -515,12 +515,15 @@ func buildOverview(t overviewTotals, projectCount, sessionCount int) Overview {
 		HasActivity:         hasActivity,
 		BytesSavedCard: Card{
 			Label: "Bytes saved", Tooltip: bytesSavedTooltip, Detail: bytesSavedDetail,
+			Sub: "Directly measured",
 		},
 		TokensSavedCard: Card{
-			Label: "Tokens saved", Tooltip: tokensSavedTooltip, Detail: tokensSavedDetail,
+			Label: "EST. Tokens saved", Tooltip: tokensSavedTooltip, Detail: tokensSavedDetail,
+			Sub: "Scaled from bytes saved",
 		},
 		DollarSavedCard: Card{
-			Label: "Money saved", Tooltip: moneySavedTooltip, Detail: dollarDetail,
+			Label: "EST. Money saved", Tooltip: moneySavedTooltip, Detail: dollarDetail,
+			Sub: "Uses API pricing",
 		},
 		Bars:         barRows(t, total),
 		ProjectCount: projectCount,
