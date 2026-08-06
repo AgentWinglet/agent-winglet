@@ -138,16 +138,6 @@ func (a *App) handleIPCConn(conn net.Conn) {
 	}
 }
 
-// QuitApp is the dashboard's Settings-screen "Quit Winglet" affordance. It
-// tears down both halves — this dashboard and a reachable tray helper —
-// unlike closing the window (beforeClose below), which only ever exits the
-// dashboard itself and leaves the tray running so its own "Open Winglet" can
-// relaunch the dashboard later.
-func (a *App) QuitApp() {
-	_ = appipc.SendTrayCommand(appipc.Quit)
-	wailsruntime.Quit(a.ctx)
-}
-
 // beforeClose implements options.App.OnBeforeClose: closing the window —
 // the titlebar button, Cmd+Q/Alt+F4, or the Dock icon's Quit — always exits
 // the dashboard for real. It never touches a tray helper, which (if

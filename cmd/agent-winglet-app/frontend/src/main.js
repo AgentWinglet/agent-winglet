@@ -6,7 +6,6 @@ import {
   GetPlatform,
   GetProjects,
   GetSessionStats,
-  QuitApp,
   SetCompactNudgesEnabled,
 } from '../wailsjs/go/main/App';
 
@@ -517,20 +516,11 @@ async function renderSessionsSection(container, projectPath) {
   });
 }
 
-// renderSettingsScreen's Quit row is the dashboard's own "quit everything"
-// affordance (App.QuitApp) — closing the window itself (titlebar button,
-// Cmd+Q/Alt+F4, Dock Quit) already exits the dashboard for real, but leaves
-// a running tray helper alone so its "Open Winglet" can relaunch the
-// dashboard later. This additionally tears down that tray, so "quit" here
-// means the same thing it does from the tray's own menu.
-//
-// The compact-nudges toggle controls the native OS notification
-// cmd/ledger-hook sends directly (notifyCompactToast) — this dashboard has
-// no part in showing it, only in this preference, since a native
-// notification has no custom "never show again" action button of its own
-// to offer that from. Reading its state needs a round-trip
-// (GetCompactNudgesEnabled), so this is async like the other screens, not
-// fetched synchronously.
+// The compact-nudges toggle controls the systemMessage/additionalContext
+// cmd/ledger-hook emits directly (handlePhaseBoundary) — this dashboard has
+// no part in showing it, only in this preference. Reading its state needs a
+// round-trip (GetCompactNudgesEnabled), so this is async like the other
+// screens, not fetched synchronously.
 async function renderSettingsScreen(container) {
   const enabled = await GetCompactNudgesEnabled();
   if (state.screen !== 'settings') return;
@@ -540,21 +530,13 @@ async function renderSettingsScreen(container) {
     <div class="settings-row">
       <div>
         <div class="settings-row-label">Compact nudges</div>
-        <div class="settings-row-desc">Pop up a reminder to run /compact once a session moves from investigating to editing.</div>
+        <div class="settings-row-desc">Tell Claude to nudge you, inside the session, to run /compact once it moves from investigating to editing.</div>
       </div>
       <button class="toggle ${enabled ? 'on' : ''}" data-toggle-nudges aria-pressed="${enabled}">
         <span class="toggle-knob"></span>
       </button>
     </div>
-    <div class="settings-row">
-      <div>
-        <div class="settings-row-title">Quit Winglet</div>
-        <div class="settings-row-detail">Closes the dashboard and the menu-bar icon together.</div>
-      </div>
-      <button class="quit-button" data-quit>Quit Winglet</button>
-    </div>
   `;
-  container.querySelector('[data-quit]').addEventListener('click', () => QuitApp());
   container.querySelector('[data-toggle-nudges]').addEventListener('click', async (e) => {
     const btn = e.currentTarget;
     const next = !btn.classList.contains('on');
