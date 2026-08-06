@@ -62,6 +62,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/umitkaanusta/agent-winglet/internal/appipc"
 	"github.com/umitkaanusta/agent-winglet/internal/config"
 	"github.com/umitkaanusta/agent-winglet/internal/ledger"
 	"github.com/umitkaanusta/agent-winglet/internal/phase"
@@ -507,6 +508,8 @@ func handlePhaseBoundary(in hookInput, root string) (out *hookOutput, pastBounda
 		"starting — this is a natural point to run /compact, while what's " +
 		"still relevant is still clear, rather than waiting for the context " +
 		"window to fill up."
+	notifyCompactToast()
+
 	return &hookOutput{
 		SystemMessage: msg,
 		HookSpecificOutput: hookSpecificOutput{
@@ -514,6 +517,41 @@ func handlePhaseBoundary(in hookInput, root string) (out *hookOutput, pastBounda
 			AdditionalContext: msg,
 		},
 	}, pastBoundary, overInvestigateThreshold, nil
+}
+
+// toastPayload mirrors cmd/agent-winglet-app's Toast wire format (Title/Body
+// fields, over internal/appipc's Notify command) — duplicated here rather
+// than imported, since that's a separate main package this one can't depend
+// on; keep the two in sync by hand if either's JSON shape changes.
+type toastPayload struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
+}
+
+// notifyCompactToast best-effort asks a running tray helper to pop up the
+// /compact nudge as a small popup, so it's visible even to a user who isn't
+// watching the terminal handlePhaseBoundary's systemMessage/
+// additionalContext already went to — unless the user has dismissed one
+// before and asked not to see another (config.Config.CompactNudgeDisabled,
+// set from the popup's own "Never show compact nudges" action). Any other
+// failure here — no tray running (agent-winglet-app never installed, or
+// just not logged in yet), an IPC error — is silently swallowed: the
+// systemMessage nudge already fired regardless, this is strictly additive,
+// never a reason to fail the hook.
+func notifyCompactToast() {
+	cfg, err := config.Load()
+	if err == nil && cfg.CompactNudgeDisabled {
+		return
+	}
+
+	b, err := json.Marshal(toastPayload{
+		Title: "Time to /compact",
+		Body:  "Investigation looks done — implementation is starting. Compacting now keeps what's still relevant clear.",
+	})
+	if err != nil {
+		return
+	}
+	_ = appipc.SendTrayNotify(string(b))
 }
 
 // investigateKeyFields covers the tool_input field names, across
