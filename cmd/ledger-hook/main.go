@@ -62,8 +62,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/gen2brain/beeep"
-
 	"github.com/umitkaanusta/agent-winglet/internal/config"
 	"github.com/umitkaanusta/agent-winglet/internal/ledger"
 	"github.com/umitkaanusta/agent-winglet/internal/phase"
@@ -505,55 +503,28 @@ func handlePhaseBoundary(in hookInput, root string) (out *hookOutput, pastBounda
 		return nil, pastBoundary, overInvestigateThreshold, nil
 	}
 
-	const msg = "[agent-winglet] investigation looks done and implementation is " +
-		"starting — this is a natural point to run /compact, while what's " +
-		"still relevant is still clear, rather than waiting for the context " +
-		"window to fill up."
-	notifyCompactToast(in, root)
+	if cfg, err := config.Load(); err == nil && cfg.CompactNudgeDisabled {
+		return nil, pastBoundary, overInvestigateThreshold, nil
+	}
+
+	const msg = "[agent-winglet] /compact nudge - you can compact the " +
+		"session ahead of implementation, to save context while what's " +
+		"still relevant is still clear."
+	// additionalContext reaches the model, not the user directly (unlike
+	// systemMessage, which the user already sees on its own) — so it spells
+	// out that the model must relay this to the user first, before any
+	// further tool calls, rather than silently folding it into whatever
+	// else it's already doing.
+	const modelInstruction = msg + " Tell the user this now, first and " +
+		"foremost, before continuing with any further work."
 
 	return &hookOutput{
 		SystemMessage: msg,
 		HookSpecificOutput: hookSpecificOutput{
 			HookEventName:     "PostToolUse",
-			AdditionalContext: msg,
+			AdditionalContext: modelInstruction,
 		},
 	}, pastBoundary, overInvestigateThreshold, nil
-}
-
-// notifyCompactToast best-effort raises a native OS notification (macOS
-// Notification Center, Windows toast, Linux libnotify/dbus — see beeep's own
-// per-OS backends) for the /compact nudge, so it's visible even to a user
-// who isn't watching the terminal handlePhaseBoundary's systemMessage/
-// additionalContext already went to — unless they've turned this off
-// (config.Config.CompactNudgeDisabled, toggled from the dashboard's Settings
-// screen, since a plain OS notification has no "never show again" action
-// button of its own to offer that from). Needs no running dashboard/tray —
-// unlike the appipc-routed popup this replaced, sending a native
-// notification is a direct OS call, so it works even for a user who never
-// installed agent-winglet-app.
-//
-// A session ID means nothing at a glance across several terminal tabs, so
-// the notification instead names the project (root's basename — the same
-// identity install.sh/the registry already key state by) and a short,
-// visually-matchable tag from the session ID, not the session ID itself:
-// enough to tell two concurrent sessions in the same project apart without
-// asking the user to recognize a UUID.
-func notifyCompactToast(in hookInput, root string) {
-	cfg, err := config.Load()
-	if err == nil && cfg.CompactNudgeDisabled {
-		return
-	}
-
-	project := filepath.Base(root)
-	tag := in.SessionID
-	if len(tag) > 8 {
-		tag = tag[:8]
-	}
-
-	beeep.AppName = "Claude Code"
-	title := fmt.Sprintf("Time to /compact — %s", project)
-	message := fmt.Sprintf("Claude Code, session %s: investigation looks done, implementation is starting.", tag)
-	_ = beeep.Notify(title, message, "")
 }
 
 // investigateKeyFields covers the tool_input field names, across

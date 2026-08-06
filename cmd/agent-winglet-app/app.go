@@ -35,11 +35,10 @@ func NewApp() *App {
 // GetCompactNudgesEnabled and SetCompactNudgesEnabled expose
 // config.Config.CompactNudgeDisabled (inverted, so the Settings screen's
 // toggle can talk in on/off terms without re-deriving the double negative).
-// The compact nudge itself is a native OS notification sent directly by
-// cmd/ledger-hook (see its notifyCompactToast) — this dashboard has no part
-// in showing it, only in this one preference for turning it off, since a
-// native notification has no custom "never show again" action button to
-// offer that from itself.
+// The compact nudge itself is a systemMessage/additionalContext emitted
+// directly by cmd/ledger-hook (see its handlePhaseBoundary) — this
+// dashboard has no part in showing it, only in this one preference for
+// turning it off.
 func (a *App) GetCompactNudgesEnabled() bool {
 	cfg, err := config.Load()
 	if err != nil {

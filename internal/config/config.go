@@ -22,13 +22,11 @@ import (
 // half of internal/stats, which are all keyed per-project and per-session).
 type Config struct {
 	Quiet bool `json:"quiet"`
-	// CompactNudgeDisabled opts out of the /compact-nudge popup (see
-	// cmd/ledger-hook's notifyCompactToast and cmd/agent-winglet-app's
+	// CompactNudgeDisabled opts out of the /compact nudge (see
+	// cmd/ledger-hook's handlePhaseBoundary and cmd/agent-winglet-app's
 	// "Never show compact nudges" action) — false by default, unlike Quiet,
-	// since the popup this gates is new and opt-in-by-default, not a
-	// pre-existing behavior being made quieter. The systemMessage/
-	// additionalContext nudge (handlePhaseBoundary) is unaffected either
-	// way; this only silences the popup.
+	// since the nudge this gates is new and opt-in-by-default, not a
+	// pre-existing behavior being made quieter.
 	CompactNudgeDisabled bool `json:"compactNudgeDisabled"`
 }
 
