@@ -62,7 +62,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/umitkaanusta/agent-winglet/internal/appipc"
+	"github.com/gen2brain/beeep"
+
 	"github.com/umitkaanusta/agent-winglet/internal/config"
 	"github.com/umitkaanusta/agent-winglet/internal/ledger"
 	"github.com/umitkaanusta/agent-winglet/internal/phase"
@@ -508,7 +509,7 @@ func handlePhaseBoundary(in hookInput, root string) (out *hookOutput, pastBounda
 		"starting — this is a natural point to run /compact, while what's " +
 		"still relevant is still clear, rather than waiting for the context " +
 		"window to fill up."
-	notifyCompactToast()
+	notifyCompactToast(in, root)
 
 	return &hookOutput{
 		SystemMessage: msg,
@@ -519,39 +520,40 @@ func handlePhaseBoundary(in hookInput, root string) (out *hookOutput, pastBounda
 	}, pastBoundary, overInvestigateThreshold, nil
 }
 
-// toastPayload mirrors cmd/agent-winglet-app's Toast wire format (Title/Body
-// fields, over internal/appipc's Notify command) — duplicated here rather
-// than imported, since that's a separate main package this one can't depend
-// on; keep the two in sync by hand if either's JSON shape changes.
-type toastPayload struct {
-	Title string `json:"title"`
-	Body  string `json:"body"`
-}
-
-// notifyCompactToast best-effort asks a running tray helper to pop up the
-// /compact nudge as a small popup, so it's visible even to a user who isn't
-// watching the terminal handlePhaseBoundary's systemMessage/
-// additionalContext already went to — unless the user has dismissed one
-// before and asked not to see another (config.Config.CompactNudgeDisabled,
-// set from the popup's own "Never show compact nudges" action). Any other
-// failure here — no tray running (agent-winglet-app never installed, or
-// just not logged in yet), an IPC error — is silently swallowed: the
-// systemMessage nudge already fired regardless, this is strictly additive,
-// never a reason to fail the hook.
-func notifyCompactToast() {
+// notifyCompactToast best-effort raises a native OS notification (macOS
+// Notification Center, Windows toast, Linux libnotify/dbus — see beeep's own
+// per-OS backends) for the /compact nudge, so it's visible even to a user
+// who isn't watching the terminal handlePhaseBoundary's systemMessage/
+// additionalContext already went to — unless they've turned this off
+// (config.Config.CompactNudgeDisabled, toggled from the dashboard's Settings
+// screen, since a plain OS notification has no "never show again" action
+// button of its own to offer that from). Needs no running dashboard/tray —
+// unlike the appipc-routed popup this replaced, sending a native
+// notification is a direct OS call, so it works even for a user who never
+// installed agent-winglet-app.
+//
+// A session ID means nothing at a glance across several terminal tabs, so
+// the notification instead names the project (root's basename — the same
+// identity install.sh/the registry already key state by) and a short,
+// visually-matchable tag from the session ID, not the session ID itself:
+// enough to tell two concurrent sessions in the same project apart without
+// asking the user to recognize a UUID.
+func notifyCompactToast(in hookInput, root string) {
 	cfg, err := config.Load()
 	if err == nil && cfg.CompactNudgeDisabled {
 		return
 	}
 
-	b, err := json.Marshal(toastPayload{
-		Title: "Time to /compact",
-		Body:  "Investigation looks done — implementation is starting. Compacting now keeps what's still relevant clear.",
-	})
-	if err != nil {
-		return
+	project := filepath.Base(root)
+	tag := in.SessionID
+	if len(tag) > 8 {
+		tag = tag[:8]
 	}
-	_ = appipc.SendTrayNotify(string(b))
+
+	beeep.AppName = "Claude Code"
+	title := fmt.Sprintf("Time to /compact — %s", project)
+	message := fmt.Sprintf("Claude Code, session %s: investigation looks done, implementation is starting.", tag)
+	_ = beeep.Notify(title, message, "")
 }
 
 // investigateKeyFields covers the tool_input field names, across
