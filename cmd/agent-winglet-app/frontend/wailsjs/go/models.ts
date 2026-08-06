@@ -170,22 +170,6 @@ export namespace main {
 		    return a;
 		}
 	}
-	export class Toast {
-	    active: boolean;
-	    title: string;
-	    body: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new Toast(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.active = source["active"];
-	        this.title = source["title"];
-	        this.body = source["body"];
-	    }
-	}
 
 }
 

@@ -54,25 +54,10 @@ func main() {
 		case "--login-item-status":
 			fmt.Println(LoginItemStatus())
 			return
-		case "--toast":
-			// A separate, ephemeral Wails run (toast.go's runToast), not a
-			// mode of the long-lived dashboard below: it never touches the
-			// IPC listener/login-item/tray-launch machinery in App.startup,
-			// since a second process racing that would step on the real
-			// dashboard's own app.port file. See internal/appipc's Notify
-			// command for how it gets launched — the tray, on the hook's
-			// behalf, not the hook itself (it has no known install path for
-			// this binary; the tray already does, via appExecutablePath).
-			if len(os.Args) < 3 {
-				fmt.Fprintln(os.Stderr, "--toast: missing JSON payload")
-				os.Exit(1)
-			}
-			runToast(os.Args[2])
-			return
 		}
 	}
 
-	app := NewApp(nil)
+	app := NewApp()
 
 	err := wails.Run(&options.App{
 		Title:     "Winglet",

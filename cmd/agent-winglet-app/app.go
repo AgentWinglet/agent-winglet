@@ -26,47 +26,20 @@ import (
 type App struct {
 	ctx         context.Context
 	ipcListener net.Listener
-	toast       *Toast // nil outside --toast mode; see main.go's runToast
 }
 
-// Toast is a --toast-mode process' payload: the wire format of
-// internal/appipc's Notify command (see SendTrayNotify), and the shape
-// GetToast hands the frontend. Active is set only after unmarshaling a
-// wire payload (runToast), never present in the JSON itself — it's what
-// lets main.js tell a real toast process apart from the ordinary dashboard,
-// where GetToast() always returns the zero value.
-type Toast struct {
-	Active bool   `json:"active"`
-	Title  string `json:"title"`
-	Body   string `json:"body"`
-}
-
-// NewApp constructs the Wails-bound backend. toast is non-nil only for a
-// --toast-mode process (see main.go and toast.go's runToast) — the ordinary
-// dashboard always passes nil.
-func NewApp(toast *Toast) *App {
-	return &App{toast: toast}
-}
-
-// GetToast returns the notification this process was launched to show
-// (Active == true), or the zero value in the ordinary dashboard. main.js
-// checks this once at startup, the same way it checks GetPlatform, to
-// decide whether to render the full sidebar+main layout or just the toast
-// card.
-func (a *App) GetToast() Toast {
-	if a.toast == nil {
-		return Toast{}
-	}
-	return *a.toast
+func NewApp() *App {
+	return &App{}
 }
 
 // GetCompactNudgesEnabled and SetCompactNudgesEnabled expose
 // config.Config.CompactNudgeDisabled (inverted, so the Settings screen's
-// toggle and the toast's own "Never show compact nudges" action can both
-// talk in on/off terms without re-deriving the double negative). The
-// Settings screen is this preference's only way back to "on" once the toast
-// has been dismissed forever — without it, opting out here would be a
-// one-way door.
+// toggle can talk in on/off terms without re-deriving the double negative).
+// The compact nudge itself is a native OS notification sent directly by
+// cmd/ledger-hook (see its notifyCompactToast) — this dashboard has no part
+// in showing it, only in this one preference for turning it off, since a
+// native notification has no custom "never show again" action button to
+// offer that from itself.
 func (a *App) GetCompactNudgesEnabled() bool {
 	cfg, err := config.Load()
 	if err != nil {
@@ -152,7 +125,7 @@ func (a *App) serveIPC() {
 func (a *App) handleIPCConn(conn net.Conn) {
 	defer conn.Close()
 
-	cmd, _, err := appipc.ReadCommand(conn)
+	cmd, err := appipc.ReadCommand(conn)
 	if err != nil {
 		return
 	}

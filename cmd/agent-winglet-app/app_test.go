@@ -220,7 +220,7 @@ func TestGetOverviewSumsAcrossProjects(t *testing.T) {
 		t.Fatalf("SaveSession dir2/sess2b errored: %v", err)
 	}
 
-	a := NewApp(nil)
+	a := NewApp()
 	o, err := a.GetOverview()
 	if err != nil {
 		t.Fatalf("GetOverview errored: %v", err)
@@ -265,7 +265,7 @@ func TestGetOverviewIncludesLiveInProgressSessions(t *testing.T) {
 		t.Fatalf("SaveSession live errored: %v", err)
 	}
 
-	a := NewApp(nil)
+	a := NewApp()
 	o, err := a.GetOverview()
 	if err != nil {
 		t.Fatalf("GetOverview errored: %v", err)
@@ -297,7 +297,7 @@ func TestGetProjectsIncludesLiveInProgressSessions(t *testing.T) {
 		t.Fatalf("SaveSession live errored: %v", err)
 	}
 
-	a := NewApp(nil)
+	a := NewApp()
 	rows, err := a.GetProjects()
 	if err != nil {
 		t.Fatalf("GetProjects errored: %v", err)
@@ -340,7 +340,7 @@ func TestGetSessionStatsListsSessionsNewestFirstAndSkipsLifetime(t *testing.T) {
 		t.Fatalf("write legacy lifetime file errored: %v", err)
 	}
 
-	a := NewApp(nil)
+	a := NewApp()
 	rows, err := a.GetSessionStats(dir)
 	if err != nil {
 		t.Fatalf("GetSessionStats errored: %v", err)
@@ -355,7 +355,7 @@ func TestGetSessionStatsListsSessionsNewestFirstAndSkipsLifetime(t *testing.T) {
 
 func TestGetSessionStatsMissingDirReturnsEmpty(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	a := NewApp(nil)
+	a := NewApp()
 	rows, err := a.GetSessionStats(t.TempDir())
 	if err != nil {
 		t.Fatalf("GetSessionStats errored: %v", err)
@@ -380,7 +380,7 @@ func TestGetProjectsReturnsSummedOverviewPerProject(t *testing.T) {
 		t.Fatalf("SaveSession sess2 errored: %v", err)
 	}
 
-	a := NewApp(nil)
+	a := NewApp()
 	rows, err := a.GetProjects()
 	if err != nil {
 		t.Fatalf("GetProjects errored: %v", err)

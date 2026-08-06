@@ -22,10 +22,6 @@ export function GetSessionStats(arg1) {
   return window['go']['main']['App']['GetSessionStats'](arg1);
 }
 
-export function GetToast() {
-  return window['go']['main']['App']['GetToast']();
-}
-
 export function QuitApp() {
   return window['go']['main']['App']['QuitApp']();
 }

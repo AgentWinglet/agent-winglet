@@ -12,8 +12,6 @@ export function GetProjects():Promise<Array<main.ProjectRow>>;
 
 export function GetSessionStats(arg1:string):Promise<Array<main.SessionRow>>;
 
-export function GetToast():Promise<main.Toast>;
-
 export function QuitApp():Promise<void>;
 
 export function SetCompactNudgesEnabled(arg1:boolean):Promise<void>;

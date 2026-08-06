@@ -6,11 +6,9 @@ import {
   GetPlatform,
   GetProjects,
   GetSessionStats,
-  GetToast,
   QuitApp,
   SetCompactNudgesEnabled,
 } from '../wailsjs/go/main/App';
-import { Quit } from '../wailsjs/runtime/runtime';
 
 const state = {
   screen: 'overview',
@@ -526,10 +524,13 @@ async function renderSessionsSection(container, projectPath) {
 // dashboard later. This additionally tears down that tray, so "quit" here
 // means the same thing it does from the tray's own menu.
 //
-// The compact-nudges toggle is this preference's only way back to "on"
-// once dismissed forever from the toast itself (renderToast's "Never show
-// compact nudges") — reading its state needs a round-trip (GetCompactNudgesEnabled),
-// so this is async like the other screens, not fetched synchronously.
+// The compact-nudges toggle controls the native OS notification
+// cmd/ledger-hook sends directly (notifyCompactToast) — this dashboard has
+// no part in showing it, only in this preference, since a native
+// notification has no custom "never show again" action button of its own
+// to offer that from. Reading its state needs a round-trip
+// (GetCompactNudgesEnabled), so this is async like the other screens, not
+// fetched synchronously.
 async function renderSettingsScreen(container) {
   const enabled = await GetCompactNudgesEnabled();
   if (state.screen !== 'settings') return;
@@ -569,85 +570,6 @@ function renderMain(container) {
   if (state.screen === 'settings') return renderSettingsScreen(container);
 }
 
-// renderToast replaces the whole app with the small notification card a
-// --toast-mode process (cmd/agent-winglet-app's runToast) exists to show —
-// see GetToast/boot below for how a process tells this apart from the
-// ordinary dashboard. toast-mode on <body> switches style.css to a
-// transparent page background (see its own comment) so the frameless,
-// centered window reads as a floating card, not a filled rectangle.
-//
-// Two distinct actions, not one whole-card click-to-dismiss: "Got it" ends
-// this occurrence only; "Never show compact nudges" persists the opt-out
-// (SetCompactNudgesEnabled(false), see app.go — cmd/ledger-hook checks the
-// same config field before sending the next one) and only then quits — the
-// Settings screen's toggle (renderSettingsScreen) is the way back if that
-// turns out to be the wrong call. Escape anywhere in the window is a
-// shorthand for "Got it". toastStartup's own Go-side timer is the last
-// resort if none of these fire.
-function renderToast(toast) {
-  document.body.classList.add('toast-mode');
-
-  const app = document.querySelector('#app');
-  app.innerHTML = `
-    <div class="toast" role="alertdialog" aria-label="${toast.title}">
-      <div class="toast-row">
-        <span class="toast-dot"></span>
-        <div class="toast-copy">
-          <div class="toast-title">${toast.title}</div>
-          <div class="toast-text">${toast.body}</div>
-        </div>
-      </div>
-      <div class="toast-actions">
-        <button class="toast-btn toast-btn-muted" data-never>Never show compact nudges</button>
-        <button class="toast-btn toast-btn-primary" data-ok>Got it</button>
-      </div>
-    </div>`;
-
-  const card = app.querySelector('.toast');
-  const okBtn = app.querySelector('[data-ok]');
-
-  okBtn.addEventListener('click', () => Quit());
-  app.querySelector('[data-never]').addEventListener('click', async () => {
-    try {
-      await SetCompactNudgesEnabled(false);
-    } finally {
-      Quit();
-    }
-  });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') Quit();
-  });
-  okBtn.focus();
-
-  // Entrance only — see style.css's prefers-reduced-motion block for why a
-  // reduced-motion session gets the card at rest immediately instead of
-  // this one-frame-delayed class toggle.
-  requestAnimationFrame(() => card.classList.add('toast-in'));
-}
-
-// boot decides which of the two UIs this process shows, before either one
-// paints: a --toast-mode process's window starts hidden (toastStartup's
-// StartHidden) specifically so this one IPC round-trip can resolve before
-// anything is revealed, unlike initPlatform's fire-and-forget style below,
-// which is safe to race against the paint it only refines. Racing render()
-// against GetToast() here instead would risk one visible frame of the full
-// sidebar dashboard inside a 340x100 frameless window before toast content
-// replaced it — worth the small startup delay to rule out entirely.
-async function boot() {
-  let toast = null;
-  try {
-    toast = await GetToast();
-  } catch {
-    // Treated the same as "not a toast" — the ordinary dashboard below.
-  }
-  if (toast && toast.active) {
-    renderToast(toast);
-    return;
-  }
-  initPlatform();
-  render();
-}
-
 function render() {
   const app = document.querySelector('#app');
   app.innerHTML = `
@@ -673,4 +595,5 @@ function render() {
   renderMain(app.querySelector('#main'));
 }
 
-boot();
+initPlatform();
+render();
