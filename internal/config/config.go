@@ -1,9 +1,9 @@
 // Package config reads/writes the single global (not per-project) config
-// file at ~/.agent-winglet/config.json. Today it holds exactly one setting:
-// Quiet, the config-file counterpart to AGENT_WINGLET_QUIET. Quiet defaults
-// to true (see Load) — the savings receipt is suppressed out of the box, and
-// AGENT_WINGLET_QUIET=0 remains the way to opt back into it for a terminal
-// session.
+// file at ~/.agent-winglet/config.json. It holds two settings: Quiet, the
+// config-file counterpart to AGENT_WINGLET_QUIET, and CompactNudgeDisabled.
+// Quiet defaults to true (see Load) — the savings receipt is suppressed out
+// of the box, and AGENT_WINGLET_QUIET=0 remains the way to opt back into it
+// for a terminal session.
 //
 // The env var predates this file and exists because the original savings
 // receipt only needed to be silenceable per-invocation. This file exists so
@@ -22,6 +22,14 @@ import (
 // half of internal/stats, which are all keyed per-project and per-session).
 type Config struct {
 	Quiet bool `json:"quiet"`
+	// CompactNudgeDisabled opts out of the /compact-nudge popup (see
+	// cmd/ledger-hook's notifyCompactToast and cmd/agent-winglet-app's
+	// "Never show compact nudges" action) — false by default, unlike Quiet,
+	// since the popup this gates is new and opt-in-by-default, not a
+	// pre-existing behavior being made quieter. The systemMessage/
+	// additionalContext nudge (handlePhaseBoundary) is unaffected either
+	// way; this only silences the popup.
+	CompactNudgeDisabled bool `json:"compactNudgeDisabled"`
 }
 
 func path() (string, error) {
