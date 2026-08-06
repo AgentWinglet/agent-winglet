@@ -73,8 +73,11 @@ func (s *Session) RecordBudgetTrim(linesOmitted int, bytesOmitted int64) {
 	s.BudgetBytesOmitted += bytesOmitted
 }
 
-// RecordRetire records one post-boundary investigate call whose output of
-// the given byte length was archived instead of replayed.
+// RecordRetire records one investigate call whose output of the given byte
+// length was archived instead of replayed — either because the
+// investigate→implement boundary was already crossed, or because the
+// session's pre-boundary investigate-call threshold was exceeded (see
+// cmd/ledger-hook's investigateCallThreshold).
 func (s *Session) RecordRetire(bytes int) {
 	s.RetiredCalls++
 	s.RetiredBytes += int64(bytes)

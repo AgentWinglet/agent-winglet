@@ -49,6 +49,29 @@ func TestObserveFiresAgainAfterInterveningInvestigate(t *testing.T) {
 	}
 }
 
+func TestObserveCountsInvestigateCallsOnly(t *testing.T) {
+	s := &State{}
+	s.Observe(true, false)
+	s.Observe(true, false)
+	s.Observe(false, true) // implement call — must not bump the counter
+	s.Observe(false, false)
+	if s.InvestigateCalls != 2 {
+		t.Fatalf("InvestigateCalls = %d, want 2", s.InvestigateCalls)
+	}
+}
+
+func TestObserveKeepsCountingInvestigateCallsAfterCrossing(t *testing.T) {
+	// The counter isn't a latch like Suggested — it keeps accumulating for
+	// the rest of the state's lifetime, boundary crossed or not.
+	s := &State{}
+	s.Observe(true, false)
+	s.Observe(false, true)
+	s.Observe(true, false)
+	if s.InvestigateCalls != 2 {
+		t.Fatalf("InvestigateCalls = %d, want 2 (should keep counting post-boundary)", s.InvestigateCalls)
+	}
+}
+
 func TestLoadMissingFileReturnsZeroState(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
@@ -80,6 +103,9 @@ func TestSaveThenLoadRoundTrips(t *testing.T) {
 	if !reloaded.Investigated || !reloaded.Suggested {
 		t.Fatalf("reloaded state lost prior observations: %+v", reloaded)
 	}
+	if reloaded.InvestigateCalls != 1 {
+		t.Fatalf("reloaded InvestigateCalls = %d, want 1", reloaded.InvestigateCalls)
+	}
 	if crossed := reloaded.Observe(false, true); crossed {
 		t.Fatalf("reloaded state re-fired a crossing that already happened")
 	}
@@ -105,7 +131,7 @@ func TestInvalidateRemovesState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load after Invalidate failed: %v", err)
 	}
-	if reloaded.Investigated || reloaded.Suggested {
+	if reloaded.Investigated || reloaded.Suggested || reloaded.InvestigateCalls != 0 {
 		t.Fatalf("state survived Invalidate — same-session-only constraint violated: %+v", reloaded)
 	}
 }

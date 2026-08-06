@@ -780,6 +780,33 @@ func TestHandlePhaseBoundaryResetsOnSessionStart(t *testing.T) {
 	}
 }
 
+// TestInvestigateCallThresholdResetsOnSessionStart covers spec-nextsteps.md's
+// §4 alongside the SessionStart/PostCompact invalidation guarantee every
+// other mechanism already has: a session that reaches investigateCallThreshold,
+// then restarts, should not carry that count into the new session — no
+// substitute for state survives a restart.
+func TestInvestigateCallThresholdResetsOnSessionStart(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+
+	for i := 0; i < investigateCallThreshold; i++ {
+		if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
+			t.Fatalf("seeding call %d errored: %v", i+1, err)
+		}
+	}
+	if _, err := handle(hookInput{SessionID: "sess1", Cwd: dir, HookEventName: "SessionStart"}); err != nil {
+		t.Fatalf("SessionStart handling errored: %v", err)
+	}
+
+	out, err := handle(toolCallInput("sess1", dir, "Read"))
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("investigate call after SessionStart should not be retired — count should be forgotten, got %+v", out)
+	}
+}
+
 func TestHandlePhaseBoundaryResetsOnPostCompact(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
@@ -900,6 +927,77 @@ func TestHandleRetireIsNotBashOnly(t *testing.T) {
 		if _, ok := out.HookSpecificOutput.UpdatedToolOutput.(string); !ok {
 			t.Fatalf("%s: updatedToolOutput is not a string receipt: %#v", tool, out.HookSpecificOutput.UpdatedToolOutput)
 		}
+	}
+}
+
+// TestHandleDoesNotRetireInvestigateAtOrBelowCallThreshold covers
+// spec-nextsteps.md's §4: the first investigateCallThreshold
+// investigate-classified calls this session, even with no implement call in
+// sight (boundary never crosses), should all pass through untouched — the
+// threshold only fires on the call that pushes the count past it.
+func TestHandleDoesNotRetireInvestigateAtOrBelowCallThreshold(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < investigateCallThreshold; i++ {
+		out, err := handle(toolCallInput("sess1", dir, "Read"))
+		if err != nil {
+			t.Fatalf("call %d errored: %v", i+1, err)
+		}
+		if out != nil {
+			t.Fatalf("call %d (at or below threshold) should pass through untouched, got %+v", i+1, out)
+		}
+	}
+}
+
+// TestHandleRetiresInvestigateAfterCallThresholdExceededPreBoundary covers
+// spec-nextsteps.md's §4: once a session has made more than
+// investigateCallThreshold investigate calls — with the investigate→
+// implement boundary never crossed — every further investigate call is
+// retired outright, the same archive-and-receipt treatment
+// handleRetireInvestigate already gives post-boundary calls, distinguished
+// only by the reason in the receipt.
+func TestHandleRetiresInvestigateAfterCallThresholdExceededPreBoundary(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < investigateCallThreshold; i++ {
+		if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
+			t.Fatalf("seeding call %d errored: %v", i+1, err)
+		}
+	}
+
+	response := json.RawMessage(`{"matches":["b.go:1: TODO fix this"]}`)
+	in := investigateInput("sess1", dir, "Grep", json.RawMessage(`{"pattern":"TODO"}`), response)
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("investigate call past the threshold should be retired, got nil")
+	}
+	receipt, ok := out.HookSpecificOutput.UpdatedToolOutput.(string)
+	if !ok {
+		t.Fatalf("updatedToolOutput is not a string receipt: %#v", out.HookSpecificOutput.UpdatedToolOutput)
+	}
+	if !strings.Contains(receipt, "TODO") {
+		t.Fatalf("receipt missing the extracted key, got %q", receipt)
+	}
+	if !strings.Contains(receipt, investigateThresholdReason) {
+		t.Fatalf("receipt missing the expected threshold marker, got %q", receipt)
+	}
+	if strings.Contains(receipt, "post-boundary") {
+		t.Fatalf("threshold-triggered receipt should not claim post-boundary, got %q", receipt)
+	}
+
+	idx := strings.LastIndex(receipt, "full content at ")
+	if idx == -1 {
+		t.Fatalf("receipt missing a content path, got %q", receipt)
+	}
+	path := receipt[idx+len("full content at "):]
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading retired content at %q errored: %v", path, err)
+	}
+	if string(stored) != string(response) {
+		t.Fatalf("retired content = %q, want %q", stored, response)
 	}
 }
 
@@ -1853,6 +1951,36 @@ func TestRetiredBytesOnRetiredCall(t *testing.T) {
 	}
 	if s.RetiredBytes != int64(len(response)) {
 		t.Fatalf("RetiredBytes = %d, want %d", s.RetiredBytes, len(response))
+	}
+}
+
+// TestRetiredBytesOnCallThresholdRetiredCall is
+// TestRetiredBytesOnRetiredCall's counterpart for the pre-boundary
+// investigate-call-threshold retire path (spec-nextsteps.md's §4) — it
+// shares RecordRetire/RetiredCalls/RetiredBytes with the post-boundary path,
+// so this guards that the threshold call site records against the same
+// counters, with the boundary never crossed.
+func TestRetiredBytesOnCallThresholdRetiredCall(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < investigateCallThreshold; i++ {
+		if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
+			t.Fatalf("seeding call %d errored: %v", i+1, err)
+		}
+	}
+	response := json.RawMessage(`{"matches":["a"]}`)
+	if _, err := handle(investigateInput("sess1", dir, "Grep", json.RawMessage(`{"pattern":"a"}`), response)); err != nil {
+		t.Fatalf("retiring call errored: %v", err)
+	}
+
+	s, err := stats.LoadSession(dir, "sess1")
+	if err != nil {
+		t.Fatalf("LoadSession errored: %v", err)
+	}
+	if s.RetiredBytes != int64(len(response)) {
+		t.Fatalf("RetiredBytes = %d, want %d", s.RetiredBytes, len(response))
+	}
+	if s.RetiredCalls != 1 {
+		t.Fatalf("RetiredCalls = %d, want 1", s.RetiredCalls)
 	}
 }
 

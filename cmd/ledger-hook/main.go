@@ -17,14 +17,24 @@
 //     one-time suggestion to compact (see handlePhaseBoundary). Once that
 //     boundary has already been crossed, any further investigate-classified
 //     call has its own output archived to disk and replaced with a compact
-//     receipt (see handleRetireInvestigate) instead of budgeted. Bash gets
-//     the same post-boundary archive-and-receipt treatment for long
-//     first-time output (see handleBashRetire) even though it's never
-//     investigate-classified itself — pastBoundary is threaded into its own
-//     dedup/budget path independent of that tool_name split. Budgeting
-//     (head/tail, content kept visible) only ever applies pre-boundary, for
-//     both Bash and Grep/Glob — post-boundary, long output is fully
-//     retired instead. Anything else passes through untouched.
+//     receipt (see handleRetireInvestigate) instead of budgeted. The same
+//     archive-and-receipt treatment also fires pre-boundary, once a session
+//     has made more than investigateCallThreshold investigate-classified
+//     calls — a session that spends a long time investigating accumulates
+//     many individually-small outputs that never trip Grep/Glob's per-call
+//     budgeting on their own, so past that threshold every further
+//     investigate call is retired outright instead of shown raw or
+//     budgeted; the first investigateCallThreshold calls stay in context
+//     exactly as delivered, since a PostToolUse hook can never rewrite a
+//     call after the one it's currently processing. Bash gets the same
+//     post-boundary (but not pre-boundary-threshold) archive-and-receipt
+//     treatment for long first-time output (see handleBashRetire) even
+//     though it's never investigate-classified itself — pastBoundary is
+//     threaded into its own dedup/budget path independent of that tool_name
+//     split. Budgeting (head/tail, content kept visible) only ever applies
+//     pre-boundary and under the investigate-call threshold, for both Bash
+//     and Grep/Glob — past either one, long output is fully retired
+//     instead. Anything else passes through untouched.
 //   - SessionStart / PostCompact: deletes the session's ledger, phase state,
 //     retired-content directory, and stats tally so no substitution,
 //     boundary suggestion, retired receipt, or session receipt survives a
@@ -472,6 +482,35 @@ var implementTools = map[string]bool{
 	"NotebookEdit": true,
 }
 
+// investigateCallThreshold pre-emptively retires investigate-classified
+// output once a session has made more investigate calls than this, even
+// before the investigate→implement boundary crosses (see
+// phase.State.InvestigateCalls). Pre-boundary, an investigate call
+// currently gets exactly one shot at reduction — Grep/Glob's per-call
+// budgeting (handleGrepBudget/handleGlobBudget), which only trims a single
+// call's own output once it individually exceeds budgetTokenThreshold and
+// never revisits it afterward. That leaves a gap: many individually-small
+// investigate calls, each under that threshold, can still accumulate
+// unboundedly over a long investigation, since nothing else ever touches
+// them. This closes it — past the threshold, every further investigate
+// call is retired outright (archive + receipt, the same treatment
+// handleRetireInvestigate already gives post-boundary calls) instead of
+// being shown raw or budgeted.
+//
+// This can only ever affect calls made after the threshold is crossed, per
+// the same constraint documented at the top of this file: a PostToolUse
+// hook can only rewrite the tool call it's currently processing, never an
+// earlier one. The first investigateCallThreshold investigate calls this
+// session stay in context exactly as they arrived, permanently — nothing
+// retroactively shrinks them once delivered. That makes this a threshold
+// ("prefix stays, tail retires"), not the true sliding window either paper
+// describes (Complexity Trap's M, AgentDiet's a) — this architecture has no
+// hook to retroactively mask a call already replayed N turns ago. Picked
+// generously rather than derived from either paper's window size, since
+// neither value was tuned for this shape of trigger; tune down only if
+// dogfooding shows 20 is too late to matter.
+const investigateCallThreshold = 20
+
 // handlePhaseBoundary suggests running /compact once the session has moved
 // from investigating to implementing. Claude Code has no hook mechanism to
 // trigger compaction programmatically (confirmed against the hooks
@@ -485,20 +524,23 @@ var implementTools = map[string]bool{
 // subsequent edit.
 //
 // It also reports pastBoundary: whether the session has already crossed the
-// boundary as of this call (crossed just now, or earlier). handlePostToolUse
-// uses this to decide whether to retire a later investigate call's output
-// (see handleRetireInvestigate). That's the only direction retirement can
-// go: a PostToolUse hook can only ever rewrite the tool call it's currently
-// processing, never an earlier one, so already-replayed investigate output
-// can't be rewritten after the fact — only investigate calls made after the
-// boundary crossing can be.
-func handlePhaseBoundary(in hookInput, root string) (out *hookOutput, pastBoundary bool, err error) {
+// boundary as of this call (crossed just now, or earlier), and
+// overInvestigateThreshold: whether this call's own tally pushed
+// phase.State.InvestigateCalls past investigateCallThreshold.
+// handlePostToolUse uses both to decide whether to retire a later
+// investigate call's output (see handleRetireInvestigate). Either way,
+// that's the only direction retirement can go: a PostToolUse hook can only
+// ever rewrite the tool call it's currently processing, never an earlier
+// one, so already-replayed investigate output can't be rewritten after the
+// fact — only an investigate call made after the boundary crossing, or
+// after the threshold is exceeded, can be.
+func handlePhaseBoundary(in hookInput, root string) (out *hookOutput, pastBoundary bool, overInvestigateThreshold bool, err error) {
 	isInvestigate := investigateTools[in.ToolName]
 	isImplement := implementTools[in.ToolName]
 
 	st, err := phase.Load(root, in.SessionID)
 	if err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
 	if !isInvestigate && !isImplement {
 		// Unclassified tools (e.g. Bash — see investigateTools' doc comment
@@ -507,15 +549,16 @@ func handlePhaseBoundary(in hookInput, root string) (out *hookOutput, pastBounda
 		// own post-boundary retirement path (handleBashRetire) depends on
 		// it, even though Bash itself never crosses or is retired by this
 		// function.
-		return nil, st.Suggested, nil
+		return nil, st.Suggested, st.InvestigateCalls > investigateCallThreshold, nil
 	}
 	crossed := st.Observe(isInvestigate, isImplement)
 	if err := phase.Save(root, in.SessionID, st); err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
 	pastBoundary = st.Suggested
+	overInvestigateThreshold = st.InvestigateCalls > investigateCallThreshold
 	if !crossed {
-		return nil, pastBoundary, nil
+		return nil, pastBoundary, overInvestigateThreshold, nil
 	}
 
 	const msg = "[agent-winglet] investigation looks done and implementation is " +
@@ -528,7 +571,7 @@ func handlePhaseBoundary(in hookInput, root string) (out *hookOutput, pastBounda
 			HookEventName:     "PostToolUse",
 			AdditionalContext: msg,
 		},
-	}, pastBoundary, nil
+	}, pastBoundary, overInvestigateThreshold, nil
 }
 
 // investigateKeyFields covers the tool_input field names, across
@@ -565,14 +608,21 @@ func investigateKey(toolInput json.RawMessage) string {
 	}
 }
 
-// handleRetireInvestigate retires used-up investigate output: once the
-// session has already crossed the investigate→implement boundary (see
-// handlePhaseBoundary), any further investigate-classified call's own
-// output — the one thing a PostToolUse hook can still rewrite — is
-// archived to disk and replaced with a compact receipt, instead of
-// replaying it in full. Called only when in.ToolName is investigate-
-// classified and the boundary has already been crossed.
-func handleRetireInvestigate(in hookInput, root string) (*hookOutput, error) {
+// investigateThresholdReason is handleRetireInvestigate's reason string for
+// a pre-boundary retirement triggered by investigateCallThreshold, as
+// opposed to the post-boundary case (reason "post-boundary").
+const investigateThresholdReason = "past the pre-boundary investigate-call threshold"
+
+// handleRetireInvestigate retires used-up investigate output: an
+// investigate-classified call's own output — the one thing a PostToolUse
+// hook can still rewrite — is archived to disk and replaced with a compact
+// receipt, instead of replaying it in full. Called in two situations (see
+// handlePostToolUse): once the session has already crossed the
+// investigate→implement boundary (see handlePhaseBoundary), or, pre-
+// boundary, once investigateCallThreshold investigate calls have already
+// been made this session. reason names which one, and is threaded straight
+// into the receipt so a saved output's notice line explains why it was cut.
+func handleRetireInvestigate(in hookInput, root, reason string) (*hookOutput, error) {
 	path, err := retire.Store(root, in.SessionID, in.ToolResponse)
 	if err != nil {
 		return nil, err
@@ -580,8 +630,8 @@ func handleRetireInvestigate(in hookInput, root string) (*hookOutput, error) {
 	key := investigateKey(in.ToolInput)
 	n := len(in.ToolResponse)
 	receipt := fmt.Sprintf(
-		"[agent-winglet] investigate output retired post-boundary (%s %s, %d bytes) — full content at %s",
-		in.ToolName, key, n, path,
+		"[agent-winglet] investigate output retired %s (%s %s, %d bytes) — full content at %s",
+		reason, in.ToolName, key, n, path,
 	)
 	if err := recordStat(root, in.SessionID, func(s *stats.Session) {
 		s.RecordRetire(n)
@@ -646,27 +696,33 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 		return nil, err
 	}
 
-	out, pastBoundary, err := handlePhaseBoundary(in, root)
+	out, pastBoundary, overInvestigateThreshold, err := handlePhaseBoundary(in, root)
 	if err != nil {
 		return nil, err
 	}
 	if out != nil {
 		return out, nil
 	}
-	if investigateTools[in.ToolName] && pastBoundary {
-		return handleRetireInvestigate(in, root)
+	if investigateTools[in.ToolName] {
+		if pastBoundary {
+			return handleRetireInvestigate(in, root, "post-boundary")
+		}
+		if overInvestigateThreshold {
+			return handleRetireInvestigate(in, root, investigateThresholdReason)
+		}
 	}
 
-	// Everything past this point is pre-boundary-only for investigate-
-	// classified tools: any such call that got this far without being
-	// retired above just means the boundary hasn't crossed yet. Bash is the
-	// one exception — it's never investigate-classified (see
-	// investigateTools' doc comment), so it never goes through
-	// handleRetireInvestigate above, but it still needs pastBoundary to pick
-	// its own post-boundary treatment (retire long output instead of just
-	// budgeting it — see handleBashPostToolUse). Budgeting and retirement
-	// are still mutually exclusive per call: pastBoundary routes Bash to one
-	// or the other, never both.
+	// Everything past this point means neither retirement condition fired
+	// for this call: for investigate-classified tools, the boundary hasn't
+	// crossed yet and this session hasn't made more than
+	// investigateCallThreshold investigate calls yet either. Bash is the one
+	// exception — it's never investigate-classified (see investigateTools'
+	// doc comment), so it never goes through handleRetireInvestigate above,
+	// but it still needs pastBoundary to pick its own post-boundary
+	// treatment (retire long output instead of just budgeting it — see
+	// handleBashPostToolUse). Budgeting and retirement are still mutually
+	// exclusive per call: pastBoundary routes Bash to one or the other,
+	// never both.
 	switch in.ToolName {
 	case "Bash":
 		return handleBashPostToolUse(in, root, pastBoundary)

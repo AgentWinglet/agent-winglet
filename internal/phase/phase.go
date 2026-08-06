@@ -27,6 +27,14 @@ type State struct {
 	// Suggested is set once the boundary-crossing signal has fired, so it
 	// never fires more than once per state lifetime.
 	Suggested bool `json:"suggested"`
+	// InvestigateCalls counts every investigate-classified tool call seen
+	// this session so far, independent of Suggested/Investigated — it keeps
+	// counting after the boundary crosses, and it's what's checked
+	// pre-boundary to decide when a session has been investigating long
+	// enough that letting every further call's output accumulate raw would
+	// grow context unboundedly (see cmd/ledger-hook's
+	// investigateCallThreshold).
+	InvestigateCalls int `json:"investigateCalls"`
 }
 
 func statePath(projectDir, sessionID string) (string, error) {
@@ -101,6 +109,7 @@ func Invalidate(projectDir, sessionID string) error {
 func (s *State) Observe(isInvestigate, isImplement bool) (crossed bool) {
 	if isInvestigate {
 		s.Investigated = true
+		s.InvestigateCalls++
 		return false
 	}
 	if isImplement && s.Investigated && !s.Suggested {
