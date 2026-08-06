@@ -14,10 +14,7 @@
 // see app.go's ensureTrayRunning — to decide whether a tray helper needs
 // launching), and a real Quit so the dashboard's own Quit button can fully
 // tear down the tray too, not just itself — see cmd/agent-winglet-tray's
-// handleControlConn. cmd/ledger-hook also dials the tray, for a third thing:
-// SendTrayNotify, so a nudge like the /compact suggestion can pop up a toast
-// even though the hook itself is a short-lived process with no window of
-// its own — see handlePhaseBoundary and the tray's own showToast.
+// handleControlConn.
 package appipc
 
 import (
@@ -40,13 +37,6 @@ const (
 	Show Command = "SHOW"
 	// Quit asks the dashboard to actually exit.
 	Quit Command = "QUIT"
-	// Notify asks the tray to pop up a toast — the only command carrying a
-	// payload (a one-line JSON blob, read as the message; see ReadCommand
-	// and SendTrayNotify). Sent by cmd/ledger-hook, not the dashboard: the
-	// hook is a short-lived process with no window of its own, so this is
-	// how a nudge like the /compact suggestion (handlePhaseBoundary) reaches
-	// the user even when nobody's watching the terminal.
-	Notify Command = "NOTIFY"
 
 	ack = "OK"
 
@@ -167,10 +157,9 @@ func TrayRunning() bool {
 	return true
 }
 
-// sendCommand dials whatever's listening at the named port file, sends cmd
-// (and, for Notify, its one-line payload — see ReadCommand), and waits for
-// its acknowledgement.
-func sendCommand(name string, cmd Command, payload string) error {
+// sendCommand dials whatever's listening at the named port file, sends cmd,
+// and waits for its acknowledgement.
+func sendCommand(name string, cmd Command) error {
 	conn, err := dial(name)
 	if err != nil {
 		return err
@@ -181,11 +170,6 @@ func sendCommand(name string, cmd Command, payload string) error {
 
 	if _, err := fmt.Fprintf(conn, "%s\n", cmd); err != nil {
 		return err
-	}
-	if cmd == Notify {
-		if _, err := fmt.Fprintf(conn, "%s\n", payload); err != nil {
-			return err
-		}
 	}
 
 	reply, err := bufio.NewReader(conn).ReadString('\n')
@@ -200,47 +184,28 @@ func sendCommand(name string, cmd Command, payload string) error {
 
 // SendCommand dials the dashboard, sends cmd, and waits for its
 // acknowledgement. See sendCommand.
-func SendCommand(cmd Command) error { return sendCommand(appPortFile, cmd, "") }
+func SendCommand(cmd Command) error { return sendCommand(appPortFile, cmd) }
 
 // SendTrayCommand dials the tray helper, sends cmd, and waits for its
 // acknowledgement — currently only ever Quit (see App.QuitApp). See
 // sendCommand.
-func SendTrayCommand(cmd Command) error { return sendCommand(trayPortFile, cmd, "") }
+func SendTrayCommand(cmd Command) error { return sendCommand(trayPortFile, cmd) }
 
-// SendTrayNotify dials the tray helper and asks it to pop up a toast with
-// payload (a one-line JSON blob — see cmd/agent-winglet-app's Toast type,
-// which this must stay wire-compatible with). Callers such as
-// cmd/ledger-hook's handlePhaseBoundary treat a failure here the same as an
-// unreachable tray: fire-and-forget, nothing to surface, the nudge already
-// went out via systemMessage regardless.
-func SendTrayNotify(payload string) error { return sendCommand(trayPortFile, Notify, payload) }
-
-// ReadCommand reads one command — and, for Notify, its one-line JSON
-// payload — off an accepted connection and acknowledges it immediately (the
-// ack confirms receipt, not that the receiver has finished acting on it;
-// every command here is fire-and-forget from the sender's point of view).
-// Used by both the dashboard's and the tray's accept loops; payload is
-// always "" for Show/Quit.
-func ReadCommand(conn net.Conn) (cmd Command, payload string, err error) {
+// ReadCommand reads one command off an accepted connection and acknowledges
+// it immediately (the ack confirms receipt, not that the dashboard has
+// finished acting on it — the two commands here are fire-and-forget from the
+// tray's point of view). Used by the dashboard's accept loop.
+func ReadCommand(conn net.Conn) (Command, error) {
 	conn.SetDeadline(time.Now().Add(ioTimeout))
-	r := bufio.NewReader(conn)
 
-	line, err := r.ReadString('\n')
+	line, err := bufio.NewReader(conn).ReadString('\n')
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
-	cmd = Command(strings.TrimSpace(line))
-
-	if cmd == Notify {
-		p, err := r.ReadString('\n')
-		if err != nil {
-			return "", "", err
-		}
-		payload = strings.TrimSpace(p)
-	}
+	cmd := Command(strings.TrimSpace(line))
 
 	if _, err := fmt.Fprintf(conn, "%s\n", ack); err != nil {
-		return "", "", err
+		return "", err
 	}
-	return cmd, payload, nil
+	return cmd, nil
 }
