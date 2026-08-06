@@ -35,10 +35,19 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func linesOfStdout(n int) string {
-	lines := make([]string, n)
+// linesOfApproxTokens returns 2*tokens single-character lines ("x",
+// newline-joined, trailing newline included). budgetBody's estimatedTokens
+// proxy is len(body)/4 (integer division); a body built this way is always
+// exactly 4*tokens bytes long, so estimatedTokens(body) == tokens exactly —
+// letting boundary tests target budgetTokenThreshold precisely instead of
+// guessing through an arbitrary line count the way the old line-count
+// threshold could be tested directly. The line count (2*tokens) is also
+// always comfortably above budgetHeadLines+budgetTailLines, so these bodies
+// never trip budgetBody's separate too-few-lines-to-split guard.
+func linesOfApproxTokens(tokens int) string {
+	lines := make([]string, 2*tokens)
 	for i := range lines {
-		lines[i] = "line"
+		lines[i] = "x"
 	}
 	return strings.Join(lines, "\n") + "\n"
 }
@@ -221,18 +230,21 @@ func TestHandlePostCompactInvalidatesLedger(t *testing.T) {
 func TestBudgetStdoutThresholdBoundary(t *testing.T) {
 	cases := []struct {
 		name       string
-		lineCount  int
+		tokens     int
 		wantBudget bool
 	}{
-		{"just under threshold", budgetLineThreshold - 1, false},
-		{"at threshold", budgetLineThreshold, false},
-		{"just over threshold", budgetLineThreshold + 1, true},
+		{"just under threshold", budgetTokenThreshold - 1, false},
+		{"at threshold", budgetTokenThreshold, false},
+		{"just over threshold", budgetTokenThreshold + 1, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, _, _, ok := budgetStdout(linesOfStdout(c.lineCount))
+			_, _, _, ok, err := budgetStdout(linesOfApproxTokens(c.tokens), t.TempDir(), "sess1")
+			if err != nil {
+				t.Fatalf("budgetStdout errored: %v", err)
+			}
 			if ok != c.wantBudget {
-				t.Fatalf("%d lines: budgetStdout ok = %v, want %v", c.lineCount, ok, c.wantBudget)
+				t.Fatalf("%d tokens: budgetStdout ok = %v, want %v", c.tokens, ok, c.wantBudget)
 			}
 		})
 	}
@@ -240,7 +252,7 @@ func TestBudgetStdoutThresholdBoundary(t *testing.T) {
 
 func TestHandleBudgetsLongFirstTimeOutput(t *testing.T) {
 	dir := t.TempDir()
-	longOutput := linesOfStdout(budgetLineThreshold + 1)
+	longOutput := linesOfApproxTokens(budgetTokenThreshold + 1)
 	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
 
 	out, err := handle(in)
@@ -262,9 +274,44 @@ func TestHandleBudgetsLongFirstTimeOutput(t *testing.T) {
 	}
 }
 
+// TestHandleBashBudgetArchivesFullOutputForRecovery guards the gap plain
+// head/tail truncation used to leave open: if the agent actually needed
+// something from the dropped middle, its only recovery was re-running the
+// same Bash command. Budgeting now archives the full pre-trim stdout the
+// same way handleRetireInvestigate archives investigate output, and names
+// the path in the notice line — this asserts that path is present and
+// reading it back returns the exact original stdout.
+func TestHandleBashBudgetArchivesFullOutputForRecovery(t *testing.T) {
+	dir := t.TempDir()
+	longOutput := linesOfApproxTokens(budgetTokenThreshold + 1)
+	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle returned error: %v", err)
+	}
+	updated := out.HookSpecificOutput.UpdatedToolOutput.(bashOutput)
+
+	idx := strings.Index(updated.Stdout, "full output at ")
+	if idx == -1 {
+		t.Fatalf("budgeted stdout missing an archive path, got %q", updated.Stdout)
+	}
+	path := updated.Stdout[idx+len("full output at "):]
+	if nl := strings.IndexByte(path, '\n'); nl != -1 {
+		path = path[:nl]
+	}
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading archived output at %q errored: %v", path, err)
+	}
+	if string(stored) != longOutput {
+		t.Fatalf("archived output = %q, want the original unbudgeted stdout %q", stored, longOutput)
+	}
+}
+
 func TestHandleDoesNotBudgetShortFirstTimeOutput(t *testing.T) {
 	dir := t.TempDir()
-	in := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: linesOfStdout(budgetLineThreshold)})
+	in := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: linesOfApproxTokens(budgetTokenThreshold)})
 
 	out, err := handle(in)
 	if err != nil {
@@ -277,7 +324,7 @@ func TestHandleDoesNotBudgetShortFirstTimeOutput(t *testing.T) {
 
 func TestHandleDoesNotBudgetFailedInterruptedOrImageOutput(t *testing.T) {
 	dir := t.TempDir()
-	longOutput := linesOfStdout(budgetLineThreshold + 1)
+	longOutput := linesOfApproxTokens(budgetTokenThreshold + 1)
 	cases := []bashOutput{
 		{Stdout: longOutput, Stderr: "build failed"},
 		{Stdout: longOutput, Interrupted: true},
@@ -297,7 +344,7 @@ func TestHandleDoesNotBudgetFailedInterruptedOrImageOutput(t *testing.T) {
 
 func TestHandleRepeatCheckTakesPrecedenceOverBudgeting(t *testing.T) {
 	dir := t.TempDir()
-	longOutput := linesOfStdout(budgetLineThreshold + 1)
+	longOutput := linesOfApproxTokens(budgetTokenThreshold + 1)
 	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
 
 	first, err := handle(in)
@@ -318,6 +365,311 @@ func TestHandleRepeatCheckTakesPrecedenceOverBudgeting(t *testing.T) {
 	updated := second.HookSpecificOutput.UpdatedToolOutput.(bashOutput)
 	if !strings.HasPrefix(updated.Stdout, "[agent-winglet] unchanged since turn") {
 		t.Fatalf("repeat should use the 'unchanged since turn N' message, not a budget receipt, got %q", updated.Stdout)
+	}
+}
+
+func linesOfEntries(n int) []string {
+	entries := make([]string, n)
+	for i := range entries {
+		entries[i] = fmt.Sprintf("file%d.go", i)
+	}
+	return entries
+}
+
+// entriesOfApproxTokens returns 2*tokens+1 single-character entries. Joined
+// by budgetEntryList with "\n" (the same join budgetBody's caller performs)
+// that's exactly 4*tokens+1 bytes — one more than linesOfApproxTokens'
+// 4*tokens because strings.Join has no trailing separator — but integer
+// division still floors len/4 to exactly tokens, so this hits the same
+// token-threshold boundary precisely for the entry-list shape (Glob's
+// filenames) that linesOfApproxTokens hits for freeform text bodies.
+func entriesOfApproxTokens(tokens int) []string {
+	entries := make([]string, 2*tokens+1)
+	for i := range entries {
+		entries[i] = "x"
+	}
+	return entries
+}
+
+func grepInput(t *testing.T, dir, sessionID string, response grepResponse) hookInput {
+	t.Helper()
+	toolResponse, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal tool_response: %v", err)
+	}
+	return hookInput{
+		SessionID:     sessionID,
+		Cwd:           dir,
+		HookEventName: "PostToolUse",
+		ToolName:      "Grep",
+		ToolInput:     json.RawMessage(`{"pattern":"TODO"}`),
+		ToolResponse:  toolResponse,
+	}
+}
+
+func globInput(t *testing.T, dir, sessionID string, response globResponse) hookInput {
+	t.Helper()
+	toolResponse, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal tool_response: %v", err)
+	}
+	return hookInput{
+		SessionID:     sessionID,
+		Cwd:           dir,
+		HookEventName: "PostToolUse",
+		ToolName:      "Glob",
+		ToolInput:     json.RawMessage(`{"pattern":"**/*.go"}`),
+		ToolResponse:  toolResponse,
+	}
+}
+
+func TestBudgetTextFieldThresholdBoundary(t *testing.T) {
+	cases := []struct {
+		name       string
+		tokens     int
+		wantBudget bool
+	}{
+		{"just under threshold", budgetTokenThreshold - 1, false},
+		{"at threshold", budgetTokenThreshold, false},
+		{"just over threshold", budgetTokenThreshold + 1, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, _, _, ok, err := budgetTextField(linesOfApproxTokens(c.tokens), t.TempDir(), "sess1")
+			if err != nil {
+				t.Fatalf("budgetTextField errored: %v", err)
+			}
+			if ok != c.wantBudget {
+				t.Fatalf("%d tokens: budgetTextField ok = %v, want %v", c.tokens, ok, c.wantBudget)
+			}
+		})
+	}
+}
+
+func TestBudgetEntryListThresholdBoundary(t *testing.T) {
+	cases := []struct {
+		name       string
+		tokens     int
+		wantBudget bool
+	}{
+		{"just under threshold", budgetTokenThreshold - 1, false},
+		{"at threshold", budgetTokenThreshold, false},
+		{"just over threshold", budgetTokenThreshold + 1, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, _, _, ok, err := budgetEntryList(entriesOfApproxTokens(c.tokens), t.TempDir(), "sess1")
+			if err != nil {
+				t.Fatalf("budgetEntryList errored: %v", err)
+			}
+			if ok != c.wantBudget {
+				t.Fatalf("%d tokens: budgetEntryList ok = %v, want %v", c.tokens, ok, c.wantBudget)
+			}
+		})
+	}
+}
+
+func TestHandleBudgetsLongGrepContent(t *testing.T) {
+	dir := t.TempDir()
+	longContent := linesOfApproxTokens(budgetTokenThreshold + 1)
+	in := grepInput(t, dir, "sess1", grepResponse{Mode: "content", NumFiles: 3, Content: longContent})
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle returned error: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("long Grep content should be budgeted, got nil")
+	}
+	updated, ok := out.HookSpecificOutput.UpdatedToolOutput.(grepResponse)
+	if !ok {
+		t.Fatalf("updatedToolOutput is not a grepResponse: %#v", out.HookSpecificOutput.UpdatedToolOutput)
+	}
+	if updated.Content == longContent {
+		t.Fatalf("budgeting did not replace the original content")
+	}
+	if !strings.Contains(updated.Content, "lines omitted") {
+		t.Fatalf("budgeted content missing omission marker: %q", updated.Content)
+	}
+	// Fields other than Content must survive the round-trip untouched.
+	if updated.NumFiles != 3 || updated.Mode != "content" {
+		t.Fatalf("budgeting dropped other fields, got %+v", updated)
+	}
+
+	idx := strings.Index(updated.Content, "full output at ")
+	if idx == -1 {
+		t.Fatalf("budgeted content missing an archive path, got %q", updated.Content)
+	}
+	path := updated.Content[idx+len("full output at "):]
+	if nl := strings.IndexByte(path, '\n'); nl != -1 {
+		path = path[:nl]
+	}
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading archived content at %q errored: %v", path, err)
+	}
+	if string(stored) != longContent {
+		t.Fatalf("archived content = %q, want the original unbudgeted content %q", stored, longContent)
+	}
+}
+
+func TestHandleDoesNotBudgetShortGrepContent(t *testing.T) {
+	dir := t.TempDir()
+	in := grepInput(t, dir, "sess1", grepResponse{Mode: "content", Content: linesOfApproxTokens(budgetTokenThreshold)})
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle returned error: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("content at/under threshold should pass through untouched, got %+v", out)
+	}
+}
+
+func TestHandleDoesNotBudgetGrepFilesWithMatchesMode(t *testing.T) {
+	dir := t.TempDir()
+	// files_with_matches/count mode carries no Content — just filenames and
+	// counts, already compact — so there's nothing for this path to budget.
+	in := grepInput(t, dir, "sess1", grepResponse{Mode: "files_with_matches", NumFiles: 200, Filenames: linesOfEntries(200)})
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle returned error: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("files_with_matches mode (no Content field) should pass through untouched, got %+v", out)
+	}
+}
+
+func TestHandleBudgetsLongGlobFilenames(t *testing.T) {
+	dir := t.TempDir()
+	longFilenames := entriesOfApproxTokens(budgetTokenThreshold + 1)
+	in := globInput(t, dir, "sess1", globResponse{NumFiles: len(longFilenames), Filenames: longFilenames})
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle returned error: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("long Glob filenames should be budgeted, got nil")
+	}
+	updated, ok := out.HookSpecificOutput.UpdatedToolOutput.(globResponse)
+	if !ok {
+		t.Fatalf("updatedToolOutput is not a globResponse: %#v", out.HookSpecificOutput.UpdatedToolOutput)
+	}
+	if len(updated.Filenames) >= len(longFilenames) {
+		t.Fatalf("budgeting did not shrink the filenames array: got %d entries, want fewer than %d", len(updated.Filenames), len(longFilenames))
+	}
+	found := false
+	for _, f := range updated.Filenames {
+		if strings.Contains(f, "entries omitted") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("budgeted filenames missing omission marker entry: %v", updated.Filenames)
+	}
+
+	var archiveEntry string
+	for _, f := range updated.Filenames {
+		if strings.Contains(f, "full list at ") {
+			archiveEntry = f
+		}
+	}
+	if archiveEntry == "" {
+		t.Fatalf("budgeted filenames missing an archive path entry: %v", updated.Filenames)
+	}
+	path := archiveEntry[strings.Index(archiveEntry, "full list at ")+len("full list at "):]
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading archived filenames at %q errored: %v", path, err)
+	}
+	if string(stored) != strings.Join(longFilenames, "\n") {
+		t.Fatalf("archived filenames don't match the original list")
+	}
+}
+
+func TestHandleDoesNotBudgetShortGlobFilenames(t *testing.T) {
+	dir := t.TempDir()
+	in := globInput(t, dir, "sess1", globResponse{Filenames: entriesOfApproxTokens(budgetTokenThreshold)})
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle returned error: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("filenames at/under threshold should pass through untouched, got %+v", out)
+	}
+}
+
+func TestHandleWebSearchIsNeverBudgeted(t *testing.T) {
+	dir := t.TempDir()
+	// WebSearch is deliberately excluded (see handlePostToolUse's default
+	// case): its results array has no single freeform field to budget.
+	// Regression guard: a long tool_response must still pass through
+	// untouched rather than erroring or being silently mangled.
+	longResponse := json.RawMessage(`{"query":"x","results":[{"tool_use_id":"t1","content":[{"title":"a","url":"https://a"}]},"` + linesOfApproxTokens(budgetTokenThreshold+1) + `"],"durationSeconds":1,"searchCount":1}`)
+	in := hookInput{
+		SessionID:     "sess1",
+		Cwd:           dir,
+		HookEventName: "PostToolUse",
+		ToolName:      "WebSearch",
+		ToolInput:     json.RawMessage(`{"query":"x"}`),
+		ToolResponse:  longResponse,
+	}
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle returned error: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("WebSearch should never be budgeted, got %+v", out)
+	}
+}
+
+func TestHandleGrepBudgetingDoesNotFirePostBoundary(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
+		t.Fatalf("seeding investigate call errored: %v", err)
+	}
+	if _, err := handle(toolCallInput("sess1", dir, "Edit")); err != nil {
+		t.Fatalf("crossing call errored: %v", err)
+	}
+
+	// Post-boundary, a long Grep content field must go through retirement
+	// (a string receipt), never through budgeting (a grepResponse) — the two
+	// mechanisms are mutually exclusive by construction.
+	longContent := linesOfApproxTokens(budgetTokenThreshold + 1)
+	in := grepInput(t, dir, "sess1", grepResponse{Mode: "content", Content: longContent})
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle returned error: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("post-boundary investigate call should be retired, got nil")
+	}
+	if _, ok := out.HookSpecificOutput.UpdatedToolOutput.(string); !ok {
+		t.Fatalf("post-boundary Grep should be retired (string receipt), not budgeted, got %#v", out.HookSpecificOutput.UpdatedToolOutput)
+	}
+}
+
+func TestHandleGrepBudgetTrimRecordsStat(t *testing.T) {
+	dir := t.TempDir()
+	longContent := linesOfApproxTokens(budgetTokenThreshold + 1)
+	in := grepInput(t, dir, "sess1", grepResponse{Mode: "content", Content: longContent})
+	if _, err := handle(in); err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+
+	s, err := stats.LoadSession(dir, "sess1")
+	if err != nil {
+		t.Fatalf("LoadSession errored: %v", err)
+	}
+	if s.BudgetTrims != 1 {
+		t.Fatalf("BudgetTrims = %d, want 1", s.BudgetTrims)
+	}
+	if s.BudgetBytesOmitted <= 0 {
+		t.Fatalf("BudgetBytesOmitted = %d, want positive", s.BudgetBytesOmitted)
 	}
 }
 
@@ -425,6 +777,33 @@ func TestHandlePhaseBoundaryResetsOnSessionStart(t *testing.T) {
 	}
 	if out != nil {
 		t.Fatalf("Edit after SessionStart should not fire — prior investigate call should be forgotten, got %+v", out)
+	}
+}
+
+// TestInvestigateCallThresholdResetsOnSessionStart covers spec-nextsteps.md's
+// §4 alongside the SessionStart/PostCompact invalidation guarantee every
+// other mechanism already has: a session that reaches investigateCallThreshold,
+// then restarts, should not carry that count into the new session — no
+// substitute for state survives a restart.
+func TestInvestigateCallThresholdResetsOnSessionStart(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+
+	for i := 0; i < investigateCallThreshold; i++ {
+		if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
+			t.Fatalf("seeding call %d errored: %v", i+1, err)
+		}
+	}
+	if _, err := handle(hookInput{SessionID: "sess1", Cwd: dir, HookEventName: "SessionStart"}); err != nil {
+		t.Fatalf("SessionStart handling errored: %v", err)
+	}
+
+	out, err := handle(toolCallInput("sess1", dir, "Read"))
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("investigate call after SessionStart should not be retired — count should be forgotten, got %+v", out)
 	}
 }
 
@@ -551,6 +930,77 @@ func TestHandleRetireIsNotBashOnly(t *testing.T) {
 	}
 }
 
+// TestHandleDoesNotRetireInvestigateAtOrBelowCallThreshold covers
+// spec-nextsteps.md's §4: the first investigateCallThreshold
+// investigate-classified calls this session, even with no implement call in
+// sight (boundary never crosses), should all pass through untouched — the
+// threshold only fires on the call that pushes the count past it.
+func TestHandleDoesNotRetireInvestigateAtOrBelowCallThreshold(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < investigateCallThreshold; i++ {
+		out, err := handle(toolCallInput("sess1", dir, "Read"))
+		if err != nil {
+			t.Fatalf("call %d errored: %v", i+1, err)
+		}
+		if out != nil {
+			t.Fatalf("call %d (at or below threshold) should pass through untouched, got %+v", i+1, out)
+		}
+	}
+}
+
+// TestHandleRetiresInvestigateAfterCallThresholdExceededPreBoundary covers
+// spec-nextsteps.md's §4: once a session has made more than
+// investigateCallThreshold investigate calls — with the investigate→
+// implement boundary never crossed — every further investigate call is
+// retired outright, the same archive-and-receipt treatment
+// handleRetireInvestigate already gives post-boundary calls, distinguished
+// only by the reason in the receipt.
+func TestHandleRetiresInvestigateAfterCallThresholdExceededPreBoundary(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < investigateCallThreshold; i++ {
+		if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
+			t.Fatalf("seeding call %d errored: %v", i+1, err)
+		}
+	}
+
+	response := json.RawMessage(`{"matches":["b.go:1: TODO fix this"]}`)
+	in := investigateInput("sess1", dir, "Grep", json.RawMessage(`{"pattern":"TODO"}`), response)
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("investigate call past the threshold should be retired, got nil")
+	}
+	receipt, ok := out.HookSpecificOutput.UpdatedToolOutput.(string)
+	if !ok {
+		t.Fatalf("updatedToolOutput is not a string receipt: %#v", out.HookSpecificOutput.UpdatedToolOutput)
+	}
+	if !strings.Contains(receipt, "TODO") {
+		t.Fatalf("receipt missing the extracted key, got %q", receipt)
+	}
+	if !strings.Contains(receipt, investigateThresholdReason) {
+		t.Fatalf("receipt missing the expected threshold marker, got %q", receipt)
+	}
+	if strings.Contains(receipt, "post-boundary") {
+		t.Fatalf("threshold-triggered receipt should not claim post-boundary, got %q", receipt)
+	}
+
+	idx := strings.LastIndex(receipt, "full content at ")
+	if idx == -1 {
+		t.Fatalf("receipt missing a content path, got %q", receipt)
+	}
+	path := receipt[idx+len("full content at "):]
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading retired content at %q errored: %v", path, err)
+	}
+	if string(stored) != string(response) {
+		t.Fatalf("retired content = %q, want %q", stored, response)
+	}
+}
+
 func TestHandleNeverRetiresImplementOrBashCalls(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
@@ -571,15 +1021,134 @@ func TestHandleNeverRetiresImplementOrBashCalls(t *testing.T) {
 		t.Fatalf("implement call should never be retired, got %+v", out)
 	}
 
-	// Bash is unclassified and must stay on its own repeat-check/budgeting
-	// path, never the retire path, even post-boundary.
+	// Bash is unclassified, so it never goes through handleRetireInvestigate
+	// (that path only ever fires for investigateTools). It does get its own
+	// post-boundary retirement for long output (see
+	// TestHandleRetiresLongBashOutputPostBoundary) — but short output like
+	// this should still pass through untouched, same as pre-boundary.
 	bashIn := bashInput(t, dir, "sess1", "echo hi", bashOutput{Stdout: "hi\n"})
 	out, err = handle(bashIn)
 	if err != nil {
 		t.Fatalf("handle errored: %v", err)
 	}
 	if out != nil {
-		t.Fatalf("first-time Bash call post-boundary should still pass through untouched, got %+v", out)
+		t.Fatalf("short first-time Bash call post-boundary should still pass through untouched, got %+v", out)
+	}
+}
+
+// TestHandleRetiresLongBashOutputPostBoundary covers spec-nextsteps.md's
+// item 3: post-boundary, a long first-time Bash call should be fully
+// retired (archived + compact receipt), not just head/tail budgeted —
+// matching the recovery guarantee handleRetireInvestigate already gives
+// investigate-classified tools.
+func TestHandleRetiresLongBashOutputPostBoundary(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
+		t.Fatalf("seeding investigate call errored: %v", err)
+	}
+	if _, err := handle(toolCallInput("sess1", dir, "Edit")); err != nil {
+		t.Fatalf("crossing call errored: %v", err)
+	}
+
+	longOutput := linesOfApproxTokens(budgetTokenThreshold + 1)
+	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("long first-time Bash output post-boundary should be retired, got nil")
+	}
+	updated, ok := out.HookSpecificOutput.UpdatedToolOutput.(bashOutput)
+	if !ok {
+		t.Fatalf("updatedToolOutput is not a bashOutput: %#v", out.HookSpecificOutput.UpdatedToolOutput)
+	}
+	if !strings.Contains(updated.Stdout, "retired post-boundary") {
+		t.Fatalf("receipt missing the expected marker, got %q", updated.Stdout)
+	}
+	if strings.Contains(updated.Stdout, "lines omitted") {
+		t.Fatalf("post-boundary long output should be fully retired, not head/tail budgeted, got %q", updated.Stdout)
+	}
+
+	idx := strings.Index(updated.Stdout, "full output at ")
+	if idx == -1 {
+		t.Fatalf("receipt missing an archive path, got %q", updated.Stdout)
+	}
+	path := updated.Stdout[idx+len("full output at "):]
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading archived output at %q errored: %v", path, err)
+	}
+	if string(stored) != longOutput {
+		t.Fatalf("archived output = %q, want the original stdout %q", stored, longOutput)
+	}
+}
+
+// TestHandleBashDedupTakesPrecedenceOverRetirementPostBoundary asserts an
+// exact-repeat Bash call post-boundary still hits the ledger's cheap
+// "unchanged since turn N" substitution instead of being archived — the
+// content already appeared once in the transcript, so there's nothing new
+// worth retiring to disk.
+func TestHandleBashDedupTakesPrecedenceOverRetirementPostBoundary(t *testing.T) {
+	dir := t.TempDir()
+	longOutput := linesOfApproxTokens(budgetTokenThreshold + 1)
+	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
+
+	if _, err := handle(in); err != nil {
+		t.Fatalf("seeding first call errored: %v", err)
+	}
+	if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
+		t.Fatalf("seeding investigate call errored: %v", err)
+	}
+	if _, err := handle(toolCallInput("sess1", dir, "Edit")); err != nil {
+		t.Fatalf("crossing call errored: %v", err)
+	}
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("repeat Bash call post-boundary should still be deduped, got nil")
+	}
+	updated := out.HookSpecificOutput.UpdatedToolOutput.(bashOutput)
+	if !strings.Contains(updated.Stdout, "unchanged since turn") {
+		t.Fatalf("expected a dedup receipt, got %q", updated.Stdout)
+	}
+	if strings.Contains(updated.Stdout, "retired post-boundary") {
+		t.Fatalf("repeat call should be deduped, not retired, got %q", updated.Stdout)
+	}
+}
+
+// TestHandleSessionStartInvalidatesBashRetireArchive covers the same "hard
+// constraint" as TestHandleSessionStartInvalidatesBudgetArchive, for the new
+// post-boundary Bash retire path's own retire.Store call.
+func TestHandleSessionStartInvalidatesBashRetireArchive(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
+		t.Fatalf("seeding investigate call errored: %v", err)
+	}
+	if _, err := handle(toolCallInput("sess1", dir, "Edit")); err != nil {
+		t.Fatalf("crossing call errored: %v", err)
+	}
+
+	longOutput := linesOfApproxTokens(budgetTokenThreshold + 1)
+	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
+	updated := out.HookSpecificOutput.UpdatedToolOutput.(bashOutput)
+	idx := strings.Index(updated.Stdout, "full output at ")
+	path := updated.Stdout[idx+len("full output at "):]
+
+	if _, err := handle(hookInput{SessionID: "sess1", Cwd: dir, HookEventName: "SessionStart"}); err != nil {
+		t.Fatalf("SessionStart handling errored: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("bash retire archive survived SessionStart: err=%v", err)
 	}
 }
 
@@ -621,6 +1190,42 @@ func TestHandleSessionStartInvalidatesRetiredContent(t *testing.T) {
 	}
 	if out != nil {
 		t.Fatalf("investigate call after SessionStart should not be retired (boundary forgotten), got %+v", out)
+	}
+}
+
+// TestHandleSessionStartInvalidatesBudgetArchive covers the same "hard
+// constraint" (see the package doc's SessionStart/PostCompact entry) for
+// budgeting's new archive-for-recovery path as
+// TestHandleSessionStartInvalidatesRetiredContent already covers for
+// handleRetireInvestigate — both go through retire.Store/Invalidate, but
+// this is a distinct call site added later, so it gets its own regression
+// guard rather than assuming coverage transfers.
+func TestHandleSessionStartInvalidatesBudgetArchive(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	longOutput := linesOfApproxTokens(budgetTokenThreshold + 1)
+	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle returned error: %v", err)
+	}
+	updated := out.HookSpecificOutput.UpdatedToolOutput.(bashOutput)
+	idx := strings.Index(updated.Stdout, "full output at ")
+	if idx == -1 {
+		t.Fatalf("budgeted stdout missing an archive path, got %q", updated.Stdout)
+	}
+	path := updated.Stdout[idx+len("full output at "):]
+	if nl := strings.IndexByte(path, '\n'); nl != -1 {
+		path = path[:nl]
+	}
+
+	if _, err := handle(hookInput{SessionID: "sess1", Cwd: dir, HookEventName: "SessionStart"}); err != nil {
+		t.Fatalf("SessionStart handling errored: %v", err)
+	}
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("budget archive survived SessionStart: err=%v", err)
 	}
 }
 
@@ -668,7 +1273,7 @@ func TestHandleSessionEndReportsDedupHit(t *testing.T) {
 func TestHandleSessionEndReportsBudgetTrim(t *testing.T) {
 	t.Setenv(quietEnvVar, "0")
 	dir := t.TempDir()
-	longOutput := linesOfStdout(budgetLineThreshold + 1)
+	longOutput := linesOfApproxTokens(budgetTokenThreshold + 1)
 	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
 	if _, err := handle(in); err != nil {
 		t.Fatalf("budgeted call errored: %v", err)
@@ -1291,7 +1896,7 @@ func TestPassthroughBashCallRecordsNoActivity(t *testing.T) {
 
 func TestBudgetBytesOmittedOnTrim(t *testing.T) {
 	dir := t.TempDir()
-	longOutput := linesOfStdout(budgetLineThreshold + 1)
+	longOutput := linesOfApproxTokens(budgetTokenThreshold + 1)
 	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
 
 	if _, err := handle(in); err != nil {
@@ -1346,6 +1951,66 @@ func TestRetiredBytesOnRetiredCall(t *testing.T) {
 	}
 	if s.RetiredBytes != int64(len(response)) {
 		t.Fatalf("RetiredBytes = %d, want %d", s.RetiredBytes, len(response))
+	}
+}
+
+// TestRetiredBytesOnCallThresholdRetiredCall is
+// TestRetiredBytesOnRetiredCall's counterpart for the pre-boundary
+// investigate-call-threshold retire path (spec-nextsteps.md's §4) — it
+// shares RecordRetire/RetiredCalls/RetiredBytes with the post-boundary path,
+// so this guards that the threshold call site records against the same
+// counters, with the boundary never crossed.
+func TestRetiredBytesOnCallThresholdRetiredCall(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < investigateCallThreshold; i++ {
+		if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
+			t.Fatalf("seeding call %d errored: %v", i+1, err)
+		}
+	}
+	response := json.RawMessage(`{"matches":["a"]}`)
+	if _, err := handle(investigateInput("sess1", dir, "Grep", json.RawMessage(`{"pattern":"a"}`), response)); err != nil {
+		t.Fatalf("retiring call errored: %v", err)
+	}
+
+	s, err := stats.LoadSession(dir, "sess1")
+	if err != nil {
+		t.Fatalf("LoadSession errored: %v", err)
+	}
+	if s.RetiredBytes != int64(len(response)) {
+		t.Fatalf("RetiredBytes = %d, want %d", s.RetiredBytes, len(response))
+	}
+	if s.RetiredCalls != 1 {
+		t.Fatalf("RetiredCalls = %d, want 1", s.RetiredCalls)
+	}
+}
+
+// TestRetiredBytesOnBashRetiredCall is TestRetiredBytesOnRetiredCall's
+// counterpart for the new post-boundary Bash retire path — it shares
+// RecordRetire/RetiredCalls/RetiredBytes with handleRetireInvestigate, so
+// this guards that Bash's own call site records against the same counters.
+func TestRetiredBytesOnBashRetiredCall(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := handle(toolCallInput("sess1", dir, "Read")); err != nil {
+		t.Fatalf("seeding investigate call errored: %v", err)
+	}
+	if _, err := handle(toolCallInput("sess1", dir, "Edit")); err != nil {
+		t.Fatalf("crossing call errored: %v", err)
+	}
+	longOutput := linesOfApproxTokens(budgetTokenThreshold + 1)
+	in := bashInput(t, dir, "sess1", "go build ./...", bashOutput{Stdout: longOutput})
+	if _, err := handle(in); err != nil {
+		t.Fatalf("retiring call errored: %v", err)
+	}
+
+	s, err := stats.LoadSession(dir, "sess1")
+	if err != nil {
+		t.Fatalf("LoadSession errored: %v", err)
+	}
+	if s.RetiredBytes != int64(len(longOutput)) {
+		t.Fatalf("RetiredBytes = %d, want %d", s.RetiredBytes, len(longOutput))
+	}
+	if s.RetiredCalls != 1 {
+		t.Fatalf("RetiredCalls = %d, want 1", s.RetiredCalls)
 	}
 }
 

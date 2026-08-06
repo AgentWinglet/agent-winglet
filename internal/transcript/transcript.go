@@ -3,7 +3,7 @@
 // summarizes it into the real input-side token count, its cost at real
 // per-token rates, and the raw content-byte size those tokens represent —
 // the same data ccusage reads, used here to price already-known suppressed-
-// byte counts (see spec.md §3), not to re-measure total session cost.
+// byte counts, not to re-measure total session cost.
 package transcript
 
 import (

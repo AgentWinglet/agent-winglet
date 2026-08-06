@@ -73,8 +73,11 @@ func (s *Session) RecordBudgetTrim(linesOmitted int, bytesOmitted int64) {
 	s.BudgetBytesOmitted += bytesOmitted
 }
 
-// RecordRetire records one post-boundary investigate call whose output of
-// the given byte length was archived instead of replayed.
+// RecordRetire records one investigate call whose output of the given byte
+// length was archived instead of replayed — either because the
+// investigate→implement boundary was already crossed, or because the
+// session's pre-boundary investigate-call threshold was exceeded (see
+// cmd/ledger-hook's investigateCallThreshold).
 func (s *Session) RecordRetire(bytes int) {
 	s.RetiredCalls++
 	s.RetiredBytes += int64(bytes)
@@ -176,9 +179,8 @@ func (r *Rollup) add(s *Session) {
 // ok is false when transcriptContentBytes is zero (no real usage data yet,
 // e.g. before a session's transcript has been read at SessionEnd) —
 // callers must render that as "no data yet," not "0%" or a spuriously high
-// percentage computed against an incomplete total, per the spec's honesty
-// requirement: 0% reads as "this doesn't work," a different claim than
-// "nothing to measure yet."
+// percentage computed against an incomplete total: 0% reads as "this
+// doesn't work," a different claim than "nothing to measure yet."
 func Percent(dedupBytes, budgetBytesOmitted, retiredBytes, transcriptContentBytes int64) (pct float64, ok bool) {
 	if transcriptContentBytes == 0 {
 		return 0, false
@@ -254,22 +256,18 @@ func SaveSession(projectDir, sessionID string, s *Session) error {
 // compacted session doesn't report a receipt describing activity from a
 // part of the session that's now gone.
 //
-// The transcript-usage fields (TranscriptTokens, TranscriptCostUSD,
-// TranscriptContentBytes, TranscriptOffset) are deliberately left alone:
-// unlike the mechanism counters, they're not tied to ledger/phase state that
-// a compact invalidates — they're a running total of real usage that already
-// happened and stays true regardless of a later compact. This used to
-// os.Remove the whole file, which self-healed once SessionEnd's full
-// transcript re-read landed later — but if the process crashed or was
-// force-quit between the compact and SessionEnd, that delete was
-// destructive: the pre-compact usage was wiped from disk with nothing yet
-// written to replace it, so it was gone for good. Resetting the mechanism
-// fields in place instead of deleting the file removes that window.
+// The transcript-usage fields are deliberately left alone: they're a
+// running total of real usage that already happened, true regardless of a
+// later compact — unlike the mechanism counters, they aren't tied to
+// ledger/phase state that a compact invalidates. Resetting the mechanism
+// fields in place, rather than deleting the whole file, avoids a real
+// crash window: a delete-then-self-heal approach loses the pre-compact
+// usage for good if the process dies between the compact and SessionEnd's
+// later full re-read.
 //
 // If resetting the mechanism counters leaves the session entirely zero
-// (including transcript usage — true for a session with no recorded
-// transcript activity yet), the file is still removed rather than left
-// behind as an empty husk, matching the old behavior for that case.
+// (including transcript usage), the file is still removed rather than left
+// behind as an empty husk.
 func InvalidateSession(projectDir, sessionID string) error {
 	p, err := sessionPath(projectDir, sessionID)
 	if err != nil {

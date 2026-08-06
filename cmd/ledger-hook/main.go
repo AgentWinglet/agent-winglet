@@ -1,59 +1,56 @@
 // ledger-hook is the Claude Code hook binary for agent-winglet. It is
-// registered for two hook events:
+// registered for four hook events:
 //
-//   - PostToolUse (all tools — see settings.json/install.sh, no matcher):
-//     on Bash, an exact-repeat of a previously seen command's output
-//     replaces the output with a compact "unchanged since turn N" reference
-//     via updatedToolOutput; a first-time, successful command whose stdout
-//     is long is replaced with a head/tail receipt (output budgeting by
-//     outcome). On the first implement-classified call (Edit/Write/
-//     NotebookEdit) after at least one investigate-classified call
-//     (Read/Grep/Glob/WebFetch/WebSearch/Task) this session, emits a
-//     one-time suggestion to compact (see handlePhaseBoundary). Once that
-//     boundary has already been crossed, any further investigate-classified
-//     call has its own output archived to disk and replaced with a compact
-//     receipt (see handleRetireInvestigate). Anything else passes through
-//     untouched.
-//   - SessionStart / PostCompact: deletes the session's ledger, phase state,
-//     retired-content directory, and stats tally so no substitution,
-//     boundary suggestion, retired receipt, or session receipt survives a
-//     restart or compaction (a hard constraint). Also registers the current
-//     project — resolved via internal/projectroot.Resolve(in.Cwd), the git
-//     root rather than the raw cwd, so sessions started from different
-//     subdirectories of the same project collapse into one identity — in the
-//     global ~/.agent-winglet/projects.json registry (see
-//     internal/registry.Register), and best-effort migrates any pre-move-
-//     storage per-cwd state it finds into that project's new global state
-//     dir (see migrateLegacyData). The hook installs globally now, so
-//     SessionStart/PostCompact is the only place a project gets registered.
+//   - PostToolUse (all tools, no matcher): on Bash, an exact repeat of a
+//     previously seen command's output is replaced with a compact
+//     "unchanged since turn N" reference; a first-time, successful command
+//     with long stdout is replaced with a head/tail receipt instead
+//     (output budgeting). Pre-boundary, Grep's content field and Glob's
+//     filenames array get the same budgeting once they cross the
+//     token-count threshold (handleGrepBudget/handleGlobBudget) —
+//     WebFetch, WebSearch, and Read are deliberately excluded, see
+//     handlePostToolUse's default case for why. On the first
+//     implement-classified call (Edit/Write/NotebookEdit) after at least
+//     one investigate-classified call (Read/Grep/Glob/WebFetch/WebSearch/
+//     Task) this session, emits a one-time suggestion to compact
+//     (handlePhaseBoundary). Once that boundary is crossed, any further
+//     investigate call has its output archived to disk and replaced with a
+//     receipt (handleRetireInvestigate) instead of budgeted; the same
+//     archive-and-receipt treatment also fires pre-boundary once a session
+//     passes investigateCallThreshold investigate calls, since a long
+//     investigation otherwise accumulates many individually-small outputs
+//     that never trip Grep/Glob's per-call budgeting on their own. Only
+//     calls made after a boundary/threshold crossing can be affected — a
+//     PostToolUse hook can never rewrite a call already delivered. Bash
+//     gets the same post-boundary archive-and-receipt treatment
+//     (handleBashRetire) even though it's never investigate-classified;
+//     everything else passes through untouched.
+//   - SessionStart / PostCompact: wipes the session's ledger, phase state,
+//     retired-content directory, and stats tally, so nothing survives a
+//     restart or compaction. Also registers the current project (by git
+//     root, via projectroot.Resolve, so sessions started from different
+//     subdirectories collapse into one identity) in the global
+//     ~/.agent-winglet/projects.json registry, and best-effort migrates any
+//     pre-move-storage per-cwd state into that project's new state dir
+//     (migrateLegacyData).
 //   - Stop: records the transcript-usage delta since the last recorded
-//     offset, the same call PostToolUse makes (see recordTranscriptDelta),
-//     so a session that never calls a tool — pure chat, no Bash/Read/Edit/
-//     etc. — still gets a stats file written after its first turn instead of
-//     only at SessionEnd. Without this, such a session had no stats file on
-//     disk at all until SessionEnd fired; if the process crashed or was
-//     force-quit before then, its usage was silently excluded from every
-//     project/overall total, even though it consumed real tokens. Stop fires
-//     after every turn (not just the last one), so this closes that gap for
-//     all but the final, still-in-flight turn.
+//     offset (recordTranscriptDelta), the same call PostToolUse makes, so a
+//     session that never calls a tool — pure chat — still gets a stats file
+//     written after its first turn instead of only at SessionEnd, and isn't
+//     silently dropped from every rollup if the process dies before then.
 //   - SessionEnd: emits a one-time "savings receipt" systemMessage
-//     summarizing what the above mechanisms did this session, plus the
-//     project's lifetime total — computed fresh across every session file on
-//     disk, not a separately maintained running total (see
-//     internal/stats.SumProject and handleSessionEnd). SessionEnd was
-//     confirmed to support the systemMessage output
-//     field (a universal field, per the hooks reference) on 2026-08-03 —
-//     unlike hookSpecificOutput.additionalContext, which is not documented
-//     for this event and isn't needed here since no further model turn
-//     follows session end. Emits nothing if no mechanism fired this session
-//     (see handleSessionEnd) or if AGENT_WINGLET_QUIET is set.
+//     summarizing what the above mechanisms did this session plus the
+//     project's lifetime total, computed fresh across every session file on
+//     disk rather than a separately maintained running total (see
+//     stats.SumProject and handleSessionEnd). Emits nothing if no mechanism
+//     fired this session or if AGENT_WINGLET_QUIET is set.
 //
-// Read is intentionally not handled by the Ledger (repeat-detection) path:
+// Read is intentionally not handled by the ledger's repeat-detection path:
 // Claude Code already detects an unchanged file natively and returns
 // tool_response.type == "file_unchanged" on a repeat Read, confirmed by
-// inspecting real PostToolUse payloads. Adding ledger logic for Read would
-// duplicate a capability the harness already provides for free. Read is
-// still used, separately, as an investigate-classified signal for the phase
+// inspecting real PostToolUse payloads — adding ledger logic for Read would
+// duplicate a capability the CLI already provides for free. Read is still
+// used, separately, as an investigate-classified signal for the phase
 // boundary and for post-boundary retirement.
 package main
 
@@ -89,27 +86,70 @@ const legacySessionID = "legacy-migrated"
 // uses the same proxy the repeat-check already relies on: empty stderr, not
 // interrupted, not an image.
 const (
-	budgetLineThreshold = 60
-	budgetHeadLines     = 15
-	budgetTailLines     = 15
+	// budgetTokenThreshold mirrors AgentDiet's token-based trigger (θ=500)
+	// rather than a raw line count, which a caller can dodge just by
+	// wrapping output onto fewer, longer lines. estimatedTokens below is
+	// the same cheap chars/4 proxy AgentDiet itself notes needs no
+	// tokenizer dependency to be useful as a trigger.
+	budgetTokenThreshold = 500
+	budgetHeadLines      = 15
+	budgetTailLines      = 15
 )
 
-// budgetStdout collapses stdout to its first budgetHeadLines and last
-// budgetTailLines lines if it has more than budgetLineThreshold lines. It
-// reports ok == false when stdout is short enough to leave untouched, and
-// omittedLines/omittedBytes as the size of the dropped middle section (both
-// 0 when ok is false). omittedBytes is the "\n"-joined byte length of just
-// the dropped lines — the same original-size unit RecordDedup/RecordRetire
-// use — so budget-trims can contribute to the same suppressed-bytes total.
-func budgetStdout(stdout string) (budgeted string, omittedLines int, omittedBytes int64, ok bool) {
-	lines := strings.Split(stdout, "\n")
+// estimatedTokens is a cheap, tokenizer-free proxy (chars/4) used only to
+// decide *whether* to budget — see budgetTokenThreshold. It doesn't need to
+// be accurate, just monotonic with real size and hard to game the way a
+// line count is (a caller can't dodge it by rewrapping output onto fewer,
+// longer lines).
+func estimatedTokens(body string) int {
+	return len(body) / 4
+}
+
+// budgetBody collapses body to its first budgetHeadLines and last
+// budgetTailLines lines if its estimated token count exceeds
+// budgetTokenThreshold. It reports ok == false when body is short enough to
+// leave untouched, or too short in *lines* to split into a head and a tail
+// (a pathological single huge line would otherwise have nothing to
+// truncate), and omittedLines/omittedBytes as the size of the dropped
+// middle section (both 0 when ok is false) — the same byte unit
+// RecordDedup/RecordRetire use, so budget-trims contribute to the same
+// suppressed-bytes total.
+//
+// Every trim archives the full pre-trim body via retire.Store first and
+// names that path in the notice line, the same recovery guarantee a
+// retired investigate call gets: budgeting fires on arrival, before the
+// agent has read the output once, so unlike handleRetireInvestigate's
+// archive-then-receipt pattern (which only ever acts on output that's
+// already served its purpose), a caller that actually needed the dropped
+// middle can recover it with one cheap Read instead of re-running the tool.
+//
+// notice composes the omission marker's text (everything after "N <unit>
+// omitted" in the receipt line) — callers vary it because Bash's marker also
+// carries an outcome ("exit 0") that other tools' bodies have no equivalent
+// of; archivePath is threaded through so every notice can point at the same
+// recovery path. This is the tool-agnostic core behind budgetStdout (Bash)
+// and the Grep/Glob budget handlers below.
+func budgetBody(body, root, sessionID string, notice func(omitted int, archivePath string) string) (budgeted string, omittedLines int, omittedBytes int64, ok bool, err error) {
+	lines := strings.Split(body, "\n")
 	trailingNewline := len(lines) > 0 && lines[len(lines)-1] == ""
 	if trailingNewline {
 		lines = lines[:len(lines)-1]
 	}
 	n := len(lines)
-	if n <= budgetLineThreshold {
-		return "", 0, 0, false
+	if estimatedTokens(body) <= budgetTokenThreshold {
+		return "", 0, 0, false, nil
+	}
+	if n <= budgetHeadLines+budgetTailLines {
+		// Too few lines to carve a head and a tail out of — e.g. one
+		// pathologically long line that trips the token estimate. Nothing
+		// sensible to truncate, so leave it untouched rather than slicing
+		// out of range.
+		return "", 0, 0, false, nil
+	}
+
+	archivePath, err := retire.Store(root, sessionID, []byte(body))
+	if err != nil {
+		return "", 0, 0, false, err
 	}
 
 	dropped := lines[budgetHeadLines : n-budgetTailLines]
@@ -119,13 +159,45 @@ func budgetStdout(stdout string) (budgeted string, omittedLines int, omittedByte
 	var b strings.Builder
 	b.WriteString(strings.Join(lines[:budgetHeadLines], "\n"))
 	b.WriteString("\n")
-	fmt.Fprintf(&b, "[agent-winglet] %d lines omitted, exit 0 (showing first %d/last %d)\n",
-		omittedLines, budgetHeadLines, budgetTailLines)
+	fmt.Fprintf(&b, "[agent-winglet] %s\n", notice(omittedLines, archivePath))
 	b.WriteString(strings.Join(lines[n-budgetTailLines:], "\n"))
 	if trailingNewline {
 		b.WriteString("\n")
 	}
-	return b.String(), omittedLines, omittedBytes, true
+	return b.String(), omittedLines, omittedBytes, true, nil
+}
+
+// budgetStdout is budgetBody specialized for Bash stdout: same head/tail
+// collapse, plus the "exit 0" outcome tag in the marker (this call site
+// already knows the command succeeded — see its caller in
+// handleBashPostToolUse).
+func budgetStdout(stdout, root, sessionID string) (budgeted string, omittedLines int, omittedBytes int64, ok bool, err error) {
+	return budgetBody(stdout, root, sessionID, func(omitted int, archivePath string) string {
+		return fmt.Sprintf("%d lines omitted, exit 0 (showing first %d/last %d) — full output at %s",
+			omitted, budgetHeadLines, budgetTailLines, archivePath)
+	})
+}
+
+// budgetTextField is budgetBody specialized for a tool_response field that's
+// just freeform text with no Bash-style outcome to report (Grep's content
+// field) — same marker as budgetStdout minus the ", exit 0" clause.
+func budgetTextField(body, root, sessionID string) (budgeted string, omittedLines int, omittedBytes int64, ok bool, err error) {
+	return budgetBody(body, root, sessionID, func(omitted int, archivePath string) string {
+		return fmt.Sprintf("%d lines omitted (showing first %d/last %d) — full output at %s",
+			omitted, budgetHeadLines, budgetTailLines, archivePath)
+	})
+}
+
+// budgetEntryList is budgetBody specialized for a tool_response field that's
+// an array of short entries rather than freeform text (Glob's filenames) —
+// the array is newline-joined into a body budgetBody can operate on line by
+// line (one path per line), and the marker calls the unit "entries" instead
+// of "lines" since that's what a reader actually sees collapsed.
+func budgetEntryList(entries []string, root, sessionID string) (budgeted string, omittedEntries int, omittedBytes int64, ok bool, err error) {
+	return budgetBody(strings.Join(entries, "\n"), root, sessionID, func(omitted int, archivePath string) string {
+		return fmt.Sprintf("%d entries omitted (showing first %d/last %d) — full list at %s",
+			omitted, budgetHeadLines, budgetTailLines, archivePath)
+	})
 }
 
 type hookInput struct {
@@ -143,6 +215,41 @@ type bashOutput struct {
 	Stderr      string `json:"stderr"`
 	Interrupted bool   `json:"interrupted"`
 	IsImage     bool   `json:"isImage"`
+}
+
+// grepResponse and globResponse mirror GrepOutput and GlobOutput from the
+// Claude Code CLI's own sdk-tools.d.ts (the installed @anthropic-ai/claude-
+// code npm package ships this file; there is no public docs page for
+// tool_response schemas — same gap the bashOutput comment above already
+// notes for Bash). Confirmed against the shipped .d.ts rather than a live
+// capture — no Grep/Glob tools were available to trigger live in the
+// session this was developed in — but still a confirmed schema, not a
+// guess, just from a different source than a live capture would be.
+//
+// Each struct round-trips every field the real output can carry (not just
+// the one being budgeted), so replacing UpdatedToolOutput with one of these
+// after budgeting never drops information the original response had, unlike
+// bashOutput's deliberately-minimal 4-field subset above.
+type grepResponse struct {
+	Mode          string   `json:"mode,omitempty"`
+	NumFiles      int      `json:"numFiles"`
+	Filenames     []string `json:"filenames"`
+	Content       string   `json:"content,omitempty"`
+	NumLines      int      `json:"numLines,omitempty"`
+	NumMatches    int      `json:"numMatches,omitempty"`
+	TotalFiles    int      `json:"totalFiles,omitempty"`
+	TotalLines    int      `json:"totalLines,omitempty"`
+	AppliedLimit  int      `json:"appliedLimit,omitempty"`
+	AppliedOffset int      `json:"appliedOffset,omitempty"`
+}
+
+type globResponse struct {
+	DurationMs      int64    `json:"durationMs"`
+	NumFiles        int      `json:"numFiles"`
+	Filenames       []string `json:"filenames"`
+	Truncated       bool     `json:"truncated"`
+	TotalMatches    int      `json:"totalMatches,omitempty"`
+	CountIsComplete bool     `json:"countIsComplete,omitempty"`
 }
 
 type hookSpecificOutput struct {
@@ -240,29 +347,20 @@ type legacyLifetime struct {
 }
 
 // migrateLegacyData reclaims two things that predate stats.SumProject's
-// sum-of-session-files model, both by folding their counts onto the
-// legacy-migrated seed session (see legacySessionID) rather than into a
-// second persisted ledger of their own:
-//
-//  1. A pre-move-storage install's per-project state
-//     (<cwd>/.claude/agent-winglet/lifetime.stats.json). Only the lifetime
-//     figures have lasting value — everything else in that directory is
-//     session-scoped and was already designed to never survive a restart,
-//     so losing it mid-upgrade is a non-event.
-//  2. This project's own current-layout lifetime.stats.json (root's state
-//     dir), from before this switch — otherwise its history would just be
-//     silently orphaned on disk, never summed again.
-//
-// This runs on every SessionStart/PostCompact so a stale per-subdirectory
-// dir left over from the old cwd-keyed layout gets folded in and cleaned up
-// independently, the next time a session happens to start from that
-// particular subdirectory. Each fold reads-mutates-saves the same seed
-// session (see mergeLegacyLifetime), so calling it repeatedly, or across
-// multiple old dirs, never double-counts.
+// sum-of-session-files model, folding their counts onto the legacy-migrated
+// seed session (see legacySessionID) rather than a second persisted ledger:
+// a pre-move-storage install's per-project state
+// (<cwd>/.claude/agent-winglet/lifetime.stats.json — only the lifetime
+// figures have lasting value, everything else there is session-scoped and
+// never survives a restart anyway), and this project's own current-layout
+// lifetime.stats.json from before the sum-of-session-files switch. Runs on
+// every SessionStart/PostCompact so a stale per-subdirectory dir from the
+// old cwd-keyed layout gets folded in whenever a session next starts from
+// it; each fold reads-mutates-saves the same seed session
+// (mergeLegacyLifetime), so repeated calls never double-count.
 //
 // Best-effort: errors are logged to stderr, never surfaced to the hook's
-// caller, matching this codebase's existing fail-soft convention for state
-// I/O.
+// caller, matching this codebase's fail-soft convention for state I/O.
 func migrateLegacyData(cwd, root string) {
 	legacyDir := filepath.Join(cwd, ".claude", "agent-winglet")
 	if info, err := os.Stat(legacyDir); err == nil && info.IsDir() {
@@ -338,44 +436,71 @@ var implementTools = map[string]bool{
 	"NotebookEdit": true,
 }
 
+// investigateCallThreshold pre-emptively retires investigate-classified
+// output once a session has made more investigate calls than this, even
+// before the investigate→implement boundary crosses (see
+// phase.State.InvestigateCalls). Pre-boundary, an investigate call
+// otherwise gets exactly one shot at reduction — Grep/Glob's per-call
+// budgeting, which only trims a single call once it individually exceeds
+// budgetTokenThreshold and never revisits it. That leaves a gap: many
+// individually-small investigate calls can still accumulate unboundedly
+// over a long investigation. This closes it — past the threshold, every
+// further investigate call is retired outright (archive + receipt, the
+// same treatment handleRetireInvestigate gives post-boundary calls).
+//
+// Only affects calls made after the threshold is crossed — a PostToolUse
+// hook can never rewrite a call already delivered, so the first
+// investigateCallThreshold calls stay in context exactly as they arrived.
+// That makes this a threshold ("prefix stays, tail retires"), not the true
+// sliding window either paper describes (Complexity Trap's M, AgentDiet's
+// a) — this architecture has no hook to retroactively mask a call already
+// replayed N turns ago. Picked generously rather than derived from either
+// paper's window size; tune down only if dogfooding shows 20 is too late
+// to matter.
+const investigateCallThreshold = 20
+
 // handlePhaseBoundary suggests running /compact once the session has moved
 // from investigating to implementing. Claude Code has no hook mechanism to
-// trigger compaction programmatically (confirmed against the hooks
-// reference: PreCompact can only observe or block a compaction already under
-// way), so on the first implement-classified call after at least one
-// investigate-classified call this session, it can only suggest — via both
-// systemMessage (shown directly to the user) and additionalContext (fed to
-// the model, in case the user doesn't notice systemMessage or the agent
-// should act on it, e.g. by proposing /compact itself). Fires at most once
-// per session (phase.State.Observe's latch), so it never nags on every
-// subsequent edit.
+// trigger compaction programmatically (PreCompact can only observe or block
+// a compaction already under way), so on the first implement-classified
+// call after at least one investigate-classified call this session, it can
+// only suggest — via both systemMessage (shown to the user) and
+// additionalContext (fed to the model, in case it should act on it, e.g.
+// by proposing /compact itself). Fires at most once per session
+// (phase.State.Observe's latch).
 //
-// It also reports pastBoundary: whether the session has already crossed the
-// boundary as of this call (crossed just now, or earlier). handlePostToolUse
-// uses this to decide whether to retire a later investigate call's output
-// (see handleRetireInvestigate). That's the only direction retirement can
-// go: a PostToolUse hook can only ever rewrite the tool call it's currently
-// processing, never an earlier one, so already-replayed investigate output
-// can't be rewritten after the fact — only investigate calls made after the
-// boundary crossing can be.
-func handlePhaseBoundary(in hookInput, root string) (out *hookOutput, pastBoundary bool, err error) {
+// Also reports pastBoundary (has the session already crossed the boundary
+// as of this call) and overInvestigateThreshold (did this call's own tally
+// push phase.State.InvestigateCalls past investigateCallThreshold) —
+// handlePostToolUse uses both to decide whether to retire a later
+// investigate call's output (handleRetireInvestigate). Only an investigate
+// call made after one of those crossings can be retired; a PostToolUse
+// hook can never rewrite a call already delivered.
+func handlePhaseBoundary(in hookInput, root string) (out *hookOutput, pastBoundary bool, overInvestigateThreshold bool, err error) {
 	isInvestigate := investigateTools[in.ToolName]
 	isImplement := implementTools[in.ToolName]
-	if !isInvestigate && !isImplement {
-		return nil, false, nil
-	}
 
 	st, err := phase.Load(root, in.SessionID)
 	if err != nil {
-		return nil, false, err
+		return nil, false, false, err
+	}
+	if !isInvestigate && !isImplement {
+		// Unclassified tools (e.g. Bash — see investigateTools' doc comment
+		// on why it's deliberately left out of both maps) never advance
+		// phase state, but still need an accurate pastBoundary read: Bash's
+		// own post-boundary retirement path (handleBashRetire) depends on
+		// it, even though Bash itself never crosses or is retired by this
+		// function.
+		return nil, st.Suggested, st.InvestigateCalls > investigateCallThreshold, nil
 	}
 	crossed := st.Observe(isInvestigate, isImplement)
 	if err := phase.Save(root, in.SessionID, st); err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
 	pastBoundary = st.Suggested
+	overInvestigateThreshold = st.InvestigateCalls > investigateCallThreshold
 	if !crossed {
-		return nil, pastBoundary, nil
+		return nil, pastBoundary, overInvestigateThreshold, nil
 	}
 
 	const msg = "[agent-winglet] investigation looks done and implementation is " +
@@ -388,7 +513,7 @@ func handlePhaseBoundary(in hookInput, root string) (out *hookOutput, pastBounda
 			HookEventName:     "PostToolUse",
 			AdditionalContext: msg,
 		},
-	}, pastBoundary, nil
+	}, pastBoundary, overInvestigateThreshold, nil
 }
 
 // investigateKeyFields covers the tool_input field names, across
@@ -425,14 +550,21 @@ func investigateKey(toolInput json.RawMessage) string {
 	}
 }
 
-// handleRetireInvestigate retires used-up investigate output: once the
-// session has already crossed the investigate→implement boundary (see
-// handlePhaseBoundary), any further investigate-classified call's own
-// output — the one thing a PostToolUse hook can still rewrite — is
-// archived to disk and replaced with a compact receipt, instead of
-// replaying it in full. Called only when in.ToolName is investigate-
-// classified and the boundary has already been crossed.
-func handleRetireInvestigate(in hookInput, root string) (*hookOutput, error) {
+// investigateThresholdReason is handleRetireInvestigate's reason string for
+// a pre-boundary retirement triggered by investigateCallThreshold, as
+// opposed to the post-boundary case (reason "post-boundary").
+const investigateThresholdReason = "past the pre-boundary investigate-call threshold"
+
+// handleRetireInvestigate retires used-up investigate output: an
+// investigate-classified call's own output — the one thing a PostToolUse
+// hook can still rewrite — is archived to disk and replaced with a compact
+// receipt, instead of replaying it in full. Called in two situations (see
+// handlePostToolUse): once the session has already crossed the
+// investigate→implement boundary (see handlePhaseBoundary), or, pre-
+// boundary, once investigateCallThreshold investigate calls have already
+// been made this session. reason names which one, and is threaded straight
+// into the receipt so a saved output's notice line explains why it was cut.
+func handleRetireInvestigate(in hookInput, root, reason string) (*hookOutput, error) {
 	path, err := retire.Store(root, in.SessionID, in.ToolResponse)
 	if err != nil {
 		return nil, err
@@ -440,8 +572,8 @@ func handleRetireInvestigate(in hookInput, root string) (*hookOutput, error) {
 	key := investigateKey(in.ToolInput)
 	n := len(in.ToolResponse)
 	receipt := fmt.Sprintf(
-		"[agent-winglet] investigate output retired post-boundary (%s %s, %d bytes) — full content at %s",
-		in.ToolName, key, n, path,
+		"[agent-winglet] investigate output retired %s (%s %s, %d bytes) — full content at %s",
+		reason, in.ToolName, key, n, path,
 	)
 	if err := recordStat(root, in.SessionID, func(s *stats.Session) {
 		s.RecordRetire(n)
@@ -506,21 +638,72 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 		return nil, err
 	}
 
-	out, pastBoundary, err := handlePhaseBoundary(in, root)
+	out, pastBoundary, overInvestigateThreshold, err := handlePhaseBoundary(in, root)
 	if err != nil {
 		return nil, err
 	}
 	if out != nil {
 		return out, nil
 	}
-	if investigateTools[in.ToolName] && pastBoundary {
-		return handleRetireInvestigate(in, root)
+	if investigateTools[in.ToolName] {
+		if pastBoundary {
+			return handleRetireInvestigate(in, root, "post-boundary")
+		}
+		if overInvestigateThreshold {
+			return handleRetireInvestigate(in, root, investigateThresholdReason)
+		}
 	}
 
-	if in.ToolName != "Bash" {
+	// Everything past this point means neither retirement condition fired
+	// for this call: for investigate-classified tools, the boundary hasn't
+	// crossed yet and this session hasn't made more than
+	// investigateCallThreshold investigate calls yet either. Bash is the one
+	// exception — it's never investigate-classified (see investigateTools'
+	// doc comment), so it never goes through handleRetireInvestigate above,
+	// but it still needs pastBoundary to pick its own post-boundary
+	// treatment (retire long output instead of just budgeting it — see
+	// handleBashPostToolUse). Budgeting and retirement are still mutually
+	// exclusive per call: pastBoundary routes Bash to one or the other,
+	// never both.
+	switch in.ToolName {
+	case "Bash":
+		return handleBashPostToolUse(in, root, pastBoundary)
+	case "Grep":
+		return handleGrepBudget(in, root)
+	case "Glob":
+		return handleGlobBudget(in, root)
+	default:
+		// Notably absent, all deliberate scope cuts:
+		//
+		// WebFetch's result isn't raw page content — it's already fetched,
+		// converted to markdown, and answered by a small model against the
+		// caller's prompt, and self-summarizes when the source is huge. It's
+		// rarely long enough to need budgeting, and when it is, that's
+		// because the prompt asked for something extensive — truncating it
+		// would cut the requested content itself, not waste.
+		//
+		// WebSearch's tool_response is a heterogeneous results array with no
+		// single freeform field budgetBody can act on, and result counts are
+		// already small in practice.
+		//
+		// Read has no confirmed tool_response schema at all (unlike
+		// Grep/Glob) — guessing a file-content field to truncate risks
+		// silently corrupting real file content, worse than leaving it
+		// untouched.
 		return nil, nil
 	}
+}
 
+// handleBashPostToolUse implements the ledger's Bash-specific path: repeat
+// detection (dedup) first, then — for first-time calls that don't hit the
+// ledger — either budgeting or retirement of long output, depending on
+// pastBoundary. Bash is not investigate-classified (see investigateTools'
+// doc comment on why it's deliberately left unclassified), so it never goes
+// through handleRetireInvestigate; pastBoundary is threaded in here
+// specifically so Bash can still get retirement's stronger recovery
+// guarantee post-boundary without joining that tool_name classification
+// (see handleBashRetire).
+func handleBashPostToolUse(in hookInput, root string, pastBoundary bool) (*hookOutput, error) {
 	var input struct {
 		Command string `json:"command"`
 	}
@@ -557,7 +740,13 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 		if err := ledger.Save(root, in.SessionID, st); err != nil {
 			return nil, err
 		}
-		budgeted, omittedLines, omittedBytes, ok := budgetStdout(response.Stdout)
+		if pastBoundary {
+			return handleBashRetire(in, root, response.Stdout, input.Command)
+		}
+		budgeted, omittedLines, omittedBytes, ok, err := budgetStdout(response.Stdout, root, in.SessionID)
+		if err != nil {
+			return nil, err
+		}
 		if !ok {
 			// Short enough to leave untouched — nothing suppressed, nothing
 			// to record.
@@ -589,6 +778,106 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 		return nil, err
 	}
 	return repeatOut, nil
+}
+
+// handleBashRetire is handleBashPostToolUse's post-boundary counterpart to
+// budgetStdout: once the session has crossed the investigate→implement
+// boundary, a first-time Bash call's long stdout is archived to disk in
+// full via retire.Store and replaced with a compact receipt — the same
+// recovery guarantee handleRetireInvestigate gives investigate-classified
+// tools — instead of just keeping a head/tail slice visible. Gating on
+// pastBoundary here, rather than folding Bash into investigateTools, keeps
+// that classification's boundary-detection role untouched.
+//
+// Uses the same "is this worth touching" gate budgetStdout does
+// (estimatedTokens vs. budgetTokenThreshold), so a short success message
+// doesn't need archiving even post-boundary.
+func handleBashRetire(in hookInput, root, stdout, command string) (*hookOutput, error) {
+	if estimatedTokens(stdout) <= budgetTokenThreshold {
+		return nil, nil
+	}
+
+	path, err := retire.Store(root, in.SessionID, []byte(stdout))
+	if err != nil {
+		return nil, err
+	}
+	n := len(stdout)
+	receipt := fmt.Sprintf(
+		"[agent-winglet] bash output retired post-boundary (%s, %d bytes) — full output at %s",
+		command, n, path,
+	)
+	if err := recordStat(root, in.SessionID, func(s *stats.Session) {
+		s.RecordRetire(n)
+	}); err != nil {
+		return nil, err
+	}
+	return &hookOutput{HookSpecificOutput: hookSpecificOutput{
+		HookEventName:     "PostToolUse",
+		UpdatedToolOutput: bashOutput{Stdout: receipt},
+	}}, nil
+}
+
+// handleGrepBudget budgets Grep's content-mode output (see grepResponse's
+// doc comment for the confirmed schema). files_with_matches/count mode
+// responses have no Content to speak of — NumFiles/Filenames/NumMatches are
+// already compact — so an empty Content is treated the same as "too short
+// to budget," matching handleBashPostToolUse's own empty-stdout check.
+func handleGrepBudget(in hookInput, root string) (*hookOutput, error) {
+	var resp grepResponse
+	if err := json.Unmarshal(in.ToolResponse, &resp); err != nil {
+		return nil, nil
+	}
+	if resp.Content == "" {
+		return nil, nil
+	}
+	budgeted, omittedLines, omittedBytes, ok, err := budgetTextField(resp.Content, root, in.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+	if err := recordStat(root, in.SessionID, func(s *stats.Session) {
+		s.RecordBudgetTrim(omittedLines, omittedBytes)
+	}); err != nil {
+		return nil, err
+	}
+	resp.Content = budgeted
+	return &hookOutput{HookSpecificOutput: hookSpecificOutput{
+		HookEventName:     "PostToolUse",
+		UpdatedToolOutput: resp,
+	}}, nil
+}
+
+// handleGlobBudget budgets Glob's filenames array (see globResponse's doc
+// comment for the confirmed schema) by collapsing it to its first/last
+// entries, the same head/tail shape budgetStdout applies to Bash — just
+// over path entries instead of output lines.
+func handleGlobBudget(in hookInput, root string) (*hookOutput, error) {
+	var resp globResponse
+	if err := json.Unmarshal(in.ToolResponse, &resp); err != nil {
+		return nil, nil
+	}
+	if len(resp.Filenames) == 0 {
+		return nil, nil
+	}
+	budgeted, omittedEntries, omittedBytes, ok, err := budgetEntryList(resp.Filenames, root, in.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+	if err := recordStat(root, in.SessionID, func(s *stats.Session) {
+		s.RecordBudgetTrim(omittedEntries, omittedBytes)
+	}); err != nil {
+		return nil, err
+	}
+	resp.Filenames = strings.Split(budgeted, "\n")
+	return &hookOutput{HookSpecificOutput: hookSpecificOutput{
+		HookEventName:     "PostToolUse",
+		UpdatedToolOutput: resp,
+	}}, nil
 }
 
 // quietEnvVar is the one piece of configurability in scope for the savings
@@ -689,19 +978,17 @@ func handleSessionEnd(in hookInput) (*hookOutput, error) {
 // receiptMessage composes the savings-receipt text. It reports only raw
 // suppressed-content counts (dedup bytes, trimmed lines, retired bytes),
 // framed explicitly as unvalidated — never a cost, token, or usage-cap
-// savings figure, since no such measurement of *total session cost* exists
-// (the paired-run harness came back inconclusive on the tasks tested so
-// far). That framing is load-bearing, not throat-clearing: a self-reported
-// "this saved you money" claim with no evidence behind it is the exact
+// savings figure, since no measurement of *total session cost* exists (a
+// paired-run test came back inconclusive). That framing is load-bearing: a
+// self-reported "this saved you money" claim with no evidence is the exact
 // failure mode this receipt exists to avoid.
 //
-// The desktop app's Overview screen does now surface a priced dollar
-// estimate (see stats.Session.TranscriptCostUSD, internal/pricing,
-// internal/transcript) — that's a different, narrower claim: a unit
-// conversion of already-known suppressed bytes into tokens and $ at real
-// rates, not a re-measurement of total billed cost, and it carries its own
-// caveat/tooltip there. This terminal receipt stays bytes-only on purpose —
-// it has no room for that caveat, so it doesn't carry the estimate.
+// The desktop app's Overview screen does surface a priced dollar estimate
+// (stats.Session.TranscriptCostUSD) — a narrower claim, a unit conversion
+// of already-known suppressed bytes into tokens/$ at real rates, not a
+// re-measurement of total billed cost, and it carries its own caveat there.
+// This terminal receipt has no room for that caveat, so it stays
+// bytes-only.
 func receiptMessage(s *stats.Session, r stats.Rollup) string {
 	var parts []string
 	if s.DedupHits > 0 {
