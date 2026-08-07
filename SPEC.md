@@ -555,7 +555,7 @@ any suppression mechanism is enabled.
   JSON output shapes.
 - Exit so far: `go test ./cmd/codex-hook` passes.
 
-Manual dogfood still required before Phase 6:
+Manual dogfood still required before enabling stronger suppression paths:
 
 1. Reinstall the updated global Codex hook binary.
 2. Run `/hooks` in Codex and trust the updated `codex-hook` definition.
@@ -563,12 +563,14 @@ Manual dogfood still required before Phase 6:
    `agent-winglet-codex-probe` once with `AGENT_WINGLET_CODEX_PROBE=block` and
    once with `AGENT_WINGLET_CODEX_PROBE=continue`.
 4. Repeat the same two modes through a code-mode nested Bash/unified-exec call.
-5. Record the chosen replacement shape here.
+5. Record any divergence from the selected replacement shape here.
 
-Expected choice remains `continue: false` if dogfood confirms it reliably
-replaces the model-visible tool result without retries or rejected nested tool
-promises. Fall back to `decision: "block"` only if `continue: false` cannot
-carry the replacement receipt reliably.
+Selected replacement shape for Phase 6 is `continue: false` with `stopReason`
+and `systemMessage`. The current Codex manual says `PostToolUse`
+`continue: false` replaces the model-visible tool result and does not reject
+nested code-mode tool promises, which is the desired behavior for dedup
+receipts. Fall back to `decision: "block"` only if dogfood shows
+`continue: false` cannot carry the replacement receipt reliably.
 
 ### Phase 5 - Command Classifier
 
@@ -587,11 +589,24 @@ Complete.
 
 ### Phase 6 - Dedup
 
-1. Port `internal/ledger` use to Codex Bash `PostToolUse`.
-2. Use the selected replacement shape from Phase 4.
-3. Record `DedupHits` and `DedupBytes`.
-4. Exit: dogfood session shows repeated command output replaced by a receipt
-   and reflected in the dashboard.
+Complete locally; real Codex dogfood remains before treating the exit as fully
+closed.
+
+- `cmd/codex-hook` now uses `internal/ledger` for Codex `Bash` `PostToolUse`
+  repeat detection.
+- The dedup key is `Bash:<command>`, matching the Claude hook's Bash ledger
+  key shape.
+- Repeated output is replaced with a compact receipt through the selected
+  `continue: false` / `stopReason` / `systemMessage` shape.
+- The extractor accepts plain model-facing string output plus structured
+  `stdout`, `output`, `content`, and nested `result` payloads.
+- The extractor skips empty output, stderr/error output, interrupted/image
+  output, explicit nonzero exit codes, `success: false`, and failed statuses.
+- Repeat hits record `DedupHits`, `DedupBytes`, and `AgentCodex` in the
+  existing stats session file.
+- Exit so far: `go test ./cmd/codex-hook` passes.
+- Remaining dogfood exit: a real Codex session shows repeated command output
+  replaced by a receipt and reflected in the dashboard.
 
 ### Phase 7 - Output Budgeting
 

@@ -162,6 +162,140 @@ func TestPostToolUseRecordsCodexTaggedUsage(t *testing.T) {
 	}
 }
 
+func TestPostToolUseDedupsRepeatedBashOutput(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	sessionID := "codex-session"
+	first := codexBashPostInput(t, dir, sessionID, "echo hi", map[string]interface{}{
+		"stdout":    "hi\n",
+		"stderr":    "",
+		"exit_code": 0,
+	})
+
+	out, err := handle(first)
+	if err != nil {
+		t.Fatalf("first PostToolUse errored: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("first observation should not emit output, got %+v", out)
+	}
+
+	out, err = handle(codexBashPostInput(t, dir, sessionID, "echo hi", map[string]interface{}{
+		"stdout":    "hi\n",
+		"stderr":    "",
+		"exit_code": 0,
+	}))
+	if err != nil {
+		t.Fatalf("repeat PostToolUse errored: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("expected dedup replacement output")
+	}
+	if out.Continue == nil || *out.Continue {
+		t.Fatalf("Continue = %v, want pointer to false", out.Continue)
+	}
+	if !strings.Contains(out.SystemMessage, "unchanged since turn 1 (Bash:echo hi)") {
+		t.Fatalf("SystemMessage = %q, want dedup receipt", out.SystemMessage)
+	}
+	if out.StopReason != out.SystemMessage {
+		t.Fatalf("StopReason = %q, want SystemMessage %q", out.StopReason, out.SystemMessage)
+	}
+	if out.Decision != "" || out.HookSpecificOutput != nil {
+		t.Fatalf("dedup should use continue:false replacement shape, got %+v", out)
+	}
+
+	s, err := stats.LoadSession(dir, sessionID)
+	if err != nil {
+		t.Fatalf("LoadSession errored: %v", err)
+	}
+	if s.Agent != stats.AgentCodex {
+		t.Fatalf("Agent = %q, want %q", s.Agent, stats.AgentCodex)
+	}
+	if s.DedupHits != 1 || s.DedupBytes != int64(len("hi\n")) {
+		t.Fatalf("DedupHits/DedupBytes = %d/%d, want 1/%d", s.DedupHits, s.DedupBytes, len("hi\n"))
+	}
+}
+
+func TestPostToolUseDedupUsesModelFacingStringOutput(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	sessionID := "codex-session"
+	response := "Command: rg --files\nOutput:\nSPEC.md\n"
+
+	if out, err := handle(codexBashPostInput(t, dir, sessionID, "rg --files", response)); err != nil {
+		t.Fatalf("first PostToolUse errored: %v", err)
+	} else if out != nil {
+		t.Fatalf("first observation should not emit output, got %+v", out)
+	}
+	out, err := handle(codexBashPostInput(t, dir, sessionID, "rg --files", response))
+	if err != nil {
+		t.Fatalf("repeat PostToolUse errored: %v", err)
+	}
+	if out == nil || !strings.Contains(out.SystemMessage, "Bash:rg --files") {
+		t.Fatalf("dedup output = %+v, want receipt for model-facing string output", out)
+	}
+}
+
+func TestPostToolUseDedupIgnoresFailedInterruptedAndImageBashOutput(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	sessionID := "codex-session"
+	cases := []struct {
+		name     string
+		response interface{}
+	}{
+		{name: "stderr", response: map[string]interface{}{"stdout": "bad\n", "stderr": "failed\n", "exit_code": 0}},
+		{name: "exit_code", response: map[string]interface{}{"stdout": "bad\n", "stderr": "", "exit_code": 1}},
+		{name: "exitCode", response: map[string]interface{}{"stdout": "bad\n", "stderr": "", "exitCode": 1}},
+		{name: "success_false", response: map[string]interface{}{"stdout": "bad\n", "success": false}},
+		{name: "status_failed", response: map[string]interface{}{"stdout": "bad\n", "status": "failed"}},
+		{name: "interrupted", response: map[string]interface{}{"stdout": "bad\n", "interrupted": true}},
+		{name: "image", response: map[string]interface{}{"stdout": "bad\n", "is_image": true}},
+		{name: "string_nonzero_exit", response: "Command failed\nExit code: 42\nOutput:\nbad\n"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			command := "cmd-" + tc.name
+			for i := 0; i < 2; i++ {
+				out, err := handle(codexBashPostInput(t, dir, sessionID, command, tc.response))
+				if err != nil {
+					t.Fatalf("PostToolUse errored: %v", err)
+				}
+				if out != nil {
+					t.Fatalf("failed output should not be deduped, got %+v", out)
+				}
+			}
+		})
+	}
+}
+
+func TestPostToolUseDedupReadsNestedResultOutput(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	sessionID := "codex-session"
+	response := map[string]interface{}{
+		"result": map[string]interface{}{
+			"stdout":   "nested\n",
+			"stderr":   "",
+			"exitCode": 0,
+		},
+	}
+
+	if out, err := handle(codexBashPostInput(t, dir, sessionID, "nested", response)); err != nil {
+		t.Fatalf("first PostToolUse errored: %v", err)
+	} else if out != nil {
+		t.Fatalf("first observation should not emit output, got %+v", out)
+	}
+	out, err := handle(codexBashPostInput(t, dir, sessionID, "nested", response))
+	if err != nil {
+		t.Fatalf("repeat PostToolUse errored: %v", err)
+	}
+	if out == nil || !strings.Contains(out.SystemMessage, "Bash:nested") {
+		t.Fatalf("dedup output = %+v, want receipt for nested output", out)
+	}
+}
+
 func TestPostToolUseProbeDisabledByDefault(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv(codexProbeEnvVar, "")
@@ -345,5 +479,27 @@ func codexProbeInput(t *testing.T, dir, command string) hookInput {
 		HookEventName: "PostToolUse",
 		ToolName:      "Bash",
 		ToolInput:     toolInput,
+	}
+}
+
+func codexBashPostInput(t *testing.T, dir, sessionID, command string, response interface{}) hookInput {
+	t.Helper()
+	toolInput, err := json.Marshal(struct {
+		Command string `json:"command"`
+	}{Command: command})
+	if err != nil {
+		t.Fatalf("Marshal tool input errored: %v", err)
+	}
+	toolResponse, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("Marshal tool response errored: %v", err)
+	}
+	return hookInput{
+		SessionID:     sessionID,
+		Cwd:           dir,
+		HookEventName: "PostToolUse",
+		ToolName:      "Bash",
+		ToolInput:     toolInput,
+		ToolResponse:  toolResponse,
 	}
 }

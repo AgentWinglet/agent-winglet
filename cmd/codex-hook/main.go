@@ -100,10 +100,14 @@ func handle(in hookInput) (*hookOutput, error) {
 }
 
 func handlePostToolUse(in hookInput) (*hookOutput, error) {
-	if err := recordTranscriptDelta(projectroot.Resolve(in.Cwd), in); err != nil {
+	root := projectroot.Resolve(in.Cwd)
+	if err := recordTranscriptDelta(root, in); err != nil {
 		return nil, err
 	}
-	return maybeCodexProbeOutput(in), nil
+	if out := maybeCodexProbeOutput(in); out != nil {
+		return out, nil
+	}
+	return handleBashDedup(in, root)
 }
 
 const (
@@ -139,12 +143,7 @@ func maybeCodexProbeOutput(in hookInput) *hookOutput {
 		}
 	}
 
-	keepGoing := false
-	return &hookOutput{
-		Continue:      &keepGoing,
-		StopReason:    receipt,
-		SystemMessage: receipt,
-	}
+	return codexReplacementOutput(receipt)
 }
 
 func codexProbeMode() string {
@@ -155,6 +154,182 @@ func codexProbeMode() string {
 		return "block"
 	default:
 		return ""
+	}
+}
+
+func handleBashDedup(in hookInput, root string) (*hookOutput, error) {
+	if in.HookEventName != "PostToolUse" || in.ToolName != "Bash" {
+		return nil, nil
+	}
+
+	command, ok := codexBashCommand(in.ToolInput)
+	if !ok {
+		return nil, nil
+	}
+	output, ok := codexModelVisibleOutput(in.ToolResponse)
+	if !ok {
+		return nil, nil
+	}
+
+	key := "Bash:" + command
+	st, err := ledger.Load(root, in.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	repeatOfTurn, isRepeat := st.Check(key, output)
+	if !isRepeat {
+		return nil, ledger.Save(root, in.SessionID, st)
+	}
+	if err := ledger.Save(root, in.SessionID, st); err != nil {
+		return nil, err
+	}
+	if err := recordStat(root, in.SessionID, func(s *stats.Session) {
+		s.Agent = stats.AgentCodex
+		s.RecordDedup(len(output))
+	}); err != nil {
+		return nil, err
+	}
+
+	return codexReplacementOutput(fmt.Sprintf("[agent-winglet] unchanged since turn %d (%s)", repeatOfTurn, key)), nil
+}
+
+func codexBashCommand(raw json.RawMessage) (string, bool) {
+	var input struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return "", false
+	}
+	command := strings.TrimSpace(input.Command)
+	return command, command != ""
+}
+
+func codexModelVisibleOutput(raw json.RawMessage) (string, bool) {
+	if len(raw) == 0 {
+		return "", false
+	}
+
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		if rejectedModelVisibleText(text) {
+			return "", false
+		}
+		return text, text != ""
+	}
+
+	var response codexToolResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return "", false
+	}
+	if !response.Successful() {
+		return "", false
+	}
+
+	output := response.Text()
+	return output, output != ""
+}
+
+type codexToolResponse struct {
+	Stdout      string `json:"stdout"`
+	Stderr      string `json:"stderr"`
+	Output      string `json:"output"`
+	Content     string `json:"content"`
+	Error       string `json:"error"`
+	Interrupted bool   `json:"interrupted"`
+	IsImage     bool   `json:"is_image"`
+	ExitCode    *int   `json:"exit_code"`
+	ExitCodeAlt *int   `json:"exitCode"`
+	Status      string `json:"status"`
+	Success     *bool  `json:"success"`
+	Result      *struct {
+		Stdout      string `json:"stdout"`
+		Stderr      string `json:"stderr"`
+		Output      string `json:"output"`
+		Content     string `json:"content"`
+		Error       string `json:"error"`
+		Interrupted bool   `json:"interrupted"`
+		IsImage     bool   `json:"is_image"`
+		ExitCode    *int   `json:"exit_code"`
+		ExitCodeAlt *int   `json:"exitCode"`
+		Status      string `json:"status"`
+		Success     *bool  `json:"success"`
+	} `json:"result"`
+}
+
+func (r codexToolResponse) Successful() bool {
+	if r.Result != nil {
+		nested := codexToolResponse{
+			Stdout:      r.Result.Stdout,
+			Stderr:      r.Result.Stderr,
+			Output:      r.Result.Output,
+			Content:     r.Result.Content,
+			Error:       r.Result.Error,
+			Interrupted: r.Result.Interrupted,
+			IsImage:     r.Result.IsImage,
+			ExitCode:    r.Result.ExitCode,
+			ExitCodeAlt: r.Result.ExitCodeAlt,
+			Status:      r.Result.Status,
+			Success:     r.Result.Success,
+		}
+		return nested.Successful()
+	}
+	if r.Interrupted || r.IsImage || r.Stderr != "" || r.Error != "" {
+		return false
+	}
+	if r.ExitCode != nil && *r.ExitCode != 0 {
+		return false
+	}
+	if r.ExitCodeAlt != nil && *r.ExitCodeAlt != 0 {
+		return false
+	}
+	if r.Success != nil && !*r.Success {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(r.Status)) {
+	case "", "ok", "success", "succeeded", "completed":
+		return true
+	case "error", "failed", "failure", "interrupted", "cancelled", "canceled":
+		return false
+	default:
+		return true
+	}
+}
+
+func (r codexToolResponse) Text() string {
+	if r.Result != nil {
+		nested := codexToolResponse{
+			Stdout:  r.Result.Stdout,
+			Output:  r.Result.Output,
+			Content: r.Result.Content,
+		}
+		return nested.Text()
+	}
+	switch {
+	case r.Stdout != "":
+		return r.Stdout
+	case r.Output != "":
+		return r.Output
+	default:
+		return r.Content
+	}
+}
+
+func rejectedModelVisibleText(text string) bool {
+	lower := strings.ToLower(text)
+	idx := strings.Index(lower, "exit code:")
+	if idx < 0 {
+		return false
+	}
+	rest := strings.TrimSpace(lower[idx+len("exit code:"):])
+	return rest == "" || rest[0] < '0' || rest[0] > '9' || rest[0] != '0'
+}
+
+func codexReplacementOutput(receipt string) *hookOutput {
+	keepGoing := false
+	return &hookOutput{
+		Continue:      &keepGoing,
+		StopReason:    receipt,
+		SystemMessage: receipt,
 	}
 }
 
@@ -210,6 +385,15 @@ func recordTranscriptDelta(projectDir string, in hookInput) error {
 	s.Agent = stats.AgentCodex
 	s.AddTranscriptUsage(delta, newOffset)
 	return stats.SaveSession(projectDir, in.SessionID, s)
+}
+
+func recordStat(projectDir, sessionID string, mutate func(*stats.Session)) error {
+	s, err := stats.LoadSession(projectDir, sessionID)
+	if err != nil {
+		return err
+	}
+	mutate(s)
+	return stats.SaveSession(projectDir, sessionID, s)
 }
 
 const quietEnvVar = "AGENT_WINGLET_QUIET"
