@@ -664,9 +664,73 @@ body {
 
 /* --- Settings --- */
 
+.hook-health {
+  background: var(--bg-elevated);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  padding: 16px 20px;
+  max-width: 560px;
+  margin-bottom: 12px;
+}
+
+.hook-health.needs-action {
+  border-color: rgba(185, 128, 39, 0.5);
+}
+
+.hook-health.missing {
+  border-color: rgba(158, 63, 63, 0.45);
+}
+
+.hook-health-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.hook-health-badge {
+  flex: 0 0 auto;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--text-secondary);
+  background: var(--bg);
+  white-space: nowrap;
+}
+
+.hook-health.needs-action .hook-health-badge {
+  color: #8a5a12;
+  border-color: rgba(185, 128, 39, 0.5);
+}
+
+.hook-health.missing .hook-health-badge {
+  color: #923b3b;
+  border-color: rgba(158, 63, 63, 0.45);
+}
+
+.hook-health-action {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.hook-health-action code {
+  font-family: var(--font-display);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .settings-row {
   background: var(--bg-elevated);
-  border-radius: 12px;
+  border-radius: 8px;
   box-shadow: var(--shadow);
   padding: 16px 20px;
   display: flex;

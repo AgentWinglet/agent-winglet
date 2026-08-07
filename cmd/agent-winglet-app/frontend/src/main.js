@@ -2,6 +2,7 @@ import './style.css';
 import { icons } from './icons.js';
 import {
   GetCompactNudgesEnabled,
+  GetHookHealth,
   GetOverview,
   GetPlatform,
   GetProjects,
@@ -529,11 +530,12 @@ async function renderSessionsSection(container, projectPath) {
 // (GetCompactNudgesEnabled), so this is async like the other screens, not
 // fetched synchronously.
 async function renderSettingsScreen(container) {
-  const enabled = await GetCompactNudgesEnabled();
+  const [enabled, hookHealth] = await Promise.all([GetCompactNudgesEnabled(), GetHookHealth()]);
   if (state.screen !== 'settings') return;
 
   container.innerHTML = `
     <h1 class="screen-title">Settings</h1>
+    ${hookHealthMarkup(hookHealth)}
     <div class="settings-row">
       <div>
         <div class="settings-row-label">Compact nudges</div>
@@ -551,6 +553,35 @@ async function renderSettingsScreen(container) {
     btn.setAttribute('aria-pressed', String(next));
     await SetCompactNudgesEnabled(next);
   });
+}
+
+function hookHealthMarkup(health) {
+  const tone = health.codexReviewLikely ? 'needs-action' : health.codexConfigured ? 'ok' : 'missing';
+  return `
+    <section class="hook-health ${tone}">
+      <div class="hook-health-top">
+        <div>
+          <div class="settings-row-label">Codex hook</div>
+          <div class="settings-row-desc">${escapeHtml(health.codexDetail)}</div>
+        </div>
+        <span class="hook-health-badge">${escapeHtml(health.codexStatus)}</span>
+      </div>
+      ${
+        health.codexAction
+          ? `<div class="hook-health-action"><code>${escapeHtml(health.codexAction)}</code></div>`
+          : ''
+      }
+    </section>
+  `;
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 }
 
 function renderMain(container) {

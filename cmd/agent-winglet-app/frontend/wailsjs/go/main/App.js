@@ -6,6 +6,10 @@ export function GetCompactNudgesEnabled() {
   return window['go']['main']['App']['GetCompactNudgesEnabled']();
 }
 
+export function GetHookHealth() {
+  return window['go']['main']['App']['GetHookHealth']();
+}
+
 export function GetOverview() {
   return window['go']['main']['App']['GetOverview']();
 }

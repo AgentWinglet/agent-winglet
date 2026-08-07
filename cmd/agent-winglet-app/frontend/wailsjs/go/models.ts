@@ -46,6 +46,28 @@ export namespace main {
 	        this.estimated = source["estimated"];
 	    }
 	}
+	export class HookHealth {
+	    codexConfigured: boolean;
+	    codexObserved: boolean;
+	    codexReviewLikely: boolean;
+	    codexStatus: string;
+	    codexDetail: string;
+	    codexAction: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HookHealth(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.codexConfigured = source["codexConfigured"];
+	        this.codexObserved = source["codexObserved"];
+	        this.codexReviewLikely = source["codexReviewLikely"];
+	        this.codexStatus = source["codexStatus"];
+	        this.codexDetail = source["codexDetail"];
+	        this.codexAction = source["codexAction"];
+	    }
+	}
 	export class Overview {
 	    heroBytes: number;
 	    heroTotalBytes: number;

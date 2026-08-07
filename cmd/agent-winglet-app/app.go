@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
 	"sort"
+	"time"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -53,6 +56,141 @@ func (a *App) SetCompactNudgesEnabled(enabled bool) error {
 	}
 	cfg.CompactNudgeDisabled = !enabled
 	return config.Save(cfg)
+}
+
+// HookHealth is a dashboard-facing install/status check for hook setup. Codex
+// does not expose a stable machine-readable trust API, so ReviewLikely is a
+// conservative symptom check: the hook is configured, but Winglet has not seen
+// Codex stats from a session at or after the current hook config timestamp.
+type HookHealth struct {
+	CodexConfigured   bool   `json:"codexConfigured"`
+	CodexObserved     bool   `json:"codexObserved"`
+	CodexReviewLikely bool   `json:"codexReviewLikely"`
+	CodexStatus       string `json:"codexStatus"`
+	CodexDetail       string `json:"codexDetail"`
+	CodexAction       string `json:"codexAction"`
+}
+
+func (a *App) GetHookHealth() (HookHealth, error) {
+	configured, configTime, err := codexHookConfigured()
+	if err != nil {
+		return HookHealth{}, err
+	}
+	observed, observedTime, err := latestCodexSession()
+	if err != nil {
+		return HookHealth{}, err
+	}
+
+	h := HookHealth{
+		CodexConfigured: configured,
+		CodexObserved:   observed,
+		CodexAction:     "Open Codex, run /hooks, review the agent-winglet codex-hook entries, then trust them.",
+	}
+	switch {
+	case !configured:
+		h.CodexStatus = "Not installed"
+		h.CodexDetail = "Winglet does not see a codex-hook entry in ~/.codex/hooks.json or registered project .codex/hooks.json files."
+		h.CodexAction = "Run ./install.sh --hook-only --codex-only, then open Codex and run /hooks."
+	case !observed || observedTime.Before(configTime):
+		h.CodexReviewLikely = true
+		h.CodexStatus = "Needs review likely"
+		h.CodexDetail = "Codex hooks are configured, but Winglet has not seen Codex hook activity for this hook config yet. Codex skips non-managed hooks until their current definition is trusted."
+	default:
+		h.CodexStatus = "Active"
+		h.CodexDetail = "Winglet has seen Codex hook activity after the current hook config was written."
+		h.CodexAction = ""
+	}
+	return h, nil
+}
+
+func codexHookConfigured() (bool, time.Time, error) {
+	var paths []string
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false, time.Time{}, err
+	}
+	codexHome := os.Getenv("CODEX_HOME")
+	if codexHome == "" {
+		codexHome = filepath.Join(home, ".codex")
+	}
+	paths = append(paths, filepath.Join(codexHome, "hooks.json"))
+
+	dirs, err := registry.Load()
+	if err != nil {
+		return false, time.Time{}, err
+	}
+	for _, dir := range dirs {
+		paths = append(paths, filepath.Join(dir, ".codex", "hooks.json"))
+	}
+
+	var latest time.Time
+	for _, path := range paths {
+		if !hookFileContainsCommand(path, "codex-hook") {
+			continue
+		}
+		if info, err := os.Stat(path); err == nil && info.ModTime().After(latest) {
+			latest = info.ModTime()
+		}
+	}
+	return !latest.IsZero(), latest, nil
+}
+
+func latestCodexSession() (bool, time.Time, error) {
+	dirs, err := registry.Load()
+	if err != nil {
+		return false, time.Time{}, err
+	}
+
+	var latest time.Time
+	for _, dir := range dirs {
+		files, err := stats.ListSessions(dir)
+		if err != nil {
+			return false, time.Time{}, err
+		}
+		for _, f := range files {
+			s, err := stats.LoadSession(dir, f.ID)
+			if err != nil {
+				return false, time.Time{}, err
+			}
+			if s.Agent == stats.AgentCodex && f.ModTime.After(latest) {
+				latest = f.ModTime
+			}
+		}
+	}
+	return !latest.IsZero(), latest, nil
+}
+
+func hookFileContainsCommand(path, binaryName string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var v interface{}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return false
+	}
+	return containsCommand(v, binaryName)
+}
+
+func containsCommand(v interface{}, binaryName string) bool {
+	switch node := v.(type) {
+	case map[string]interface{}:
+		if cmd, ok := node["command"].(string); ok && filepath.Base(cmd) == binaryName {
+			return true
+		}
+		for _, child := range node {
+			if containsCommand(child, binaryName) {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, child := range node {
+			if containsCommand(child, binaryName) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (a *App) startup(ctx context.Context) {

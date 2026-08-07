@@ -4,6 +4,8 @@ import {main} from '../models';
 
 export function GetCompactNudgesEnabled():Promise<boolean>;
 
+export function GetHookHealth():Promise<main.HookHealth>;
+
 export function GetOverview():Promise<main.Overview>;
 
 export function GetPlatform():Promise<string>;

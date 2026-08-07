@@ -385,6 +385,91 @@ func TestGetSessionStatsIncludesAgent(t *testing.T) {
 	}
 }
 
+func TestGetHookHealthReportsCodexNotInstalled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	h, err := NewApp().GetHookHealth()
+	if err != nil {
+		t.Fatalf("GetHookHealth errored: %v", err)
+	}
+	if h.CodexConfigured || h.CodexObserved || h.CodexReviewLikely {
+		t.Fatalf("unexpected Codex hook health: %+v", h)
+	}
+	if h.CodexStatus != "Not installed" {
+		t.Fatalf("CodexStatus = %q, want %q", h.CodexStatus, "Not installed")
+	}
+}
+
+func TestGetHookHealthReportsCodexReviewLikely(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeCodexHookConfig(t, filepath.Join(home, ".codex", "hooks.json"))
+
+	h, err := NewApp().GetHookHealth()
+	if err != nil {
+		t.Fatalf("GetHookHealth errored: %v", err)
+	}
+	if !h.CodexConfigured || h.CodexObserved || !h.CodexReviewLikely {
+		t.Fatalf("unexpected Codex hook health: %+v", h)
+	}
+	if h.CodexStatus != "Needs review likely" {
+		t.Fatalf("CodexStatus = %q, want %q", h.CodexStatus, "Needs review likely")
+	}
+}
+
+func TestGetHookHealthReportsCodexActiveAfterObservedSession(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	hooksPath := filepath.Join(home, ".codex", "hooks.json")
+	writeCodexHookConfig(t, hooksPath)
+
+	dir := t.TempDir()
+	if err := registry.Register(dir); err != nil {
+		t.Fatalf("Register errored: %v", err)
+	}
+	if err := stats.SaveSession(dir, "sess-codex", &stats.Session{Agent: stats.AgentCodex}); err != nil {
+		t.Fatalf("SaveSession errored: %v", err)
+	}
+	future := time.Now().Add(time.Hour)
+	sessionPath, err := statsSessionPath(dir, "sess-codex")
+	if err != nil {
+		t.Fatalf("statsSessionPath errored: %v", err)
+	}
+	if err := os.Chtimes(sessionPath, future, future); err != nil {
+		t.Fatalf("Chtimes errored: %v", err)
+	}
+
+	h, err := NewApp().GetHookHealth()
+	if err != nil {
+		t.Fatalf("GetHookHealth errored: %v", err)
+	}
+	if !h.CodexConfigured || !h.CodexObserved || h.CodexReviewLikely {
+		t.Fatalf("unexpected Codex hook health: %+v", h)
+	}
+	if h.CodexStatus != "Active" {
+		t.Fatalf("CodexStatus = %q, want %q", h.CodexStatus, "Active")
+	}
+}
+
+func writeCodexHookConfig(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll errored: %v", err)
+	}
+	data := `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/tmp/codex-hook","timeout":5}]}]}}`
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatalf("WriteFile errored: %v", err)
+	}
+}
+
+func statsSessionPath(projectDir, sessionID string) (string, error) {
+	d, err := statedir.Dir(projectDir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(d, sessionID+".stats.json"), nil
+}
+
 func TestGetSessionStatsMissingDirReturnsEmpty(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	a := NewApp()
