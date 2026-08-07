@@ -572,10 +572,18 @@ carry the replacement receipt reliably.
 
 ### Phase 5 - Command Classifier
 
-1. Add `internal/cmdclass`.
-2. Cover all listed investigate and neutral cases with table tests.
-3. Keep implement classification outside Bash for v1.
-4. Exit: classifier tests pass.
+Complete.
+
+- `internal/cmdclass` exposes the planned `Class`, `Neutral`,
+  `Investigate`, `Implement`, and `Classify(command string)` API.
+- It classifies only simple known read-only Bash commands as `Investigate`.
+- Shell control operators, redirections, command substitution, unknown
+  prefixes, package managers, mutating git/package/file commands, mutating
+  `find`, writing `curl`/`wget` forms, MCP-looking commands, and non-list
+  `go test` commands stay `Neutral`.
+- Bash command classification never returns `Implement` in v1; `apply_patch`,
+  `Edit`, and `Write` remain future non-Bash tool signals.
+- Exit: `go test ./internal/cmdclass` passes.
 
 ### Phase 6 - Dedup
 
