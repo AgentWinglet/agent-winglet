@@ -1,9 +1,8 @@
 // codex-hook is the Codex hook binary for agent-winglet. In this phase it
 // registers projects, resets per-session state at session starts/compacts,
-// records Codex rollout-derived usage, and carries a disabled-by-default
-// replacement probe. It deliberately does not run real suppression yet; dedup,
-// budgeting, and retirement wait for the probe to validate the right Codex
-// PostToolUse replacement shape.
+// records Codex rollout-derived usage, dedups repeated successful shell output,
+// budgets long first-time shell output, and carries a disabled-by-default
+// replacement probe.
 package main
 
 import (
@@ -16,6 +15,7 @@ import (
 	"github.com/umitkaanusta/agent-winglet/internal/codexrollout"
 	"github.com/umitkaanusta/agent-winglet/internal/config"
 	"github.com/umitkaanusta/agent-winglet/internal/ledger"
+	"github.com/umitkaanusta/agent-winglet/internal/outputbudget"
 	"github.com/umitkaanusta/agent-winglet/internal/phase"
 	"github.com/umitkaanusta/agent-winglet/internal/projectroot"
 	"github.com/umitkaanusta/agent-winglet/internal/registry"
@@ -107,7 +107,7 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 	if out := maybeCodexProbeOutput(in); out != nil {
 		return out, nil
 	}
-	return handleBashDedup(in, root)
+	return handleShellPostToolUse(in, root)
 }
 
 const (
@@ -117,21 +117,16 @@ const (
 
 func maybeCodexProbeOutput(in hookInput) *hookOutput {
 	mode := codexProbeMode()
-	if mode == "" || in.HookEventName != "PostToolUse" || in.ToolName != "Bash" {
+	if mode == "" || in.HookEventName != "PostToolUse" || !codexShellTool(in.ToolName) {
 		return nil
 	}
 
-	var input struct {
-		Command string `json:"command"`
-	}
-	if err := json.Unmarshal(in.ToolInput, &input); err != nil {
-		return nil
-	}
-	if !strings.Contains(input.Command, codexProbeCommandNeedle) {
+	command, ok := codexShellCommand(in.ToolInput)
+	if !ok || !strings.Contains(command, codexProbeCommandNeedle) {
 		return nil
 	}
 
-	receipt := fmt.Sprintf("[agent-winglet] codex replacement probe (%s) replaced Bash output for %q", mode, input.Command)
+	receipt := fmt.Sprintf("[agent-winglet] codex replacement probe (%s) replaced Bash output for %q", mode, command)
 	if mode == "block" {
 		return &hookOutput{
 			Decision: "block",
@@ -157,12 +152,12 @@ func codexProbeMode() string {
 	}
 }
 
-func handleBashDedup(in hookInput, root string) (*hookOutput, error) {
-	if in.HookEventName != "PostToolUse" || in.ToolName != "Bash" {
+func handleShellPostToolUse(in hookInput, root string) (*hookOutput, error) {
+	if in.HookEventName != "PostToolUse" || !codexShellTool(in.ToolName) {
 		return nil, nil
 	}
 
-	command, ok := codexBashCommand(in.ToolInput)
+	command, ok := codexShellCommand(in.ToolInput)
 	if !ok {
 		return nil, nil
 	}
@@ -178,7 +173,23 @@ func handleBashDedup(in hookInput, root string) (*hookOutput, error) {
 	}
 	repeatOfTurn, isRepeat := st.Check(key, output)
 	if !isRepeat {
-		return nil, ledger.Save(root, in.SessionID, st)
+		if err := ledger.Save(root, in.SessionID, st); err != nil {
+			return nil, err
+		}
+		budgeted, omittedLines, omittedBytes, ok, err := outputbudget.Stdout(output, root, in.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, nil
+		}
+		if err := recordStat(root, in.SessionID, func(s *stats.Session) {
+			s.Agent = stats.AgentCodex
+			s.RecordBudgetTrim(omittedLines, omittedBytes)
+		}); err != nil {
+			return nil, err
+		}
+		return codexReplacementOutput(budgeted), nil
 	}
 	if err := ledger.Save(root, in.SessionID, st); err != nil {
 		return nil, err
@@ -193,14 +204,27 @@ func handleBashDedup(in hookInput, root string) (*hookOutput, error) {
 	return codexReplacementOutput(fmt.Sprintf("[agent-winglet] unchanged since turn %d (%s)", repeatOfTurn, key)), nil
 }
 
-func codexBashCommand(raw json.RawMessage) (string, bool) {
+func codexShellTool(toolName string) bool {
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "bash", "shell", "exec", "exec_command", "unified-exec", "unified_exec", "functions.exec_command":
+		return true
+	default:
+		return false
+	}
+}
+
+func codexShellCommand(raw json.RawMessage) (string, bool) {
 	var input struct {
 		Command string `json:"command"`
+		Cmd     string `json:"cmd"`
 	}
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return "", false
 	}
 	command := strings.TrimSpace(input.Command)
+	if command == "" {
+		command = strings.TrimSpace(input.Cmd)
+	}
 	return command, command != ""
 }
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/umitkaanusta/agent-winglet/internal/outputbudget"
 	"github.com/umitkaanusta/agent-winglet/internal/registry"
 	"github.com/umitkaanusta/agent-winglet/internal/stats"
 )
@@ -50,6 +51,27 @@ func appendRollout(t *testing.T, path string, lines ...string) {
 			t.Fatalf("WriteString errored: %v", err)
 		}
 	}
+}
+
+func linesOfApproxTokens(tokens int) string {
+	lines := make([]string, 2*tokens)
+	for i := range lines {
+		lines[i] = "x"
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func archivePathFromBudgetedOutput(t *testing.T, body, marker string) string {
+	t.Helper()
+	idx := strings.Index(body, marker)
+	if idx == -1 {
+		t.Fatalf("body missing archive marker %q: %q", marker, body)
+	}
+	path := body[idx+len(marker):]
+	if nl := strings.IndexByte(path, '\n'); nl != -1 {
+		path = path[:nl]
+	}
+	return path
 }
 
 func TestSessionStartRegistersProjectAndResetsSession(t *testing.T) {
@@ -213,6 +235,113 @@ func TestPostToolUseDedupsRepeatedBashOutput(t *testing.T) {
 	}
 	if s.DedupHits != 1 || s.DedupBytes != int64(len("hi\n")) {
 		t.Fatalf("DedupHits/DedupBytes = %d/%d, want 1/%d", s.DedupHits, s.DedupBytes, len("hi\n"))
+	}
+}
+
+func TestPostToolUseBudgetsLongFirstTimeBashOutput(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	sessionID := "codex-session"
+	longOutput := linesOfApproxTokens(outputbudget.TokenThreshold + 1)
+
+	out, err := handle(codexBashPostInput(t, dir, sessionID, "go test ./...", map[string]interface{}{
+		"stdout":    longOutput,
+		"stderr":    "",
+		"exit_code": 0,
+	}))
+	if err != nil {
+		t.Fatalf("PostToolUse errored: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("expected budget replacement output")
+	}
+	if out.Continue == nil || *out.Continue {
+		t.Fatalf("Continue = %v, want pointer to false", out.Continue)
+	}
+	if out.SystemMessage == longOutput {
+		t.Fatalf("budgeting did not replace original output")
+	}
+	if !strings.Contains(out.SystemMessage, "lines omitted") {
+		t.Fatalf("budgeted output missing omission marker: %q", out.SystemMessage)
+	}
+	if !strings.Contains(out.SystemMessage, "full output at ") {
+		t.Fatalf("budgeted output missing archive path: %q", out.SystemMessage)
+	}
+	if out.StopReason != out.SystemMessage {
+		t.Fatalf("StopReason = %q, want SystemMessage %q", out.StopReason, out.SystemMessage)
+	}
+
+	path := archivePathFromBudgetedOutput(t, out.SystemMessage, "full output at ")
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading archived output at %q errored: %v", path, err)
+	}
+	if string(stored) != longOutput {
+		t.Fatalf("archived output = %q, want original output", stored)
+	}
+
+	s, err := stats.LoadSession(dir, sessionID)
+	if err != nil {
+		t.Fatalf("LoadSession errored: %v", err)
+	}
+	if s.Agent != stats.AgentCodex {
+		t.Fatalf("Agent = %q, want %q", s.Agent, stats.AgentCodex)
+	}
+	if s.BudgetTrims != 1 {
+		t.Fatalf("BudgetTrims = %d, want 1", s.BudgetTrims)
+	}
+	if s.BudgetLinesOmitted <= 0 || s.BudgetBytesOmitted <= 0 {
+		t.Fatalf("BudgetLinesOmitted/BudgetBytesOmitted = %d/%d, want positive", s.BudgetLinesOmitted, s.BudgetBytesOmitted)
+	}
+}
+
+func TestPostToolUseBudgetsUnifiedExecCmdOutput(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	sessionID := "codex-session"
+	longOutput := linesOfApproxTokens(outputbudget.TokenThreshold + 1)
+
+	out, err := handle(codexShellPostInput(t, dir, sessionID, "unified-exec", "cmd", "rg --files", map[string]interface{}{
+		"output":   longOutput,
+		"status":   "completed",
+		"success":  true,
+		"exitCode": 0,
+	}))
+	if err != nil {
+		t.Fatalf("PostToolUse errored: %v", err)
+	}
+	if out == nil || !strings.Contains(out.SystemMessage, "lines omitted") {
+		t.Fatalf("unified-exec long output should be budgeted, got %+v", out)
+	}
+}
+
+func TestPostToolUseDedupTakesPrecedenceOverBudgeting(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	sessionID := "codex-session"
+	longOutput := linesOfApproxTokens(outputbudget.TokenThreshold + 1)
+	input := codexBashPostInput(t, dir, sessionID, "go test ./...", map[string]interface{}{
+		"stdout":    longOutput,
+		"stderr":    "",
+		"exit_code": 0,
+	})
+
+	first, err := handle(input)
+	if err != nil {
+		t.Fatalf("first PostToolUse errored: %v", err)
+	}
+	if first == nil || !strings.Contains(first.SystemMessage, "lines omitted") {
+		t.Fatalf("first long output should be budgeted, got %+v", first)
+	}
+	second, err := handle(input)
+	if err != nil {
+		t.Fatalf("repeat PostToolUse errored: %v", err)
+	}
+	if second == nil || !strings.Contains(second.SystemMessage, "unchanged since turn 1 (Bash:go test ./...)") {
+		t.Fatalf("repeat long output should be deduped, got %+v", second)
+	}
+	if strings.Contains(second.SystemMessage, "lines omitted") {
+		t.Fatalf("repeat should dedup instead of budget, got %q", second.SystemMessage)
 	}
 }
 
@@ -484,9 +613,12 @@ func codexProbeInput(t *testing.T, dir, command string) hookInput {
 
 func codexBashPostInput(t *testing.T, dir, sessionID, command string, response interface{}) hookInput {
 	t.Helper()
-	toolInput, err := json.Marshal(struct {
-		Command string `json:"command"`
-	}{Command: command})
+	return codexShellPostInput(t, dir, sessionID, "Bash", "command", command, response)
+}
+
+func codexShellPostInput(t *testing.T, dir, sessionID, toolName, commandField, command string, response interface{}) hookInput {
+	t.Helper()
+	toolInput, err := json.Marshal(map[string]string{commandField: command})
 	if err != nil {
 		t.Fatalf("Marshal tool input errored: %v", err)
 	}
@@ -498,7 +630,7 @@ func codexBashPostInput(t *testing.T, dir, sessionID, command string, response i
 		SessionID:     sessionID,
 		Cwd:           dir,
 		HookEventName: "PostToolUse",
-		ToolName:      "Bash",
+		ToolName:      toolName,
 		ToolInput:     toolInput,
 		ToolResponse:  toolResponse,
 	}

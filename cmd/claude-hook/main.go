@@ -64,6 +64,7 @@ import (
 
 	"github.com/umitkaanusta/agent-winglet/internal/config"
 	"github.com/umitkaanusta/agent-winglet/internal/ledger"
+	"github.com/umitkaanusta/agent-winglet/internal/outputbudget"
 	"github.com/umitkaanusta/agent-winglet/internal/phase"
 	"github.com/umitkaanusta/agent-winglet/internal/projectroot"
 	"github.com/umitkaanusta/agent-winglet/internal/registry"
@@ -86,118 +87,29 @@ const legacySessionID = "legacy-migrated"
 // uses the same proxy the repeat-check already relies on: empty stderr, not
 // interrupted, not an image.
 const (
-	// budgetTokenThreshold mirrors AgentDiet's token-based trigger (θ=500)
-	// rather than a raw line count, which a caller can dodge just by
-	// wrapping output onto fewer, longer lines. estimatedTokens below is
-	// the same cheap chars/4 proxy AgentDiet itself notes needs no
-	// tokenizer dependency to be useful as a trigger.
-	budgetTokenThreshold = 500
-	budgetHeadLines      = 15
-	budgetTailLines      = 15
+	budgetTokenThreshold = outputbudget.TokenThreshold
+	budgetHeadLines      = outputbudget.HeadLines
+	budgetTailLines      = outputbudget.TailLines
 )
 
-// estimatedTokens is a cheap, tokenizer-free proxy (chars/4) used only to
-// decide *whether* to budget — see budgetTokenThreshold. It doesn't need to
-// be accurate, just monotonic with real size and hard to game the way a
-// line count is (a caller can't dodge it by rewrapping output onto fewer,
-// longer lines).
 func estimatedTokens(body string) int {
-	return len(body) / 4
+	return outputbudget.EstimatedTokens(body)
 }
 
-// budgetBody collapses body to its first budgetHeadLines and last
-// budgetTailLines lines if its estimated token count exceeds
-// budgetTokenThreshold. It reports ok == false when body is short enough to
-// leave untouched, or too short in *lines* to split into a head and a tail
-// (a pathological single huge line would otherwise have nothing to
-// truncate), and omittedLines/omittedBytes as the size of the dropped
-// middle section (both 0 when ok is false) — the same byte unit
-// RecordDedup/RecordRetire use, so budget-trims contribute to the same
-// suppressed-bytes total.
-//
-// Every trim archives the full pre-trim body via retire.Store first and
-// names that path in the notice line, the same recovery guarantee a
-// retired investigate call gets: budgeting fires on arrival, before the
-// agent has read the output once, so unlike handleRetireInvestigate's
-// archive-then-receipt pattern (which only ever acts on output that's
-// already served its purpose), a caller that actually needed the dropped
-// middle can recover it with one cheap Read instead of re-running the tool.
-//
-// notice composes the omission marker's text (everything after "N <unit>
-// omitted" in the receipt line) — callers vary it because Bash's marker also
-// carries an outcome ("exit 0") that other tools' bodies have no equivalent
-// of; archivePath is threaded through so every notice can point at the same
-// recovery path. This is the tool-agnostic core behind budgetStdout (Bash)
-// and the Grep/Glob budget handlers below.
 func budgetBody(body, root, sessionID string, notice func(omitted int, archivePath string) string) (budgeted string, omittedLines int, omittedBytes int64, ok bool, err error) {
-	lines := strings.Split(body, "\n")
-	trailingNewline := len(lines) > 0 && lines[len(lines)-1] == ""
-	if trailingNewline {
-		lines = lines[:len(lines)-1]
-	}
-	n := len(lines)
-	if estimatedTokens(body) <= budgetTokenThreshold {
-		return "", 0, 0, false, nil
-	}
-	if n <= budgetHeadLines+budgetTailLines {
-		// Too few lines to carve a head and a tail out of — e.g. one
-		// pathologically long line that trips the token estimate. Nothing
-		// sensible to truncate, so leave it untouched rather than slicing
-		// out of range.
-		return "", 0, 0, false, nil
-	}
-
-	archivePath, err := retire.Store(root, sessionID, []byte(body))
-	if err != nil {
-		return "", 0, 0, false, err
-	}
-
-	dropped := lines[budgetHeadLines : n-budgetTailLines]
-	omittedLines = len(dropped)
-	omittedBytes = int64(len(strings.Join(dropped, "\n")))
-
-	var b strings.Builder
-	b.WriteString(strings.Join(lines[:budgetHeadLines], "\n"))
-	b.WriteString("\n")
-	fmt.Fprintf(&b, "[agent-winglet] %s\n", notice(omittedLines, archivePath))
-	b.WriteString(strings.Join(lines[n-budgetTailLines:], "\n"))
-	if trailingNewline {
-		b.WriteString("\n")
-	}
-	return b.String(), omittedLines, omittedBytes, true, nil
+	return outputbudget.Body(body, root, sessionID, notice)
 }
 
-// budgetStdout is budgetBody specialized for Bash stdout: same head/tail
-// collapse, plus the "exit 0" outcome tag in the marker (this call site
-// already knows the command succeeded — see its caller in
-// handleBashPostToolUse).
 func budgetStdout(stdout, root, sessionID string) (budgeted string, omittedLines int, omittedBytes int64, ok bool, err error) {
-	return budgetBody(stdout, root, sessionID, func(omitted int, archivePath string) string {
-		return fmt.Sprintf("%d lines omitted, exit 0 (showing first %d/last %d) — full output at %s",
-			omitted, budgetHeadLines, budgetTailLines, archivePath)
-	})
+	return outputbudget.Stdout(stdout, root, sessionID)
 }
 
-// budgetTextField is budgetBody specialized for a tool_response field that's
-// just freeform text with no Bash-style outcome to report (Grep's content
-// field) — same marker as budgetStdout minus the ", exit 0" clause.
 func budgetTextField(body, root, sessionID string) (budgeted string, omittedLines int, omittedBytes int64, ok bool, err error) {
-	return budgetBody(body, root, sessionID, func(omitted int, archivePath string) string {
-		return fmt.Sprintf("%d lines omitted (showing first %d/last %d) — full output at %s",
-			omitted, budgetHeadLines, budgetTailLines, archivePath)
-	})
+	return outputbudget.TextField(body, root, sessionID)
 }
 
-// budgetEntryList is budgetBody specialized for a tool_response field that's
-// an array of short entries rather than freeform text (Glob's filenames) —
-// the array is newline-joined into a body budgetBody can operate on line by
-// line (one path per line), and the marker calls the unit "entries" instead
-// of "lines" since that's what a reader actually sees collapsed.
 func budgetEntryList(entries []string, root, sessionID string) (budgeted string, omittedEntries int, omittedBytes int64, ok bool, err error) {
-	return budgetBody(strings.Join(entries, "\n"), root, sessionID, func(omitted int, archivePath string) string {
-		return fmt.Sprintf("%d entries omitted (showing first %d/last %d) — full list at %s",
-			omitted, budgetHeadLines, budgetTailLines, archivePath)
-	})
+	return outputbudget.EntryList(entries, root, sessionID)
 }
 
 type hookInput struct {

@@ -610,13 +610,27 @@ closed.
 
 ### Phase 7 - Output Budgeting
 
-1. Move shared budgeting helpers out of `cmd/claude-hook` into an internal
-   package, or duplicate only if the shared package becomes awkward.
-2. Apply budgeting only to successful Bash/unified-exec output.
-3. Store full output through `internal/retire.Store` before replacing it.
-4. Record `BudgetTrims`, `BudgetLinesOmitted`, and `BudgetBytesOmitted`.
-5. Exit: dogfood session trims a long command, archive path exists, and stats
-   update live.
+Complete locally; real Codex dogfood remains before treating the exit as fully
+closed.
+
+- Shared head/tail budgeting now lives in `internal/outputbudget`.
+- `cmd/claude-hook` calls the shared package through thin compatibility
+  wrappers, preserving the existing Claude hook behavior while making the
+  implementation reusable.
+- `cmd/codex-hook` applies budgeting after a successful shell output misses the
+  dedup ledger, so repeat detection still wins over trimming.
+- Codex shell support accepts `Bash` plus conservative unified-exec-style tool
+  names and both `tool_input.command` and `tool_input.cmd`.
+- Full first-time long output is archived through `internal/retire.Store` before
+  the model-visible output is replaced with the head/tail receipt.
+- Budget hits record `BudgetTrims`, `BudgetLinesOmitted`,
+  `BudgetBytesOmitted`, and `AgentCodex`.
+- Unit tests cover Codex Bash budgeting, archive recovery, stats updates,
+  unified-exec-shaped output, and dedup-over-budget precedence.
+- Exit so far: `go test ./cmd/codex-hook ./cmd/claude-hook
+  ./internal/outputbudget` passes.
+- Remaining dogfood exit: a real Codex session trims a long command, the archive
+  path exists, and the dashboard updates live.
 
 ### Phase 8 - Phase And Retirement
 
