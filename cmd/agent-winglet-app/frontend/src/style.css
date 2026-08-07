@@ -464,6 +464,14 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+.card-detail-est {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-left: 2px;
+}
+
 .card-sub {
   font-family: var(--font-display);
   font-weight: 500;
@@ -631,6 +639,18 @@ body {
   font-weight: 500;
   font-size: 11px;
   color: var(--text-secondary);
+}
+
+.session-agent {
+  flex: 0 0 auto;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--text-secondary);
+  background: var(--bg-elevated);
 }
 
 .session-row-detail {

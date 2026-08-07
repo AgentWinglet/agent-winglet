@@ -173,10 +173,11 @@ func (a *App) GetPlatform() string {
 // optional secondary line shown beneath it (e.g. a percent under a byte
 // count, or a fixed caption under the net-gains multiplier).
 type Card struct {
-	Label   string `json:"label"`
-	Tooltip string `json:"tooltip"`
-	Detail  string `json:"detail"`
-	Sub     string `json:"sub"`
+	Label     string `json:"label"`
+	Tooltip   string `json:"tooltip"`
+	Detail    string `json:"detail"`
+	Sub       string `json:"sub"`
+	Estimated bool   `json:"estimated"`
 }
 
 // BarRow is one row of the suppressed-by-mechanism bar list: a
@@ -505,15 +506,15 @@ func buildOverview(t overviewTotals, projectCount, sessionCount int) Overview {
 		HasActivity:         hasActivity,
 		BytesSavedCard: Card{
 			Label: "Bytes saved", Tooltip: bytesSavedTooltip, Detail: bytesSavedDetail,
-			Sub: "Directly measured",
+			Sub: "Directly measured", Estimated: false,
 		},
 		TokensSavedCard: Card{
-			Label: "EST. Tokens saved", Tooltip: tokensSavedTooltip, Detail: tokensSavedDetail,
-			Sub: "Scaled from bytes saved",
+			Label: "Tokens saved", Tooltip: tokensSavedTooltip, Detail: tokensSavedDetail,
+			Sub: "Scaled from bytes saved", Estimated: true,
 		},
 		DollarSavedCard: Card{
-			Label: "EST. Money saved", Tooltip: moneySavedTooltip, Detail: dollarDetail,
-			Sub: "Uses API pricing",
+			Label: "Money saved", Tooltip: moneySavedTooltip, Detail: dollarDetail,
+			Sub: "Uses API pricing", Estimated: true,
 		},
 		Bars:         barRows(t, total),
 		ProjectCount: projectCount,
@@ -615,6 +616,7 @@ func (a *App) GetProjects() ([]ProjectRow, error) {
 // suppressed-bytes/transcript-usage tally) persists for this to read.
 type SessionRow struct {
 	SessionID string   `json:"sessionId"`
+	Agent     string   `json:"agent"`
 	Overview  Overview `json:"overview"`
 }
 
@@ -634,6 +636,7 @@ func (a *App) GetSessionStats(projectDir string) ([]SessionRow, error) {
 		}
 		rows = append(rows, SessionRow{
 			SessionID: f.ID,
+			Agent:     s.Agent,
 			Overview:  overviewFromSession(s, 1, 1),
 		})
 	}

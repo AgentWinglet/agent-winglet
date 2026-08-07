@@ -149,6 +149,15 @@ func TestBuildOverviewWithTranscriptDataPricesDollarCard(t *testing.T) {
 		t.Fatalf("expected HasTranscriptData = true when TranscriptContentBytes > 0")
 	}
 	// tokensSaved = 100 suppressed bytes * 1 token/byte = 100 tokens.
+	if o.BytesSavedCard.Label != "Bytes saved" || o.BytesSavedCard.Estimated {
+		t.Fatalf("BytesSavedCard label/estimated = %q/%v, want Bytes saved/false", o.BytesSavedCard.Label, o.BytesSavedCard.Estimated)
+	}
+	if o.TokensSavedCard.Label != "Tokens saved" || !o.TokensSavedCard.Estimated {
+		t.Fatalf("TokensSavedCard label/estimated = %q/%v, want Tokens saved/true", o.TokensSavedCard.Label, o.TokensSavedCard.Estimated)
+	}
+	if o.DollarSavedCard.Label != "Money saved" || !o.DollarSavedCard.Estimated {
+		t.Fatalf("DollarSavedCard label/estimated = %q/%v, want Money saved/true", o.DollarSavedCard.Label, o.DollarSavedCard.Estimated)
+	}
 	if o.TokensSavedCard.Detail != "100" {
 		t.Fatalf("TokensSavedCard.Detail = %q, want %q", o.TokensSavedCard.Detail, "100")
 	}
@@ -350,6 +359,29 @@ func TestGetSessionStatsListsSessionsNewestFirstAndSkipsLifetime(t *testing.T) {
 	}
 	if rows[0].SessionID != "sess-newer" {
 		t.Fatalf("rows[0].SessionID = %q, want %q (newest by mtime first)", rows[0].SessionID, "sess-newer")
+	}
+	if rows[0].Agent != stats.AgentClaudeCode {
+		t.Fatalf("legacy rows[0].Agent = %q, want %q", rows[0].Agent, stats.AgentClaudeCode)
+	}
+}
+
+func TestGetSessionStatsIncludesAgent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	if err := stats.SaveSession(dir, "sess-codex", &stats.Session{Agent: stats.AgentCodex, DedupHits: 1}); err != nil {
+		t.Fatalf("SaveSession codex errored: %v", err)
+	}
+
+	a := NewApp()
+	rows, err := a.GetSessionStats(dir)
+	if err != nil {
+		t.Fatalf("GetSessionStats errored: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	if rows[0].Agent != stats.AgentCodex {
+		t.Fatalf("rows[0].Agent = %q, want %q", rows[0].Agent, stats.AgentCodex)
 	}
 }
 

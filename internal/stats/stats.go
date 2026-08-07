@@ -28,15 +28,21 @@ import (
 	"github.com/umitkaanusta/agent-winglet/internal/transcript"
 )
 
+const (
+	AgentClaudeCode = "claude-code"
+	AgentCodex      = "codex"
+)
+
 // Session is the running tally of mechanism activity for one session.
 type Session struct {
-	DedupHits          int   `json:"dedupHits"`
-	DedupBytes         int64 `json:"dedupBytes"`
-	BudgetTrims        int   `json:"budgetTrims"`
-	BudgetLinesOmitted int   `json:"budgetLinesOmitted"`
-	BudgetBytesOmitted int64 `json:"budgetBytesOmitted"`
-	RetiredCalls       int   `json:"retiredCalls"`
-	RetiredBytes       int64 `json:"retiredBytes"`
+	Agent              string `json:"agent"`
+	DedupHits          int    `json:"dedupHits"`
+	DedupBytes         int64  `json:"dedupBytes"`
+	BudgetTrims        int    `json:"budgetTrims"`
+	BudgetLinesOmitted int    `json:"budgetLinesOmitted"`
+	BudgetBytesOmitted int64  `json:"budgetBytesOmitted"`
+	RetiredCalls       int    `json:"retiredCalls"`
+	RetiredBytes       int64  `json:"retiredBytes"`
 	// TranscriptTokens, TranscriptCostUSD, and TranscriptContentBytes carry
 	// this session's real transcript-derived usage (see internal/transcript)
 	// — the input-side token total, its priced cost at real per-token
@@ -239,6 +245,7 @@ func LoadSession(projectDir, sessionID string) (*Session, error) {
 	if err := loadJSON(p, &s); err != nil {
 		return nil, err
 	}
+	s.ensureAgent()
 	return &s, nil
 }
 
@@ -247,7 +254,14 @@ func SaveSession(projectDir, sessionID string, s *Session) error {
 	if err != nil {
 		return err
 	}
+	s.ensureAgent()
 	return saveJSON(p, s)
+}
+
+func (s *Session) ensureAgent() {
+	if s.Agent == "" {
+		s.Agent = AgentClaudeCode
+	}
 }
 
 // InvalidateSession resets the session's mechanism counters (dedup,

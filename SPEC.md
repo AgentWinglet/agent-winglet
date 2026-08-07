@@ -473,15 +473,17 @@ Complete.
 
 ### Phase 1 - Agent Field And UI Badge
 
-1. Add `stats.Session.Agent`.
-2. Default missing agent to `claude-code` on load or at app row construction.
-3. Thread `Agent` through `SessionRow`.
-4. Add the muted session badge in the frontend.
-5. Add `Card.Estimated`, remove `EST. ` from token/money labels, and render
-   `(est.)` beside real estimated values.
-6. Refresh or update Wails frontend bindings for the changed Go structs.
-7. Exit: Go tests pass and the app visually renders old sessions as Claude,
-   with token/money estimate markers beside values.
+Complete.
+
+- `stats.Session.Agent` now persists `claude-code` or `codex`.
+- Missing/legacy `agent` values default to `claude-code` at the stats load and
+  save boundary.
+- `SessionRow` exposes `Agent` to the frontend.
+- Session rows render a muted `Claude` or `Codex` badge.
+- `Card.Estimated` drives `(est.)` beside real token/money values, while card
+  labels stay plain.
+- Wails TypeScript models are updated for the new fields.
+- Exit: `go test ./...` and `npm run build` pass.
 
 ### Phase 2 - Codex Rollout Parser
 

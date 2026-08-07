@@ -31,6 +31,7 @@ export namespace main {
 	    tooltip: string;
 	    detail: string;
 	    sub: string;
+	    estimated: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Card(source);
@@ -42,6 +43,7 @@ export namespace main {
 	        this.tooltip = source["tooltip"];
 	        this.detail = source["detail"];
 	        this.sub = source["sub"];
+	        this.estimated = source["estimated"];
 	    }
 	}
 	export class Overview {
@@ -140,6 +142,7 @@ export namespace main {
 	}
 	export class SessionRow {
 	    sessionId: string;
+	    agent: string;
 	    overview: Overview;
 	
 	    static createFrom(source: any = {}) {
@@ -149,6 +152,7 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.sessionId = source["sessionId"];
+	        this.agent = source["agent"];
 	        this.overview = this.convertValues(source["overview"], Overview);
 	    }
 	
@@ -172,4 +176,3 @@ export namespace main {
 	}
 
 }
-

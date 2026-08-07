@@ -250,7 +250,9 @@ function cardRow(overview) {
               <span class="tooltip" role="tooltip">${c.tooltip}</span>
             </span>
           </div>
-          <div class="card-detail">${c.detail}</div>
+          <div class="card-detail">
+            ${c.detail}${c.estimated && c.detail !== 'no data yet' ? ' <span class="card-detail-est">(est.)</span>' : ''}
+          </div>
           ${c.sub ? `<div class="card-sub">${c.sub}</div>` : ''}
         </div>`
         )
@@ -454,6 +456,7 @@ function sessionsSectionMarkup(projectPath, sessions) {
           <button class="session-row-header" data-toggle-session="${key}">
             <span class="project-row-chevron">${icons.chevron}</span>
             <span class="session-id">${row.sessionId}</span>
+            <span class="session-agent">${sessionAgentLabel(row.agent)}</span>
             <span class="project-row-spacer"></span>
             ${heroInline(row.overview)}
           </button>
@@ -462,6 +465,10 @@ function sessionsSectionMarkup(projectPath, sessions) {
       })
       .join('')}
   `;
+}
+
+function sessionAgentLabel(agent) {
+  return agent === 'codex' ? 'Codex' : 'Claude';
 }
 
 // wireSessionToggles attaches the expand/collapse click handler to every

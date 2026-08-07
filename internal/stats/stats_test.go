@@ -19,6 +19,58 @@ func TestLoadMissingSessionReturnsZeroValue(t *testing.T) {
 	if !s.IsZero() {
 		t.Fatalf("expected zero-value session, got %+v", s)
 	}
+	if s.Agent != AgentClaudeCode {
+		t.Fatalf("missing session Agent = %q, want %q", s.Agent, AgentClaudeCode)
+	}
+}
+
+func TestLoadLegacySessionDefaultsAgentToClaudeCode(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	agentDir, err := statedir.Dir(dir)
+	if err != nil {
+		t.Fatalf("statedir.Dir errored: %v", err)
+	}
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll errored: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "sess-legacy.stats.json"), []byte(`{"dedupHits":1}`), 0o644); err != nil {
+		t.Fatalf("write legacy stats file errored: %v", err)
+	}
+
+	s, err := LoadSession(dir, "sess-legacy")
+	if err != nil {
+		t.Fatalf("LoadSession errored: %v", err)
+	}
+	if s.Agent != AgentClaudeCode {
+		t.Fatalf("legacy session Agent = %q, want %q", s.Agent, AgentClaudeCode)
+	}
+}
+
+func TestSaveSessionDefaultsAndPreservesAgent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	if err := SaveSession(dir, "sess-default", &Session{}); err != nil {
+		t.Fatalf("SaveSession default errored: %v", err)
+	}
+	defaulted, err := LoadSession(dir, "sess-default")
+	if err != nil {
+		t.Fatalf("LoadSession defaulted errored: %v", err)
+	}
+	if defaulted.Agent != AgentClaudeCode {
+		t.Fatalf("defaulted session Agent = %q, want %q", defaulted.Agent, AgentClaudeCode)
+	}
+
+	if err := SaveSession(dir, "sess-codex", &Session{Agent: AgentCodex}); err != nil {
+		t.Fatalf("SaveSession codex errored: %v", err)
+	}
+	codex, err := LoadSession(dir, "sess-codex")
+	if err != nil {
+		t.Fatalf("LoadSession codex errored: %v", err)
+	}
+	if codex.Agent != AgentCodex {
+		t.Fatalf("codex session Agent = %q, want %q", codex.Agent, AgentCodex)
+	}
 }
 
 func TestRecordDedupAccumulates(t *testing.T) {
