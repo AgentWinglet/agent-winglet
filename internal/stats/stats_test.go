@@ -229,79 +229,6 @@ func TestSessionSaveThenLoadRoundTrips(t *testing.T) {
 	}
 }
 
-func TestInvalidateSessionRemovesState(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	dir := t.TempDir()
-	sessionID := "sess-invalidate"
-
-	s, _ := LoadSession(dir, sessionID)
-	s.RecordDedup(10)
-	if err := SaveSession(dir, sessionID, s); err != nil {
-		t.Fatalf("SaveSession failed: %v", err)
-	}
-
-	if err := InvalidateSession(dir, sessionID); err != nil {
-		t.Fatalf("InvalidateSession failed: %v", err)
-	}
-
-	reloaded, err := LoadSession(dir, sessionID)
-	if err != nil {
-		t.Fatalf("LoadSession after Invalidate failed: %v", err)
-	}
-	if !reloaded.IsZero() {
-		t.Fatalf("session tally survived InvalidateSession, got %+v", reloaded)
-	}
-}
-
-// TestInvalidateSessionPreservesTranscriptUsage is the regression test for
-// the crash-after-compact gap: previously InvalidateSession unconditionally
-// os.Remove'd the whole session file, so a process that crashed or was
-// force-quit between a PostCompact and the next SessionEnd permanently lost
-// whatever transcript usage (tokens/cost/content bytes) had already been
-// recorded for that session — even though that usage genuinely happened and
-// didn't become invalid just because the ledger/phase mechanisms reset. This
-// asserts the mechanism counters (dedup/budget/retire) still reset to zero,
-// exactly as before, while transcript usage set beforehand survives the
-// call.
-func TestInvalidateSessionPreservesTranscriptUsage(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	dir := t.TempDir()
-	sessionID := "sess-invalidate-transcript"
-
-	s, _ := LoadSession(dir, sessionID)
-	s.RecordDedup(10)
-	s.RecordBudgetTrim(5, 50)
-	s.RecordRetire(20)
-	s.SetTranscriptUsage(transcript.SessionUsage{Tokens: 1000, CostUSD: 0.4, ContentBytes: 3000}, 9999)
-	if err := SaveSession(dir, sessionID, s); err != nil {
-		t.Fatalf("SaveSession failed: %v", err)
-	}
-
-	if err := InvalidateSession(dir, sessionID); err != nil {
-		t.Fatalf("InvalidateSession failed: %v", err)
-	}
-
-	reloaded, err := LoadSession(dir, sessionID)
-	if err != nil {
-		t.Fatalf("LoadSession after Invalidate failed: %v", err)
-	}
-	if reloaded.DedupHits != 0 || reloaded.DedupBytes != 0 || reloaded.BudgetTrims != 0 ||
-		reloaded.RetiredCalls != 0 || reloaded.RetiredBytes != 0 {
-		t.Fatalf("expected mechanism counters reset to zero, got %+v", reloaded)
-	}
-	if reloaded.TranscriptTokens != 1000 || reloaded.TranscriptCostUSD != 0.4 || reloaded.TranscriptContentBytes != 3000 {
-		t.Fatalf("expected transcript usage to survive InvalidateSession, got %+v", reloaded)
-	}
-}
-
-func TestInvalidateSessionOnMissingFileIsNotAnError(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	dir := t.TempDir()
-	if err := InvalidateSession(dir, "never-existed"); err != nil {
-		t.Fatalf("InvalidateSession on nonexistent session errored: %v", err)
-	}
-}
-
 func TestSumProjectAccumulatesAcrossSessions(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
@@ -348,66 +275,45 @@ func TestSumProjectAccumulatesAcrossSessions(t *testing.T) {
 	}
 }
 
-func TestSumProjectDropsInvalidatedSessions(t *testing.T) {
+// TestSumProjectSurvivesReloadAndResave is a regression guard for a
+// compact/resume no longer wiping a session's mechanism counters: loading a
+// session mid-way through (as SessionStart/PostCompact's ledger/phase/retire
+// invalidation does for their own state) and resaving it without touching
+// the stats fields must leave the rollup unchanged — nothing should reset
+// DedupHits/BudgetTrims/RetiredBytes just because the session_id was
+// reloaded.
+func TestSumProjectSurvivesReloadAndResave(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	sessionID := "sess1"
 
 	s := &Session{}
 	s.RecordDedup(10)
-	if err := SaveSession(dir, sessionID, s); err != nil {
-		t.Fatalf("SaveSession failed: %v", err)
-	}
-
-	// Invalidating a session with no transcript usage recorded leaves
-	// nothing worth keeping once its mechanism counters reset to zero, so
-	// the file is removed entirely (same as the old unconditional-delete
-	// behavior) and it drops out of the rollup — unlike a session with real
-	// transcript usage, which InvalidateSession now preserves (see
-	// TestInvalidateSessionPreservesTranscriptUsage).
-	if err := InvalidateSession(dir, sessionID); err != nil {
-		t.Fatalf("InvalidateSession failed: %v", err)
-	}
-
-	r, err := SumProject(dir)
-	if err != nil {
-		t.Fatalf("SumProject after session invalidation failed: %v", err)
-	}
-	if r.Sessions != 0 || r.DedupHits != 0 || r.DedupBytes != 0 {
-		t.Fatalf("expected an invalidated session with no transcript usage to drop out of the rollup, got %+v", r)
-	}
-}
-
-// TestSumProjectKeepsInvalidatedSessionsWithTranscriptUsage complements
-// TestSumProjectDropsInvalidatedSessions: a session that had real transcript
-// usage recorded before being invalidated stays in the rollup — its
-// DedupHits/DedupBytes reset to zero, but its transcript-derived figures
-// (and its place in the Sessions count) survive.
-func TestSumProjectKeepsInvalidatedSessionsWithTranscriptUsage(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	dir := t.TempDir()
-	sessionID := "sess1"
-
-	s := &Session{}
-	s.RecordDedup(10)
+	s.RecordBudgetTrim(5, 50)
+	s.RecordRetire(20)
 	s.SetTranscriptUsage(transcript.SessionUsage{Tokens: 1000, CostUSD: 0.4, ContentBytes: 3000}, 9999)
 	if err := SaveSession(dir, sessionID, s); err != nil {
 		t.Fatalf("SaveSession failed: %v", err)
 	}
 
-	if err := InvalidateSession(dir, sessionID); err != nil {
-		t.Fatalf("InvalidateSession failed: %v", err)
+	reloaded, err := LoadSession(dir, sessionID)
+	if err != nil {
+		t.Fatalf("LoadSession failed: %v", err)
+	}
+	if err := SaveSession(dir, sessionID, reloaded); err != nil {
+		t.Fatalf("SaveSession (resave) failed: %v", err)
 	}
 
 	r, err := SumProject(dir)
 	if err != nil {
-		t.Fatalf("SumProject after session invalidation failed: %v", err)
+		t.Fatalf("SumProject failed: %v", err)
 	}
-	if r.Sessions != 1 || r.DedupHits != 0 || r.DedupBytes != 0 {
-		t.Fatalf("expected the session to stay in the rollup with mechanism counters zeroed, got %+v", r)
+	if r.Sessions != 1 || r.DedupHits != 1 || r.DedupBytes != 10 ||
+		r.BudgetTrims != 1 || r.RetiredCalls != 1 || r.RetiredBytes != 20 {
+		t.Fatalf("expected mechanism counters to survive reload/resave untouched, got %+v", r)
 	}
 	if r.TranscriptTokens != 1000 || r.TranscriptCostUSD != 0.4 || r.TranscriptContentBytes != 3000 {
-		t.Fatalf("expected transcript usage to survive into the rollup, got %+v", r)
+		t.Fatalf("expected transcript usage to survive reload/resave, got %+v", r)
 	}
 }
 

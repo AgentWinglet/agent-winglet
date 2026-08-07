@@ -137,6 +137,13 @@ type payload struct {
 	} `json:"info"`
 }
 
+// codexTokenUsage mirrors Codex's total_token_usage block. Unlike Anthropic's
+// usage shape (where input_tokens is already cache-exclusive), OpenAI's
+// input_tokens INCLUDES cache hits as a subset — confirmed by the fixture
+// data's own total_tokens, which balances as
+// input_tokens+output_tokens+cache_write_input_tokens with cached_input_tokens
+// contributing nothing extra. So CachedInputTokens must be subtracted out of
+// InputTokens before use, not just left unread — see priceTokenUsage.
 type codexTokenUsage struct {
 	InputTokens           int64 `json:"input_tokens"`
 	CachedInputTokens     int64 `json:"cached_input_tokens"`
@@ -173,8 +180,13 @@ func accumulateLine(line []byte, acc *accumulator) {
 
 func priceTokenUsage(u codexTokenUsage, model string) transcript.SessionUsage {
 	rate := pricing.LookupOpenAI(model)
-	included := u.InputTokens + u.CacheWriteInputTokens
-	cost := float64(u.InputTokens)*rate.Input/1e6 +
+	// InputTokens includes CachedInputTokens as a subset (see codexTokenUsage's
+	// doc comment), so it must be subtracted here to get only the genuinely
+	// new content fed to the model this turn — the same "cache reads excluded"
+	// rule internal/transcript applies to Claude's cache_read_input_tokens.
+	freshInput := nonNegative(u.InputTokens - u.CachedInputTokens)
+	included := freshInput + u.CacheWriteInputTokens
+	cost := float64(freshInput)*rate.Input/1e6 +
 		float64(u.CacheWriteInputTokens)*rate.CacheWrite5m/1e6
 	return transcript.SessionUsage{Tokens: included, CostUSD: cost}
 }

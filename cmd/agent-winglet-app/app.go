@@ -1059,12 +1059,10 @@ func (a *App) GetProjects() ([]ProjectRow, error) {
 // `ccusage session` report shape): one row per still-on-disk
 // <sessionID>.stats.json file, using the same percentage-first Overview
 // shape as the project/lifetime rollup. This only works because completed
-// sessions' stats files are NOT deleted on SessionEnd — only
-// stats.InvalidateSession (SessionStart/PostCompact) touches one, to wipe a
-// resumed/compacted session's stale dedup/budget/retire tally while
-// preserving its real transcript-usage figures (and removing the file only
-// if nothing worth keeping is left) — so a finished session's file (and its
-// suppressed-bytes/transcript-usage tally) persists for this to read.
+// sessions' stats files are NOT deleted on SessionEnd, and nothing else
+// touches or resets one after the fact — a resumed or compacted session
+// keeps accumulating onto the same file — so a finished session's file (and
+// its suppressed-bytes/transcript-usage tally) persists for this to read.
 type SessionRow struct {
 	SessionID string   `json:"sessionId"`
 	Agent     string   `json:"agent"`

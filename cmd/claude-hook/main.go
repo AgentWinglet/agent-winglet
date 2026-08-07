@@ -26,13 +26,18 @@
 //     (handleBashRetire) even though it's never investigate-classified;
 //     everything else passes through untouched.
 //   - SessionStart / PostCompact: wipes the session's ledger, phase state,
-//     retired-content directory, and stats tally, so nothing survives a
-//     restart or compaction. Also registers the current project (by git
-//     root, via projectroot.Resolve, so sessions started from different
-//     subdirectories collapse into one identity) in the global
-//     ~/.agent-winglet/projects.json registry, and best-effort migrates any
-//     pre-move-storage per-cwd state into that project's new state dir
-//     (migrateLegacyData).
+//     and retired-content directory (the state used to detect future
+//     repeats/boundaries), so nothing from a part of the context that's now
+//     gone misfires against new content. The stats tally is deliberately
+//     left alone — dedup/budget/retire savings already happened, and a
+//     restart or compaction doesn't undo bytes that were genuinely kept out
+//     of the model's context, so a session_id's receipt keeps accumulating
+//     across a compact/resume instead of resetting. Also registers the
+//     current project (by git root, via projectroot.Resolve, so sessions
+//     started from different subdirectories collapse into one identity) in
+//     the global ~/.agent-winglet/projects.json registry, and best-effort
+//     migrates any pre-move-storage per-cwd state into that project's new
+//     state dir (migrateLegacyData).
 //   - Stop: records the transcript-usage delta since the last recorded
 //     offset (recordTranscriptDelta), the same call PostToolUse makes, so a
 //     session that never calls a tool — pure chat — still gets a stats file
@@ -221,9 +226,13 @@ func handle(in hookInput) (*hookOutput, error) {
 		if err := retire.Invalidate(root, in.SessionID); err != nil {
 			return nil, err
 		}
-		if err := stats.InvalidateSession(root, in.SessionID); err != nil {
-			return nil, err
-		}
+		// Note: stats' per-session tally is deliberately left untouched here.
+		// Dedup/budget-trim/retire savings already happened — real bytes that
+		// were genuinely kept out of the model's context — and a compact or
+		// resume doesn't undo that, so the receipt for this session_id should
+		// keep accumulating across it. Only ledger/phase/retire's own
+		// operational state (which detects future repeats/boundaries against
+		// content that's now gone from context) needs resetting.
 		// Self-registration: now that the hook installs globally rather than
 		// per-project (see install.sh), there's no install-time moment inside
 		// each project to register it in ~/.agent-winglet/projects.json.

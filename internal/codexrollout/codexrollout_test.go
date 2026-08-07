@@ -31,13 +31,17 @@ func TestReadSessionUsageUsesLatestCumulativeTokenCount(t *testing.T) {
 		t.Fatalf("ReadSessionUsage errored: %v", err)
 	}
 
-	wantTokens := int64(1200 + 30)
+	// Latest cumulative event: input_tokens=1200, cached_input_tokens=500
+	// (a subset of input_tokens, not additional — see priceTokenUsage),
+	// cache_write_input_tokens=30. Fresh (non-cached) input is 1200-500=700,
+	// so Tokens = 700+30 = 730.
+	wantTokens := int64(700 + 30)
 	if u.Tokens != wantTokens {
 		t.Fatalf("Tokens = %d, want %d", u.Tokens, wantTokens)
 	}
 
 	rate := pricing.LookupOpenAI("gpt-5-codex")
-	wantCost := float64(1200)*rate.Input/1e6 + float64(30)*rate.CacheWrite5m/1e6
+	wantCost := float64(700)*rate.Input/1e6 + float64(30)*rate.CacheWrite5m/1e6
 	if u.CostUSD != wantCost {
 		t.Fatalf("CostUSD = %v, want %v", u.CostUSD, wantCost)
 	}
@@ -101,8 +105,10 @@ func TestReadSessionUsageFromReturnsDeltaForCumulativeTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first ReadSessionUsageFrom errored: %v", err)
 	}
-	if first.Tokens != 110 || first.ContentBytes != int64(len("first")) {
-		t.Fatalf("first delta = %+v, want Tokens=110 ContentBytes=%d", first, len("first"))
+	// input_tokens=100, cached_input_tokens=90 (subset of input_tokens),
+	// cache_write_input_tokens=10 -> fresh input = 100-90=10, Tokens = 10+10=20.
+	if first.Tokens != 20 || first.ContentBytes != int64(len("first")) {
+		t.Fatalf("first delta = %+v, want Tokens=20 ContentBytes=%d", first, len("first"))
 	}
 
 	appendLines(t, path,
@@ -114,8 +120,10 @@ func TestReadSessionUsageFromReturnsDeltaForCumulativeTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second ReadSessionUsageFrom errored: %v", err)
 	}
-	if second.Tokens != 90 {
-		t.Fatalf("second Tokens = %d, want 90 (latest cumulative 200 minus previous 110)", second.Tokens)
+	// Latest cumulative: fresh input = 180-120=60, Tokens = 60+20=80.
+	// Delta against previous (20) = 60.
+	if second.Tokens != 60 {
+		t.Fatalf("second Tokens = %d, want 60 (latest cumulative 80 minus previous 20)", second.Tokens)
 	}
 	if second.ContentBytes != int64(len("second")) {
 		t.Fatalf("second ContentBytes = %d, want %d", second.ContentBytes, len("second"))

@@ -76,7 +76,7 @@ func archivePathFromBudgetedOutput(t *testing.T, body, marker string) string {
 	return path
 }
 
-func TestSessionStartRegistersProjectAndResetsSession(t *testing.T) {
+func TestSessionStartRegistersProjectAndPreservesSession(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	sessionID := "codex-session"
@@ -103,15 +103,18 @@ func TestSessionStartRegistersProjectAndResetsSession(t *testing.T) {
 		t.Fatalf("registered dirs = %v, want [%s]", dirs, dir)
 	}
 
-	reset, err := stats.LoadSession(dir, sessionID)
+	// A resumed session_id's prior savings already happened and a
+	// SessionStart doesn't undo them — only ledger/phase/retire's own
+	// detection state resets, not this receipt.
+	got, err := stats.LoadSession(dir, sessionID)
 	if err != nil {
 		t.Fatalf("LoadSession errored: %v", err)
 	}
-	if !reset.IsZero() || reset.TranscriptContentBytes != 0 {
-		t.Fatalf("session was not reset: %+v", reset)
+	if got.DedupHits != 1 || got.DedupBytes != 10 {
+		t.Fatalf("SessionStart wiped prior savings: %+v", got)
 	}
-	if reset.Agent != stats.AgentCodex {
-		t.Fatalf("Agent = %q, want %q", reset.Agent, stats.AgentCodex)
+	if got.Agent != stats.AgentCodex {
+		t.Fatalf("Agent = %q, want %q", got.Agent, stats.AgentCodex)
 	}
 }
 
@@ -144,7 +147,7 @@ func TestSessionStartCreatesVisibleCodexSession(t *testing.T) {
 	}
 }
 
-func TestPostCompactPreservesCodexAgentForExistingUsage(t *testing.T) {
+func TestPostCompactPreservesCodexAgentAndSavings(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	sessionID := "codex-session"
@@ -170,8 +173,11 @@ func TestPostCompactPreservesCodexAgentForExistingUsage(t *testing.T) {
 	if got.Agent != stats.AgentCodex {
 		t.Fatalf("Agent = %q, want %q", got.Agent, stats.AgentCodex)
 	}
-	if !got.IsZero() {
-		t.Fatalf("mechanism counters should be reset after PostCompact: %+v", got)
+	// A compact doesn't undo bytes that were already kept out of the
+	// model's context — the mechanism counters must survive it, same as
+	// transcript usage.
+	if got.DedupHits != 1 || got.DedupBytes != 10 {
+		t.Fatalf("mechanism counters should survive PostCompact: %+v", got)
 	}
 	if got.TranscriptTokens != 100 || got.TranscriptContentBytes != 50 || got.TranscriptOffset != 500 {
 		t.Fatalf("transcript usage should be preserved after PostCompact: %+v", got)
@@ -207,8 +213,11 @@ func TestPostToolUseRecordsCodexTaggedUsage(t *testing.T) {
 	if s.Agent != stats.AgentCodex {
 		t.Fatalf("Agent = %q, want %q", s.Agent, stats.AgentCodex)
 	}
-	if s.TranscriptTokens != 110 {
-		t.Fatalf("TranscriptTokens = %d, want 110", s.TranscriptTokens)
+	// input_tokens=100, cached_input_tokens=80 (a subset of input_tokens,
+	// not additional), cache_write_input_tokens=10 -> fresh input = 20,
+	// TranscriptTokens = 20+10 = 30.
+	if s.TranscriptTokens != 30 {
+		t.Fatalf("TranscriptTokens = %d, want 30", s.TranscriptTokens)
 	}
 	if s.TranscriptContentBytes != int64(len("hello")) {
 		t.Fatalf("TranscriptContentBytes = %d, want %d", s.TranscriptContentBytes, len("hello"))
@@ -894,8 +903,10 @@ func TestSessionEndReconcilesUsageWithoutReceiptWhenNoSuppression(t *testing.T) 
 	if s.Agent != stats.AgentCodex {
 		t.Fatalf("Agent = %q, want %q", s.Agent, stats.AgentCodex)
 	}
-	if s.TranscriptTokens != 125 {
-		t.Fatalf("TranscriptTokens = %d, want 125", s.TranscriptTokens)
+	// input_tokens=120, cached_input_tokens=80 (subset of input_tokens),
+	// cache_write_input_tokens=5 -> fresh input = 40, Tokens = 40+5 = 45.
+	if s.TranscriptTokens != 45 {
+		t.Fatalf("TranscriptTokens = %d, want 45", s.TranscriptTokens)
 	}
 	if s.TranscriptContentBytes != int64(len("hello")+len("tool output")) {
 		t.Fatalf("TranscriptContentBytes = %d, want %d", s.TranscriptContentBytes, len("hello")+len("tool output"))

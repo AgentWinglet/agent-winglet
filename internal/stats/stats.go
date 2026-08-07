@@ -3,10 +3,15 @@
 // a session-end receipt instead of leaving every substitution invisible.
 //
 // Session is the only thing persisted: one file per session_id under
-// projectDir, wiped on SessionStart/PostCompact same as ledger/phase/retire
-// (a receipt describing "this session's" activity is meaningless once the
-// session it describes is gone), but never deleted once a session ends —
-// see ListSessions. Project and cross-project totals are never separately
+// projectDir, accumulated for as long as that session_id is active —
+// including across a compact or resume, since dedup/budget/retire savings
+// already happened and neither event undoes bytes that were genuinely kept
+// out of the model's context — and never deleted once a session ends, see
+// ListSessions. Unlike Session, ledger/phase/retire's own state IS wiped on
+// SessionStart/PostCompact, but that's a different thing: it's operational
+// state for detecting future repeats/boundaries against content that's now
+// gone from context, not a receipt of what already happened. Project and
+// cross-project totals are never separately
 // stored; SumProject computes them fresh by summing every on-disk session
 // file every time it's called, so a project's total and the sum of its
 // sessions can never disagree. This used to be two lifecycles — Session plus
@@ -262,51 +267,6 @@ func (s *Session) ensureAgent() {
 	if s.Agent == "" {
 		s.Agent = AgentClaudeCode
 	}
-}
-
-// InvalidateSession resets the session's mechanism counters (dedup,
-// budget-trim, retire). Called on SessionStart and PostCompact, same as
-// ledger.Invalidate/phase.Invalidate/retire.Invalidate, so a resumed or
-// compacted session doesn't report a receipt describing activity from a
-// part of the session that's now gone.
-//
-// The transcript-usage fields are deliberately left alone: they're a
-// running total of real usage that already happened, true regardless of a
-// later compact — unlike the mechanism counters, they aren't tied to
-// ledger/phase state that a compact invalidates. Resetting the mechanism
-// fields in place, rather than deleting the whole file, avoids a real
-// crash window: a delete-then-self-heal approach loses the pre-compact
-// usage for good if the process dies between the compact and SessionEnd's
-// later full re-read.
-//
-// If resetting the mechanism counters leaves the session entirely zero
-// (including transcript usage), the file is still removed rather than left
-// behind as an empty husk.
-func InvalidateSession(projectDir, sessionID string) error {
-	p, err := sessionPath(projectDir, sessionID)
-	if err != nil {
-		return err
-	}
-	var s Session
-	if err := loadJSON(p, &s); err != nil {
-		return err
-	}
-	s.DedupHits = 0
-	s.DedupBytes = 0
-	s.BudgetTrims = 0
-	s.BudgetLinesOmitted = 0
-	s.BudgetBytesOmitted = 0
-	s.RetiredCalls = 0
-	s.RetiredBytes = 0
-
-	if s.TranscriptTokens == 0 && s.TranscriptCostUSD == 0 && s.TranscriptContentBytes == 0 {
-		err := os.Remove(p)
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	return saveJSON(p, &s)
 }
 
 // SessionFile identifies one on-disk session-stats file and its

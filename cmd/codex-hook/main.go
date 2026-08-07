@@ -480,9 +480,10 @@ func resetSession(in hookInput) error {
 	if err := retire.Invalidate(root, in.SessionID); err != nil {
 		return err
 	}
-	if err := stats.InvalidateSession(root, in.SessionID); err != nil {
-		return err
-	}
+	// Note: stats' per-session tally is deliberately left untouched here —
+	// see the matching comment in cmd/claude-hook's handle. Dedup/budget-
+	// trim/retire savings already happened and a compact or resume doesn't
+	// undo them; only ledger/phase/retire's own detection state resets.
 	if err := ensureCodexSessionVisible(root, in.SessionID); err != nil {
 		return err
 	}
