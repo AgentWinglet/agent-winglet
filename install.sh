@@ -158,20 +158,23 @@ if [ "$WANT_HOOK" = "1" ]; then
     fi
 
     tmp_file="$(mktemp)"
+    # Codex clamps a SessionEnd hook's timeout to 3s (and logs a "clamping
+    # SessionEnd hook timeout" warning if configured any higher), so it gets
+    # its own lower ceiling here instead of sharing hook_entry's default 5s.
     jq --arg cmd "$hook_path" '
       def has_cmd: any(.hooks[]?; .command == $cmd);
-      def hook_entry: {"hooks": [{"type": "command", "command": $cmd, "timeout": 5}]};
+      def hook_entry(timeout): {"hooks": [{"type": "command", "command": $cmd, "timeout": timeout}]};
       .hooks //= {} |
       .hooks.PostToolUse //= [] |
-      .hooks.PostToolUse |= (if any(.[]; has_cmd) then . else . + [hook_entry + {"matcher": ""}] end) |
+      .hooks.PostToolUse |= (if any(.[]; has_cmd) then . else . + [hook_entry(5) + {"matcher": ""}] end) |
       .hooks.SessionStart //= [] |
-      .hooks.SessionStart |= (if any(.[]; has_cmd) then . else . + [hook_entry] end) |
+      .hooks.SessionStart |= (if any(.[]; has_cmd) then . else . + [hook_entry(5)] end) |
       .hooks.PostCompact //= [] |
-      .hooks.PostCompact |= (if any(.[]; has_cmd) then . else . + [hook_entry] end) |
+      .hooks.PostCompact |= (if any(.[]; has_cmd) then . else . + [hook_entry(5)] end) |
       .hooks.Stop //= [] |
-      .hooks.Stop |= (if any(.[]; has_cmd) then . else . + [hook_entry] end) |
+      .hooks.Stop |= (if any(.[]; has_cmd) then . else . + [hook_entry(5)] end) |
       .hooks.SessionEnd //= [] |
-      .hooks.SessionEnd |= (if any(.[]; has_cmd) then . else . + [hook_entry] end)
+      .hooks.SessionEnd |= (if any(.[]; has_cmd) then . else . + [hook_entry(3)] end)
     ' "$CODEX_HOOKS_FILE" > "$tmp_file"
     mv "$tmp_file" "$CODEX_HOOKS_FILE"
   }
@@ -191,7 +194,7 @@ if [ "$WANT_HOOK" = "1" ]; then
     if [ -f "$CODEX_CONFIG_FILE" ] && grep -Eq '^[[:space:]]*hooks[[:space:]]*=[[:space:]]*false' "$CODEX_CONFIG_FILE"; then
       echo "warning: ${CODEX_CONFIG_FILE} appears to set hooks = false; Codex will not run hooks until you re-enable them."
     fi
-    echo "Run /hooks in Codex and trust the agent-winglet codex-hook before Winglet can record Codex sessions."
+    echo "In Codex, open Settings > Hooks and trust the agent-winglet codex-hook before Winglet can record Codex sessions."
   fi
 
   # Unlike before, this script no longer registers a project in

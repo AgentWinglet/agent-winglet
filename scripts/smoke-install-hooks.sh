@@ -110,7 +110,7 @@ fi
 global_case="$(new_case global)"
 global_out="$(run_in_case "$global_case" "$REPO_ROOT" "${REPO_ROOT}/install.sh" --hook-only 2>&1)"
 case "$global_out" in
-  *"Run /hooks in Codex and trust the agent-winglet codex-hook"*) ;;
+  *"open Settings > Hooks and trust the agent-winglet codex-hook"*) ;;
   *) fail "Codex trust reminder missing from global install output" ;;
 esac
 assert_count "${global_case}/home/.claude/settings.json" "claude-hook" "5"

@@ -28,7 +28,7 @@ builds the local `cmd/claude-hook` and `cmd/codex-hook` packages. With
 config into `~/.claude/settings.json`. `codex-hook` merges config into
 `${CODEX_HOME:-~/.codex}/hooks.json`. Neither path overwrites existing
 settings. Installing once globally makes the hooks active for projects under
-that agent; Codex still requires you to run `/hooks` and trust the
+that agent; Codex still requires you to open Settings > Hooks and trust the
 `agent-winglet` `codex-hook` before Winglet can record Codex sessions.
 
 Ledger/stats state lives under `~/.agent-winglet/projects/...`, keyed by the

@@ -72,14 +72,6 @@ func (a *App) SetCodexHookEnabled(enabled bool) (HookHealth, error) {
 	return a.GetHookHealth()
 }
 
-func (a *App) RefreshClaudeHook() (HookHealth, error) {
-	return a.SetClaudeHookEnabled(true)
-}
-
-func (a *App) RefreshCodexHook() (HookHealth, error) {
-	return a.SetCodexHookEnabled(true)
-}
-
 // HookHealth is a dashboard-facing install/status check for hook setup. Codex
 // does not expose a stable machine-readable trust API, so ReviewLikely is a
 // conservative symptom check: the hook is configured, but Winglet has not seen
@@ -147,21 +139,21 @@ func agentHookStatus(agentName, binaryName string, configured bool, configTime t
 	case !configured:
 		switch binaryName {
 		case "claude-hook":
-			return "Not installed",
+			return "Inactive",
 				"Claude Code isn't connected to Winglet yet.",
-				"Run ./install.sh --hook-only --claude-only.",
+				"",
 				false
 		case "codex-hook":
-			return "Not installed",
+			return "Inactive",
 				"Codex isn't connected to Winglet yet.",
-				"Run ./install.sh --hook-only --codex-only, then open Codex and run /hooks.",
+				"Click Enable, then in Codex open Settings > Hooks and trust all. Restart and start a new session after.",
 				false
 		}
 	case !observed || observedTime.Before(configTime):
 		if binaryName == "codex-hook" {
 			return "Extra steps needed",
 				"Codex requires manual approval before a new integration can run.",
-				"Open Codex, run /hooks, and trust the agent-winglet entries.",
+				"In Codex, open Settings > Hooks and trust all. Restart and start a new session after.",
 				true
 		}
 		return "Waiting for activity",
@@ -170,7 +162,7 @@ func agentHookStatus(agentName, binaryName string, configured bool, configTime t
 			false
 	default:
 		return "Active",
-			"Everything's working as expected.",
+			"Integration complete.",
 			"",
 			false
 	}
@@ -391,7 +383,7 @@ func mergeHookEntries(root map[string]interface{}, binaryName, hookPath string) 
 	}
 	for _, event := range []string{"PostToolUse", "SessionStart", "PostCompact", "Stop", "SessionEnd"} {
 		entry := map[string]interface{}{
-			"hooks": []interface{}{hookCommandEntry(binaryName, hookPath)},
+			"hooks": []interface{}{hookCommandEntry(binaryName, hookPath, event)},
 		}
 		if binaryName == "codex-hook" && event == "PostToolUse" {
 			entry["matcher"] = ""
@@ -400,13 +392,20 @@ func mergeHookEntries(root map[string]interface{}, binaryName, hookPath string) 
 	}
 }
 
-func hookCommandEntry(binaryName, hookPath string) map[string]interface{} {
+// Codex clamps a SessionEnd hook's timeout to 3s and logs a "clamping
+// SessionEnd hook timeout" warning if it's configured any higher — write 3s
+// directly so a fresh install doesn't trip that warning.
+func hookCommandEntry(binaryName, hookPath, event string) map[string]interface{} {
 	entry := map[string]interface{}{
 		"type":    "command",
 		"command": hookPath,
 	}
 	if binaryName == "codex-hook" {
-		entry["timeout"] = float64(5)
+		timeout := 5
+		if event == "SessionEnd" {
+			timeout = 3
+		}
+		entry["timeout"] = float64(timeout)
 	}
 	return entry
 }

@@ -26,14 +26,6 @@ export function GetSessionStats(arg1) {
   return window['go']['main']['App']['GetSessionStats'](arg1);
 }
 
-export function RefreshClaudeHook() {
-  return window['go']['main']['App']['RefreshClaudeHook']();
-}
-
-export function RefreshCodexHook() {
-  return window['go']['main']['App']['RefreshCodexHook']();
-}
-
 export function SetClaudeHookEnabled(arg1) {
   return window['go']['main']['App']['SetClaudeHookEnabled'](arg1);
 }

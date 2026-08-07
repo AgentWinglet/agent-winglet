@@ -7,8 +7,6 @@ import {
   GetPlatform,
   GetProjects,
   GetSessionStats,
-  RefreshClaudeHook,
-  RefreshCodexHook,
   SetCompactNudgesEnabled,
   SetClaudeHookEnabled,
   SetCodexHookEnabled,
@@ -28,8 +26,8 @@ const NAV_ITEMS = [
 ];
 
 const SETTINGS_ITEMS = [
-  { id: 'installations', label: 'Installations' },
   { id: 'preferences', label: 'Preferences' },
+  { id: 'installations', label: 'Installations' },
 ];
 
 // Session/project stats files on disk are updated live by the hook (every
@@ -73,7 +71,7 @@ function renderIfChanged(key, data, draw) {
 
 function navigate(screen) {
   stopPolling();
-  state.screen = screen === 'settings' ? 'installations' : screen;
+  state.screen = screen === 'settings' ? 'preferences' : screen;
   render();
 }
 
@@ -630,7 +628,6 @@ function hookAgentMarkup(agent) {
         <button class="hook-action-button ${primaryAction}" type="button" data-hook-agent="${escapeHtml(agent.key)}" data-hook-action="${primaryAction}">
           ${escapeHtml(primaryLabel)}
         </button>
-        <button class="hook-action-button secondary" type="button" data-hook-agent="${escapeHtml(agent.key)}" data-hook-action="refresh">Refresh</button>
       </div>
     </article>
   `;
@@ -660,10 +657,8 @@ async function runHookAction(container, btn) {
 function hookActionMethod(agent, action) {
   if (agent === 'claude' && action === 'enable') return () => SetClaudeHookEnabled(true);
   if (agent === 'claude' && action === 'disable') return () => SetClaudeHookEnabled(false);
-  if (agent === 'claude' && action === 'refresh') return () => RefreshClaudeHook();
   if (agent === 'codex' && action === 'enable') return () => SetCodexHookEnabled(true);
   if (agent === 'codex' && action === 'disable') return () => SetCodexHookEnabled(false);
-  if (agent === 'codex' && action === 'refresh') return () => RefreshCodexHook();
   return null;
 }
 

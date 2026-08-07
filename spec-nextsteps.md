@@ -157,7 +157,7 @@ make installer-smoke
 Manual dogfood check:
 
 1. Install Codex hooks locally with `./install.sh --local --hook-only --codex-only`.
-2. Inspect `.codex/hooks.json` and trust hooks via `/hooks`.
+2. Inspect `.codex/hooks.json` and trust the hooks via Settings > Hooks.
 3. Run a Codex session that starts a subagent, then performs an edit.
 4. Confirm the compact nudge appears after the subagent-to-implementation
    boundary.

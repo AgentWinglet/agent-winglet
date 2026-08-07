@@ -395,8 +395,8 @@ func TestGetHookHealthReportsCodexNotInstalled(t *testing.T) {
 	if h.CodexConfigured || h.CodexObserved || h.CodexReviewLikely {
 		t.Fatalf("unexpected Codex hook health: %+v", h)
 	}
-	if h.CodexStatus != "Not installed" {
-		t.Fatalf("CodexStatus = %q, want %q", h.CodexStatus, "Not installed")
+	if h.CodexStatus != "Inactive" {
+		t.Fatalf("CodexStatus = %q, want %q", h.CodexStatus, "Inactive")
 	}
 }
 

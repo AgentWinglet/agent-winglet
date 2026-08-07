@@ -11,6 +11,7 @@
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 4px 12px rgba(0, 0, 0, 0.05);
   --accent: #1f9d55;
   --accent-bg: rgba(31, 157, 85, 0.12);
+  --accent-border: rgba(31, 157, 85, 0.35);
   --accent-glow: 0 0 10px rgba(31, 157, 85, 0.2);
   --accent-glow-bg: rgba(31, 157, 85, 0.05);
   --muted: #8e8e93;
@@ -39,6 +40,7 @@
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.35);
     --accent: #3fe08a;
     --accent-bg: rgba(63, 224, 138, 0.16);
+    --accent-border: rgba(63, 224, 138, 0.35);
     --accent-glow: 0 0 10px rgba(63, 224, 138, 0.3);
     --accent-glow-bg: rgba(63, 224, 138, 0.07);
     --muted: #8e8e93;
@@ -800,6 +802,10 @@ body {
   gap: 12px;
 }
 
+.hook-agent.ok {
+  border-color: var(--accent-border);
+}
+
 .hook-agent.needs-action {
   border-color: var(--warn-border);
 }
@@ -902,16 +908,6 @@ body {
   background: color-mix(in srgb, var(--danger-bg), var(--danger) 15%);
 }
 
-.hook-action-button.secondary {
-  color: var(--text-primary);
-  border-color: var(--hairline);
-  background: transparent;
-}
-
-.hook-action-button.secondary:hover {
-  background: var(--nav-active-bg);
-}
-
 .hook-action-button:disabled {
   opacity: 0.7;
 }
@@ -989,7 +985,6 @@ body {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  max-width: 560px;
   margin-top: 4px;
   padding: 12px 14px;
   border-radius: 8px;
