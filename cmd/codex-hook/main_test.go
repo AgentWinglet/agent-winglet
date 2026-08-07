@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/umitkaanusta/agent-winglet/internal/registry"
@@ -160,6 +162,105 @@ func TestPostToolUseRecordsCodexTaggedUsage(t *testing.T) {
 	}
 }
 
+func TestPostToolUseProbeDisabledByDefault(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(codexProbeEnvVar, "")
+
+	out, err := handle(codexProbeInput(t, t.TempDir(), "printf 'agent-winglet-codex-probe\n'"))
+	if err != nil {
+		t.Fatalf("handle PostToolUse errored: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("probe should be disabled by default, got %+v", out)
+	}
+}
+
+func TestPostToolUseProbeContinueFalseOutput(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(codexProbeEnvVar, "continue")
+
+	out, err := handle(codexProbeInput(t, t.TempDir(), "printf 'agent-winglet-codex-probe\n'"))
+	if err != nil {
+		t.Fatalf("handle PostToolUse errored: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("expected probe output")
+	}
+	if out.Continue == nil || *out.Continue {
+		t.Fatalf("Continue = %v, want pointer to false", out.Continue)
+	}
+	if out.Decision != "" || out.Reason != "" {
+		t.Fatalf("continue probe should not emit decision/block fields: %+v", out)
+	}
+	if !strings.Contains(out.StopReason, "codex replacement probe (continue)") {
+		t.Fatalf("StopReason = %q, want probe receipt", out.StopReason)
+	}
+	if out.SystemMessage != out.StopReason {
+		t.Fatalf("SystemMessage = %q, want StopReason %q", out.SystemMessage, out.StopReason)
+	}
+	if out.HookSpecificOutput != nil {
+		t.Fatalf("continue probe should not emit hookSpecificOutput, got %+v", out.HookSpecificOutput)
+	}
+	encoded, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("Marshal errored: %v", err)
+	}
+	if got := string(encoded); !strings.Contains(got, `"continue":false`) || !strings.Contains(got, `"stopReason"`) {
+		t.Fatalf("encoded continue probe output = %s, want continue:false and stopReason", got)
+	}
+}
+
+func TestPostToolUseProbeBlockOutput(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(codexProbeEnvVar, "block")
+
+	out, err := handle(codexProbeInput(t, t.TempDir(), "printf 'agent-winglet-codex-probe\n'"))
+	if err != nil {
+		t.Fatalf("handle PostToolUse errored: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("expected probe output")
+	}
+	if out.Continue != nil || out.StopReason != "" {
+		t.Fatalf("block probe should not emit continue fields: %+v", out)
+	}
+	if out.Decision != "block" {
+		t.Fatalf("Decision = %q, want block", out.Decision)
+	}
+	if !strings.Contains(out.Reason, "codex replacement probe (block)") {
+		t.Fatalf("Reason = %q, want probe receipt", out.Reason)
+	}
+	if out.HookSpecificOutput == nil {
+		t.Fatalf("expected hookSpecificOutput")
+	}
+	if out.HookSpecificOutput.HookEventName != "PostToolUse" {
+		t.Fatalf("HookEventName = %q, want PostToolUse", out.HookSpecificOutput.HookEventName)
+	}
+	if out.HookSpecificOutput.AdditionalContext != out.Reason {
+		t.Fatalf("AdditionalContext = %q, want Reason %q", out.HookSpecificOutput.AdditionalContext, out.Reason)
+	}
+	encoded, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("Marshal errored: %v", err)
+	}
+	if got := string(encoded); !strings.Contains(got, `"decision":"block"`) || !strings.Contains(got, `"reason"`) {
+		t.Fatalf("encoded block probe output = %s, want decision:block and reason", got)
+	}
+}
+
+func TestPostToolUseProbeIgnoresUnmarkedCommand(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(codexProbeEnvVar, "continue")
+
+	out, err := handle(codexProbeInput(t, t.TempDir(), "printf 'hello\n'"))
+	if err != nil {
+		t.Fatalf("handle PostToolUse errored: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("probe should ignore commands without marker, got %+v", out)
+	}
+}
+
 func TestPostToolUseReadsCumulativeTokenDelta(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
@@ -227,5 +328,22 @@ func TestSessionEndReconcilesUsageWithoutReceiptWhenNoSuppression(t *testing.T) 
 	}
 	if s.TranscriptContentBytes != int64(len("hello")+len("tool output")) {
 		t.Fatalf("TranscriptContentBytes = %d, want %d", s.TranscriptContentBytes, len("hello")+len("tool output"))
+	}
+}
+
+func codexProbeInput(t *testing.T, dir, command string) hookInput {
+	t.Helper()
+	toolInput, err := json.Marshal(struct {
+		Command string `json:"command"`
+	}{Command: command})
+	if err != nil {
+		t.Fatalf("Marshal errored: %v", err)
+	}
+	return hookInput{
+		SessionID:     "codex-probe-session",
+		Cwd:           dir,
+		HookEventName: "PostToolUse",
+		ToolName:      "Bash",
+		ToolInput:     toolInput,
 	}
 }

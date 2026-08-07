@@ -538,13 +538,37 @@ Complete locally; real Codex trust/dogfood remains a manual validation step.
 
 ### Phase 4 - Replacement Probe
 
-1. Add a temporary guarded probe mode, for example
-   `AGENT_WINGLET_CODEX_PROBE=1`.
-2. Test harmless Bash output replacement with `decision: "block"`.
-3. Test harmless Bash output replacement with `continue: false`.
-4. Test both in a normal tool call and a code-mode nested call.
-5. Record the chosen replacement shape in this spec.
-6. Remove or leave the probe disabled by default.
+Probe harness complete locally; real Codex dogfood remains the hard gate before
+any suppression mechanism is enabled.
+
+- `cmd/codex-hook` now has a disabled-by-default `PostToolUse` replacement
+  probe guarded by `AGENT_WINGLET_CODEX_PROBE`.
+- The probe only fires for `Bash` commands whose `tool_input.command` contains
+  `agent-winglet-codex-probe`, so accidental normal sessions stay stats-only.
+- `AGENT_WINGLET_CODEX_PROBE=continue`, `continue-false`, `true`, or `1`
+  returns `continue: false` with `stopReason` and `systemMessage` set to the
+  probe receipt.
+- `AGENT_WINGLET_CODEX_PROBE=block` or `decision-block` returns
+  `decision: "block"` with `reason` set to the probe receipt and matching
+  `hookSpecificOutput.additionalContext`.
+- Unit tests cover disabled default behavior, non-matching commands, and both
+  JSON output shapes.
+- Exit so far: `go test ./cmd/codex-hook` passes.
+
+Manual dogfood still required before Phase 6:
+
+1. Reinstall the updated global Codex hook binary.
+2. Run `/hooks` in Codex and trust the updated `codex-hook` definition.
+3. In a normal Codex tool call, run a harmless command containing
+   `agent-winglet-codex-probe` once with `AGENT_WINGLET_CODEX_PROBE=block` and
+   once with `AGENT_WINGLET_CODEX_PROBE=continue`.
+4. Repeat the same two modes through a code-mode nested Bash/unified-exec call.
+5. Record the chosen replacement shape here.
+
+Expected choice remains `continue: false` if dogfood confirms it reliably
+replaces the model-visible tool result without retries or rejected nested tool
+promises. Fall back to `decision: "block"` only if `continue: false` cannot
+carry the replacement receipt reliably.
 
 ### Phase 5 - Command Classifier
 

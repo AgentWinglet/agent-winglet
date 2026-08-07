@@ -1,8 +1,9 @@
-// codex-hook is the Codex hook binary for agent-winglet. In this phase it is
-// stats-only: it registers projects, resets per-session state at session
-// starts/compacts, and records Codex rollout-derived usage. It deliberately
-// does not suppress or replace tool output yet; that waits for the Codex
-// replacement probe to validate the right hook output shape.
+// codex-hook is the Codex hook binary for agent-winglet. In this phase it
+// registers projects, resets per-session state at session starts/compacts,
+// records Codex rollout-derived usage, and carries a disabled-by-default
+// replacement probe. It deliberately does not run real suppression yet; dedup,
+// budgeting, and retirement wait for the probe to validate the right Codex
+// PostToolUse replacement shape.
 package main
 
 import (
@@ -43,7 +44,17 @@ type hookInput struct {
 }
 
 type hookOutput struct {
-	SystemMessage string `json:"systemMessage,omitempty"`
+	Continue           *bool               `json:"continue,omitempty"`
+	StopReason         string              `json:"stopReason,omitempty"`
+	SystemMessage      string              `json:"systemMessage,omitempty"`
+	Decision           string              `json:"decision,omitempty"`
+	Reason             string              `json:"reason,omitempty"`
+	HookSpecificOutput *hookSpecificOutput `json:"hookSpecificOutput,omitempty"`
+}
+
+type hookSpecificOutput struct {
+	HookEventName     string `json:"hookEventName"`
+	AdditionalContext string `json:"additionalContext,omitempty"`
 }
 
 func main() {
@@ -78,12 +89,73 @@ func handle(in hookInput) (*hookOutput, error) {
 	switch in.HookEventName {
 	case "SessionStart", "PostCompact":
 		return nil, resetSession(in)
-	case "PostToolUse", "Stop":
+	case "PostToolUse":
+		return handlePostToolUse(in)
+	case "Stop":
 		return nil, recordTranscriptDelta(projectroot.Resolve(in.Cwd), in)
 	case "SessionEnd":
 		return handleSessionEnd(in)
 	}
 	return nil, nil
+}
+
+func handlePostToolUse(in hookInput) (*hookOutput, error) {
+	if err := recordTranscriptDelta(projectroot.Resolve(in.Cwd), in); err != nil {
+		return nil, err
+	}
+	return maybeCodexProbeOutput(in), nil
+}
+
+const (
+	codexProbeEnvVar        = "AGENT_WINGLET_CODEX_PROBE"
+	codexProbeCommandNeedle = "agent-winglet-codex-probe"
+)
+
+func maybeCodexProbeOutput(in hookInput) *hookOutput {
+	mode := codexProbeMode()
+	if mode == "" || in.HookEventName != "PostToolUse" || in.ToolName != "Bash" {
+		return nil
+	}
+
+	var input struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(in.ToolInput, &input); err != nil {
+		return nil
+	}
+	if !strings.Contains(input.Command, codexProbeCommandNeedle) {
+		return nil
+	}
+
+	receipt := fmt.Sprintf("[agent-winglet] codex replacement probe (%s) replaced Bash output for %q", mode, input.Command)
+	if mode == "block" {
+		return &hookOutput{
+			Decision: "block",
+			Reason:   receipt,
+			HookSpecificOutput: &hookSpecificOutput{
+				HookEventName:     "PostToolUse",
+				AdditionalContext: receipt,
+			},
+		}
+	}
+
+	keepGoing := false
+	return &hookOutput{
+		Continue:      &keepGoing,
+		StopReason:    receipt,
+		SystemMessage: receipt,
+	}
+}
+
+func codexProbeMode() string {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(codexProbeEnvVar))) {
+	case "1", "true", "continue", "continue-false":
+		return "continue"
+	case "block", "decision-block":
+		return "block"
+	default:
+		return ""
+	}
 }
 
 func resetSession(in hookInput) error {
