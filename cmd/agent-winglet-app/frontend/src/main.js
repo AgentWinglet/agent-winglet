@@ -536,45 +536,57 @@ async function renderSessionsSection(container, projectPath) {
 // only in this preference. Reading its state needs a round-trip
 // (GetCompactNudgesEnabled), so this is async like the other screens, not
 // fetched synchronously.
-async function renderInstallationsScreen(container) {
+async function loadInstallations(container) {
   const hookHealth = await GetHookHealth();
   if (state.screen !== 'installations') return;
 
-  container.innerHTML = `
-    <h1 class="screen-title">Installations</h1>
-    <div class="settings-stack">
-      ${state.settingsError ? `<div class="settings-error">${escapeHtml(state.settingsError)}</div>` : ''}
-      <section class="settings-panel">
-        <div class="hook-agent-list">
-          ${hookAgentMarkup({
-            name: 'Claude Code Integration',
-            configured: hookHealth.claudeConfigured,
-            reviewLikely: hookHealth.claudeReviewLikely,
-            status: hookHealth.claudeStatus,
-            detail: hookHealth.claudeDetail,
-            action: hookHealth.claudeAction,
-            key: 'claude',
-          })}
-          ${hookAgentMarkup({
-            name: 'Codex Integration',
-            configured: hookHealth.codexConfigured,
-            reviewLikely: hookHealth.codexReviewLikely,
-            status: hookHealth.codexStatus,
-            detail: hookHealth.codexDetail,
-            action: hookHealth.codexAction,
-            key: 'codex',
-          })}
-        </div>
-        <div class="settings-info">
-          ${icons.info}
-          <p>After enabling, disabling, or updating an integration, restart your terminal or IDE and start a new session so Winglet can pick up the change.</p>
-        </div>
-      </section>
-    </div>
-  `;
-  container.querySelectorAll('[data-hook-action]').forEach((btn) => {
-    btn.addEventListener('click', () => runHookAction(container, btn));
+  renderIfChanged('installations', { hookHealth, settingsError: state.settingsError }, () => {
+    container.innerHTML = `
+      <h1 class="screen-title">Installations</h1>
+      <div class="settings-stack">
+        ${state.settingsError ? `<div class="settings-error">${escapeHtml(state.settingsError)}</div>` : ''}
+        <section class="settings-panel">
+          <div class="hook-agent-list">
+            ${hookAgentMarkup({
+              name: 'Claude Code Integration',
+              configured: hookHealth.claudeConfigured,
+              reviewLikely: hookHealth.claudeReviewLikely,
+              status: hookHealth.claudeStatus,
+              detail: hookHealth.claudeDetail,
+              action: hookHealth.claudeAction,
+              key: 'claude',
+            })}
+            ${hookAgentMarkup({
+              name: 'Codex Integration',
+              configured: hookHealth.codexConfigured,
+              reviewLikely: hookHealth.codexReviewLikely,
+              status: hookHealth.codexStatus,
+              detail: hookHealth.codexDetail,
+              action: hookHealth.codexAction,
+              key: 'codex',
+            })}
+          </div>
+          <div class="settings-info">
+            ${icons.info}
+            <p>After enabling, disabling, or updating an integration, restart your terminal or IDE and start a new session so Winglet can pick up the change.</p>
+          </div>
+        </section>
+      </div>
+    `;
+    container.querySelectorAll('[data-hook-action]').forEach((btn) => {
+      btn.addEventListener('click', () => runHookAction(container, btn));
+    });
   });
+}
+
+async function renderInstallationsScreen(container) {
+  // See renderOverviewScreen's identical reset for why this can't be skipped.
+  lastRender.delete('installations');
+  container.innerHTML = `<div class="empty-state">Loading…</div>`;
+  await loadInstallations(container);
+  if (state.screen === 'installations') {
+    startPolling(() => loadInstallations(container));
+  }
 }
 
 async function renderPreferencesScreen(container) {
@@ -643,6 +655,7 @@ async function runHookAction(container, btn) {
   state.settingsError = '';
   btn.disabled = true;
   btn.textContent = 'Working...';
+  stopPolling();
   try {
     await method();
     await renderInstallationsScreen(container);
