@@ -47,6 +47,12 @@ export namespace main {
 	    }
 	}
 	export class HookHealth {
+	    claudeConfigured: boolean;
+	    claudeObserved: boolean;
+	    claudeReviewLikely: boolean;
+	    claudeStatus: string;
+	    claudeDetail: string;
+	    claudeAction: string;
 	    codexConfigured: boolean;
 	    codexObserved: boolean;
 	    codexReviewLikely: boolean;
@@ -60,6 +66,12 @@ export namespace main {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.claudeConfigured = source["claudeConfigured"];
+	        this.claudeObserved = source["claudeObserved"];
+	        this.claudeReviewLikely = source["claudeReviewLikely"];
+	        this.claudeStatus = source["claudeStatus"];
+	        this.claudeDetail = source["claudeDetail"];
+	        this.claudeAction = source["claudeAction"];
 	        this.codexConfigured = source["codexConfigured"];
 	        this.codexObserved = source["codexObserved"];
 	        this.codexReviewLikely = source["codexReviewLikely"];
@@ -198,3 +210,4 @@ export namespace main {
 	}
 
 }
+

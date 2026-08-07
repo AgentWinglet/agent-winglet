@@ -58,53 +58,135 @@ func (a *App) SetCompactNudgesEnabled(enabled bool) error {
 	return config.Save(cfg)
 }
 
+func (a *App) SetClaudeHookEnabled(enabled bool) (HookHealth, error) {
+	if err := setGlobalHookEnabled("claude-hook", enabled); err != nil {
+		return HookHealth{}, err
+	}
+	return a.GetHookHealth()
+}
+
+func (a *App) SetCodexHookEnabled(enabled bool) (HookHealth, error) {
+	if err := setGlobalHookEnabled("codex-hook", enabled); err != nil {
+		return HookHealth{}, err
+	}
+	return a.GetHookHealth()
+}
+
+func (a *App) RefreshClaudeHook() (HookHealth, error) {
+	return a.SetClaudeHookEnabled(true)
+}
+
+func (a *App) RefreshCodexHook() (HookHealth, error) {
+	return a.SetCodexHookEnabled(true)
+}
+
 // HookHealth is a dashboard-facing install/status check for hook setup. Codex
 // does not expose a stable machine-readable trust API, so ReviewLikely is a
 // conservative symptom check: the hook is configured, but Winglet has not seen
 // Codex stats from a session at or after the current hook config timestamp.
 type HookHealth struct {
-	CodexConfigured   bool   `json:"codexConfigured"`
-	CodexObserved     bool   `json:"codexObserved"`
-	CodexReviewLikely bool   `json:"codexReviewLikely"`
-	CodexStatus       string `json:"codexStatus"`
-	CodexDetail       string `json:"codexDetail"`
-	CodexAction       string `json:"codexAction"`
+	ClaudeConfigured   bool   `json:"claudeConfigured"`
+	ClaudeObserved     bool   `json:"claudeObserved"`
+	ClaudeReviewLikely bool   `json:"claudeReviewLikely"`
+	ClaudeStatus       string `json:"claudeStatus"`
+	ClaudeDetail       string `json:"claudeDetail"`
+	ClaudeAction       string `json:"claudeAction"`
+	CodexConfigured    bool   `json:"codexConfigured"`
+	CodexObserved      bool   `json:"codexObserved"`
+	CodexReviewLikely  bool   `json:"codexReviewLikely"`
+	CodexStatus        string `json:"codexStatus"`
+	CodexDetail        string `json:"codexDetail"`
+	CodexAction        string `json:"codexAction"`
 }
 
 func (a *App) GetHookHealth() (HookHealth, error) {
-	configured, configTime, err := codexHookConfigured()
+	claudeConfigured, claudeConfigTime, err := claudeHookConfigured()
 	if err != nil {
 		return HookHealth{}, err
 	}
-	observed, observedTime, err := latestCodexSession()
+	claudeObserved, claudeObservedTime, err := latestAgentSession(stats.AgentClaudeCode)
+	if err != nil {
+		return HookHealth{}, err
+	}
+	codexConfigured, codexConfigTime, err := codexHookConfigured()
+	if err != nil {
+		return HookHealth{}, err
+	}
+	codexObserved, codexObservedTime, err := latestAgentSession(stats.AgentCodex)
 	if err != nil {
 		return HookHealth{}, err
 	}
 
 	h := HookHealth{
-		CodexConfigured: configured,
-		CodexObserved:   observed,
-		CodexAction:     "Open Codex, run /hooks, review the agent-winglet codex-hook entries, then trust them.",
+		ClaudeConfigured: claudeConfigured,
+		ClaudeObserved:   claudeObserved,
+		CodexConfigured:  codexConfigured,
+		CodexObserved:    codexObserved,
 	}
-	switch {
-	case !configured:
-		h.CodexStatus = "Not installed"
-		h.CodexDetail = "Winglet does not see a codex-hook entry in ~/.codex/hooks.json or registered project .codex/hooks.json files."
-		h.CodexAction = "Run ./install.sh --hook-only --codex-only, then open Codex and run /hooks."
-	case !observed || observedTime.Before(configTime):
-		h.CodexReviewLikely = true
-		h.CodexStatus = "Needs review likely"
-		h.CodexDetail = "Codex hooks are configured, but Winglet has not seen Codex hook activity for this hook config yet. Codex skips non-managed hooks until their current definition is trusted."
-	default:
-		h.CodexStatus = "Active"
-		h.CodexDetail = "Winglet has seen Codex hook activity after the current hook config was written."
-		h.CodexAction = ""
-	}
+	h.ClaudeStatus, h.ClaudeDetail, h.ClaudeAction, h.ClaudeReviewLikely = agentHookStatus(
+		"Claude Code",
+		"claude-hook",
+		claudeConfigured,
+		claudeConfigTime,
+		claudeObserved,
+		claudeObservedTime,
+	)
+	h.CodexStatus, h.CodexDetail, h.CodexAction, h.CodexReviewLikely = agentHookStatus(
+		"Codex",
+		"codex-hook",
+		codexConfigured,
+		codexConfigTime,
+		codexObserved,
+		codexObservedTime,
+	)
 	return h, nil
 }
 
+func agentHookStatus(agentName, binaryName string, configured bool, configTime time.Time, observed bool, observedTime time.Time) (string, string, string, bool) {
+	switch {
+	case !configured:
+		switch binaryName {
+		case "claude-hook":
+			return "Not installed",
+				"Claude Code isn't connected to Winglet yet.",
+				"Run ./install.sh --hook-only --claude-only.",
+				false
+		case "codex-hook":
+			return "Not installed",
+				"Codex isn't connected to Winglet yet.",
+				"Run ./install.sh --hook-only --codex-only, then open Codex and run /hooks.",
+				false
+		}
+	case !observed || observedTime.Before(configTime):
+		if binaryName == "codex-hook" {
+			return "Extra steps needed",
+				"Codex requires manual approval before a new integration can run.",
+				"Open Codex, run /hooks, and trust the agent-winglet entries.",
+				true
+		}
+		return "Waiting for activity",
+			fmt.Sprintf("Restart %s and start a new session to activate this.", agentName),
+			"",
+			false
+	default:
+		return "Active",
+			"Everything's working as expected.",
+			"",
+			false
+	}
+	return "Unknown", "Winglet could not classify this hook state.", "", false
+}
+
+func claudeHookConfigured() (bool, time.Time, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false, time.Time{}, err
+	}
+	paths := []string{filepath.Join(home, ".claude", "settings.json")}
+	return hookConfigured("claude-hook", paths, filepath.Join(".claude", "settings.json"))
+}
+
 func codexHookConfigured() (bool, time.Time, error) {
-	var paths []string
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return false, time.Time{}, err
@@ -113,19 +195,252 @@ func codexHookConfigured() (bool, time.Time, error) {
 	if codexHome == "" {
 		codexHome = filepath.Join(home, ".codex")
 	}
-	paths = append(paths, filepath.Join(codexHome, "hooks.json"))
+	paths := []string{filepath.Join(codexHome, "hooks.json")}
+	return hookConfigured("codex-hook", paths, filepath.Join(".codex", "hooks.json"))
+}
 
+func setGlobalHookEnabled(binaryName string, enabled bool) error {
+	path, err := globalHookConfigPath(binaryName)
+	if err != nil {
+		return err
+	}
+	var hookPath string
+	if enabled {
+		hookPath, err = installedHookPath(binaryName)
+		if err != nil {
+			return err
+		}
+	}
+
+	root, err := readJSONObject(path)
+	if err != nil {
+		return err
+	}
+	removeHookEntries(root, binaryName)
+	if enabled {
+		mergeHookEntries(root, binaryName, hookPath)
+	}
+	return writeJSONObject(path, root)
+}
+
+func globalHookConfigPath(binaryName string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	switch binaryName {
+	case "claude-hook":
+		return filepath.Join(home, ".claude", "settings.json"), nil
+	case "codex-hook":
+		codexHome := os.Getenv("CODEX_HOME")
+		if codexHome == "" {
+			codexHome = filepath.Join(home, ".codex")
+		}
+		return filepath.Join(codexHome, "hooks.json"), nil
+	default:
+		return "", fmt.Errorf("unknown hook binary %q", binaryName)
+	}
+}
+
+func installedHookPath(binaryName string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	candidates := []string{
+		filepath.Join(home, "go", "bin", binaryName),
+	}
+	if gobin := os.Getenv("GOBIN"); gobin != "" {
+		candidates = append(candidates, filepath.Join(gobin, binaryName))
+	}
+	if gopath := os.Getenv("GOPATH"); gopath != "" {
+		candidates = append(candidates, filepath.Join(gopath, "bin", binaryName))
+	}
+	if lookedUp, err := exec.LookPath(binaryName); err == nil {
+		candidates = append(candidates, lookedUp)
+	}
+	if goPath, err := exec.LookPath("go"); err == nil {
+		if out, err := exec.Command(goPath, "env", "GOBIN").Output(); err == nil {
+			if gobin := stringTrimSpace(out); gobin != "" {
+				candidates = append(candidates, filepath.Join(gobin, binaryName))
+			}
+		}
+		if out, err := exec.Command(goPath, "env", "GOPATH").Output(); err == nil {
+			if gopath := stringTrimSpace(out); gopath != "" {
+				candidates = append(candidates, filepath.Join(gopath, "bin", binaryName))
+			}
+		}
+	}
+
+	seen := map[string]bool{}
+	for _, path := range candidates {
+		if path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		if info, err := os.Stat(path); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("%s is not installed. Run ./install.sh once, then try again.", binaryName)
+}
+
+func readJSONObject(path string) (map[string]interface{}, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return map[string]interface{}{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return map[string]interface{}{}, nil
+	}
+	var root map[string]interface{}
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	if root == nil {
+		root = map[string]interface{}{}
+	}
+	return root, nil
+}
+
+func writeJSONObject(path string, root map[string]interface{}) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".agent-winglet-hooks-*.json")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+func removeHookEntries(root map[string]interface{}, binaryName string) {
+	hooks, ok := root["hooks"].(map[string]interface{})
+	if !ok {
+		return
+	}
+	for event, rawMatchers := range hooks {
+		matchers, ok := rawMatchers.([]interface{})
+		if !ok {
+			continue
+		}
+		keptMatchers := make([]interface{}, 0, len(matchers))
+		for _, rawMatcher := range matchers {
+			matcher, ok := rawMatcher.(map[string]interface{})
+			if !ok {
+				keptMatchers = append(keptMatchers, rawMatcher)
+				continue
+			}
+			rawHookList, ok := matcher["hooks"].([]interface{})
+			if !ok {
+				keptMatchers = append(keptMatchers, rawMatcher)
+				continue
+			}
+			keptHooks := make([]interface{}, 0, len(rawHookList))
+			for _, rawHook := range rawHookList {
+				hook, ok := rawHook.(map[string]interface{})
+				if !ok {
+					keptHooks = append(keptHooks, rawHook)
+					continue
+				}
+				command, _ := hook["command"].(string)
+				if filepath.Base(command) != binaryName {
+					keptHooks = append(keptHooks, rawHook)
+				}
+			}
+			if len(keptHooks) == 0 {
+				continue
+			}
+			matcher["hooks"] = keptHooks
+			keptMatchers = append(keptMatchers, matcher)
+		}
+		if len(keptMatchers) == 0 {
+			delete(hooks, event)
+		} else {
+			hooks[event] = keptMatchers
+		}
+	}
+	if len(hooks) == 0 {
+		delete(root, "hooks")
+	}
+}
+
+func mergeHookEntries(root map[string]interface{}, binaryName, hookPath string) {
+	hooks, ok := root["hooks"].(map[string]interface{})
+	if !ok {
+		hooks = map[string]interface{}{}
+		root["hooks"] = hooks
+	}
+	for _, event := range []string{"PostToolUse", "SessionStart", "PostCompact", "Stop", "SessionEnd"} {
+		entry := map[string]interface{}{
+			"hooks": []interface{}{hookCommandEntry(binaryName, hookPath)},
+		}
+		if binaryName == "codex-hook" && event == "PostToolUse" {
+			entry["matcher"] = ""
+		}
+		hooks[event] = appendMatcher(hooks[event], entry)
+	}
+}
+
+func hookCommandEntry(binaryName, hookPath string) map[string]interface{} {
+	entry := map[string]interface{}{
+		"type":    "command",
+		"command": hookPath,
+	}
+	if binaryName == "codex-hook" {
+		entry["timeout"] = float64(5)
+	}
+	return entry
+}
+
+func appendMatcher(raw interface{}, entry map[string]interface{}) []interface{} {
+	if matchers, ok := raw.([]interface{}); ok {
+		return append(matchers, entry)
+	}
+	return []interface{}{entry}
+}
+
+func stringTrimSpace(data []byte) string {
+	start, end := 0, len(data)
+	for start < end && (data[start] == ' ' || data[start] == '\n' || data[start] == '\t' || data[start] == '\r') {
+		start++
+	}
+	for end > start && (data[end-1] == ' ' || data[end-1] == '\n' || data[end-1] == '\t' || data[end-1] == '\r') {
+		end--
+	}
+	return string(data[start:end])
+}
+
+func hookConfigured(binaryName string, paths []string, projectRelativePath string) (bool, time.Time, error) {
 	dirs, err := registry.Load()
 	if err != nil {
 		return false, time.Time{}, err
 	}
 	for _, dir := range dirs {
-		paths = append(paths, filepath.Join(dir, ".codex", "hooks.json"))
+		paths = append(paths, filepath.Join(dir, projectRelativePath))
 	}
 
 	var latest time.Time
 	for _, path := range paths {
-		if !hookFileContainsCommand(path, "codex-hook") {
+		if !hookFileContainsCommand(path, binaryName) {
 			continue
 		}
 		if info, err := os.Stat(path); err == nil && info.ModTime().After(latest) {
@@ -135,7 +450,7 @@ func codexHookConfigured() (bool, time.Time, error) {
 	return !latest.IsZero(), latest, nil
 }
 
-func latestCodexSession() (bool, time.Time, error) {
+func latestAgentSession(agent string) (bool, time.Time, error) {
 	dirs, err := registry.Load()
 	if err != nil {
 		return false, time.Time{}, err
@@ -152,7 +467,7 @@ func latestCodexSession() (bool, time.Time, error) {
 			if err != nil {
 				return false, time.Time{}, err
 			}
-			if s.Agent == stats.AgentCodex && f.ModTime.After(latest) {
+			if s.Agent == agent && f.ModTime.After(latest) {
 				latest = f.ModTime
 			}
 		}

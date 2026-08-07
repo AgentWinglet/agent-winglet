@@ -7,7 +7,11 @@ import {
   GetPlatform,
   GetProjects,
   GetSessionStats,
+  RefreshClaudeHook,
+  RefreshCodexHook,
   SetCompactNudgesEnabled,
+  SetClaudeHookEnabled,
+  SetCodexHookEnabled,
 } from '../wailsjs/go/main/App';
 
 const state = {
@@ -15,12 +19,17 @@ const state = {
   expanded: new Set(),
   expandedSessions: new Set(),
   sessionsByProject: new Map(),
+  settingsError: '',
 };
 
 const NAV_ITEMS = [
   { id: 'overview', label: 'Overview', icon: icons.overview },
   { id: 'projects', label: 'Projects', icon: icons.projects },
-  { id: 'settings', label: 'Settings', icon: icons.settings },
+];
+
+const SETTINGS_ITEMS = [
+  { id: 'installations', label: 'Installations' },
+  { id: 'preferences', label: 'Preferences' },
 ];
 
 // Session/project stats files on disk are updated live by the hook (every
@@ -64,7 +73,7 @@ function renderIfChanged(key, data, draw) {
 
 function navigate(screen) {
   stopPolling();
-  state.screen = screen;
+  state.screen = screen === 'settings' ? 'installations' : screen;
   render();
 }
 
@@ -529,21 +538,65 @@ async function renderSessionsSection(container, projectPath) {
 // only in this preference. Reading its state needs a round-trip
 // (GetCompactNudgesEnabled), so this is async like the other screens, not
 // fetched synchronously.
-async function renderSettingsScreen(container) {
-  const [enabled, hookHealth] = await Promise.all([GetCompactNudgesEnabled(), GetHookHealth()]);
-  if (state.screen !== 'settings') return;
+async function renderInstallationsScreen(container) {
+  const hookHealth = await GetHookHealth();
+  if (state.screen !== 'installations') return;
 
   container.innerHTML = `
-    <h1 class="screen-title">Settings</h1>
-    ${hookHealthMarkup(hookHealth)}
-    <div class="settings-row">
-      <div>
-        <div class="settings-row-label">Compact nudges</div>
-        <div class="settings-row-desc">Tell Claude or Codex to nudge you, inside the session, to run /compact once it moves from investigating to editing.</div>
-      </div>
-      <button class="toggle ${enabled ? 'on' : ''}" data-toggle-nudges aria-pressed="${enabled}">
-        <span class="toggle-knob"></span>
-      </button>
+    <h1 class="screen-title">Installations</h1>
+    <div class="settings-stack">
+      ${state.settingsError ? `<div class="settings-error">${escapeHtml(state.settingsError)}</div>` : ''}
+      <section class="settings-panel">
+        <div class="hook-agent-list">
+          ${hookAgentMarkup({
+            name: 'Claude Code Integration',
+            configured: hookHealth.claudeConfigured,
+            reviewLikely: hookHealth.claudeReviewLikely,
+            status: hookHealth.claudeStatus,
+            detail: hookHealth.claudeDetail,
+            action: hookHealth.claudeAction,
+            key: 'claude',
+          })}
+          ${hookAgentMarkup({
+            name: 'Codex Integration',
+            configured: hookHealth.codexConfigured,
+            reviewLikely: hookHealth.codexReviewLikely,
+            status: hookHealth.codexStatus,
+            detail: hookHealth.codexDetail,
+            action: hookHealth.codexAction,
+            key: 'codex',
+          })}
+        </div>
+        <div class="settings-info">
+          ${icons.info}
+          <p>After enabling, disabling, or updating an integration, restart your terminal or IDE and start a new session so Winglet can pick up the change.</p>
+        </div>
+      </section>
+    </div>
+  `;
+  container.querySelectorAll('[data-hook-action]').forEach((btn) => {
+    btn.addEventListener('click', () => runHookAction(container, btn));
+  });
+}
+
+async function renderPreferencesScreen(container) {
+  const enabled = await GetCompactNudgesEnabled();
+  if (state.screen !== 'preferences') return;
+
+  container.innerHTML = `
+    <h1 class="screen-title">Preferences</h1>
+    <div class="settings-stack">
+      <section class="settings-panel settings-panel-compact">
+        <div class="settings-row">
+          <div>
+            <div class="settings-row-label">Compact nudges</div>
+            <div class="settings-row-desc">Tell Claude Code or Codex to nudge you, inside the session, to run /compact once it moves from investigating to editing.</div>
+          </div>
+          <button class="toggle ${enabled ? 'on' : ''}" data-toggle-nudges aria-pressed="${enabled}" aria-label="Toggle compact nudges">
+            <span class="toggle-knob"></span>
+          </button>
+        </div>
+      </section>
     </div>
   `;
   container.querySelector('[data-toggle-nudges]').addEventListener('click', async (e) => {
@@ -555,24 +608,63 @@ async function renderSettingsScreen(container) {
   });
 }
 
-function hookHealthMarkup(health) {
-  const tone = health.codexReviewLikely ? 'needs-action' : health.codexConfigured ? 'ok' : 'missing';
+function hookAgentMarkup(agent) {
+  const tone = agent.reviewLikely ? 'needs-action' : agent.configured ? 'ok' : 'missing';
+  const primaryAction = agent.configured ? 'disable' : 'enable';
+  const primaryLabel = agent.configured ? 'Disable' : 'Enable';
   return `
-    <section class="hook-health ${tone}">
-      <div class="hook-health-top">
+    <article class="hook-agent ${tone}">
+      <div class="hook-agent-main">
         <div>
-          <div class="settings-row-label">Codex hook</div>
-          <div class="settings-row-desc">${escapeHtml(health.codexDetail)}</div>
+          <div class="hook-agent-title">${escapeHtml(agent.name)}</div>
+          <div class="hook-agent-detail">${escapeHtml(agent.detail)}</div>
         </div>
-        <span class="hook-health-badge">${escapeHtml(health.codexStatus)}</span>
+        <span class="hook-status-badge">${escapeHtml(agent.status)}</span>
       </div>
       ${
-        health.codexAction
-          ? `<div class="hook-health-action"><code>${escapeHtml(health.codexAction)}</code></div>`
+        agent.action
+          ? `<div class="hook-agent-note">${escapeHtml(agent.action)}</div>`
           : ''
       }
-    </section>
+      <div class="hook-agent-actions">
+        <button class="hook-action-button ${primaryAction}" type="button" data-hook-agent="${escapeHtml(agent.key)}" data-hook-action="${primaryAction}">
+          ${escapeHtml(primaryLabel)}
+        </button>
+        <button class="hook-action-button secondary" type="button" data-hook-agent="${escapeHtml(agent.key)}" data-hook-action="refresh">Refresh</button>
+      </div>
+    </article>
   `;
+}
+
+async function runHookAction(container, btn) {
+  const agent = btn.getAttribute('data-hook-agent');
+  const action = btn.getAttribute('data-hook-action');
+  const method = hookActionMethod(agent, action);
+  if (!method) return;
+
+  const original = btn.textContent;
+  state.settingsError = '';
+  btn.disabled = true;
+  btn.textContent = 'Working...';
+  try {
+    await method();
+    await renderInstallationsScreen(container);
+  } catch (err) {
+    state.settingsError = err?.message || String(err);
+    btn.disabled = false;
+    btn.textContent = original;
+    await renderInstallationsScreen(container);
+  }
+}
+
+function hookActionMethod(agent, action) {
+  if (agent === 'claude' && action === 'enable') return () => SetClaudeHookEnabled(true);
+  if (agent === 'claude' && action === 'disable') return () => SetClaudeHookEnabled(false);
+  if (agent === 'claude' && action === 'refresh') return () => RefreshClaudeHook();
+  if (agent === 'codex' && action === 'enable') return () => SetCodexHookEnabled(true);
+  if (agent === 'codex' && action === 'disable') return () => SetCodexHookEnabled(false);
+  if (agent === 'codex' && action === 'refresh') return () => RefreshCodexHook();
+  return null;
 }
 
 function escapeHtml(value) {
@@ -587,7 +679,12 @@ function escapeHtml(value) {
 function renderMain(container) {
   if (state.screen === 'overview') return renderOverviewScreen(container);
   if (state.screen === 'projects') return renderProjectsScreen(container);
-  if (state.screen === 'settings') return renderSettingsScreen(container);
+  if (state.screen === 'installations') return renderInstallationsScreen(container);
+  if (state.screen === 'preferences') return renderPreferencesScreen(container);
+}
+
+function isSettingsScreen() {
+  return SETTINGS_ITEMS.some((item) => item.id === state.screen);
 }
 
 function render() {
@@ -603,6 +700,21 @@ function render() {
             <span>${item.label}</span>
           </button>`
         ).join('')}
+        <div class="nav-group ${isSettingsScreen() ? 'open' : ''}">
+          <button class="nav-item nav-parent ${isSettingsScreen() ? 'active' : ''}" data-nav="settings" aria-expanded="${isSettingsScreen()}">
+            ${icons.settings}
+            <span>Settings</span>
+            <span class="nav-chevron">&gt;</span>
+          </button>
+          <div class="nav-subitems">
+            ${SETTINGS_ITEMS.map(
+              (item) => `
+              <button class="nav-subitem ${state.screen === item.id ? 'active' : ''}" data-nav="${item.id}">
+                ${item.label}
+              </button>`
+            ).join('')}
+          </div>
+        </div>
       </nav>
     </div>
     <div class="main" id="main"></div>

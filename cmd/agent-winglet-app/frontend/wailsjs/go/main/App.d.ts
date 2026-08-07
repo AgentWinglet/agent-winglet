@@ -14,4 +14,12 @@ export function GetProjects():Promise<Array<main.ProjectRow>>;
 
 export function GetSessionStats(arg1:string):Promise<Array<main.SessionRow>>;
 
+export function RefreshClaudeHook():Promise<main.HookHealth>;
+
+export function RefreshCodexHook():Promise<main.HookHealth>;
+
+export function SetClaudeHookEnabled(arg1:boolean):Promise<main.HookHealth>;
+
+export function SetCodexHookEnabled(arg1:boolean):Promise<main.HookHealth>;
+
 export function SetCompactNudgesEnabled(arg1:boolean):Promise<void>;
