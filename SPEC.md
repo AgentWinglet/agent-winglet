@@ -509,16 +509,32 @@ Complete.
 
 ### Phase 3 - Minimal Codex Hook
 
-1. Add `cmd/codex-hook`.
-2. Wire `SessionStart` for project registration and state reset.
-3. Wire `PostCompact` or `SessionStart source == "compact"` for state reset,
-   depending on observed event delivery.
-4. Wire `PostToolUse`, `Stop`, and `SessionEnd` for transcript stats only.
-5. Emit the savings receipt on `SessionEnd` only if suppression activity
-   exists, matching Claude behavior.
-6. Add Makefile target and installer support.
-7. Exit: a trusted real Codex hook creates a Codex-tagged session row with
-   transcript usage and no suppression.
+Complete locally; real Codex trust/dogfood remains a manual validation step.
+
+- `cmd/codex-hook` is a separate stats-only Codex hook binary.
+- `SessionStart` and `PostCompact` register the project and reset
+  session-scoped ledger, phase, retire, and stats state.
+- `PostToolUse` and `Stop` record rollout usage deltas through
+  `internal/codexrollout`.
+- `SessionEnd` reconciles the full rollout usage, writes Codex-tagged session
+  stats, and emits a receipt only if suppression activity exists.
+- No Codex tool output is replaced in this phase.
+- `make build` now builds `bin/claude-hook` and `bin/codex-hook`; direct
+  `make claude-hook` and `make codex-hook` targets exist.
+- `install.sh` installs both hooks by default, supports `--claude-only` and
+  `--codex-only`, writes Codex hooks to
+  `${CODEX_HOME:-$HOME/.codex}/hooks.json` globally or `./.codex/hooks.json`
+  with `--local`, and prints the `/hooks` trust reminder.
+- `uninstall.sh` removes both hook entries by basename and supports the same
+  hook selectors.
+- Project install detection treats either Claude or Codex hook config as
+  installed.
+- Exit: `bash -n install.sh`, `bash -n uninstall.sh`,
+  `go test ./cmd/codex-hook ./internal/registry`, `go test ./...`,
+  `go build ./...`, `make build`, temp Codex-only install/uninstall smoke,
+  global `./install.sh --hook-only --codex-only`, and `git diff --check`
+  pass. A real Codex session still needs `/hooks` trust before it can validate
+  a Codex-tagged row end to end.
 
 ### Phase 4 - Replacement Probe
 

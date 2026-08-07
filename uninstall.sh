@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-# Reverses install.sh: strips every claude-hook entry out of Claude Code's
-# hook config and removes the installed app (both, by default), then
+# Reverses install.sh: strips hook entries out of agent hook configs and
+# removes the installed app (both, by default), then
 # optionally removes the hook binary and/or agent-winglet's data files too.
 #
 # Usage:
 #   ./uninstall.sh                 # remove hook wiring + the installed app
 #   ./uninstall.sh --hook-only     # just the hook wiring
 #   ./uninstall.sh --app-only      # just the app
-#   ./uninstall.sh --local         # remove hook wiring from ./.claude/settings.json
-#                                   # instead of ~/.claude/settings.json
+#   ./uninstall.sh --claude-only   # remove only the Claude hook wiring
+#   ./uninstall.sh --codex-only    # remove only the Codex hook wiring
+#   ./uninstall.sh --local         # remove hook wiring from project config files
+#                                   # instead of global config files
 #                                   # (--hook-only scope only; the app has no
 #                                   # such concept)
-#   ./uninstall.sh --purge-binary  # also delete the installed claude-hook binary
+#   ./uninstall.sh --purge-binary  # also delete selected installed hook binaries
 #   ./uninstall.sh --purge-data    # also delete ~/.agent-winglet (global registry/config
 #                                   # and, since all per-project state now lives under
 #                                   # ~/.agent-winglet/projects/, this alone is the primary
@@ -34,24 +36,29 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 source "${SCRIPT_DIR}/scripts/lib.sh"
 
-BINARY_NAME="claude-hook"
-
 WANT_HOOK=1
 WANT_APP=1
-SETTINGS_FILE="${HOME}/.claude/settings.json"
-SCOPE_DESC="from ~/.claude/settings.json (global)"
+WANT_CLAUDE_HOOK=1
+WANT_CODEX_HOOK=1
+CLAUDE_SETTINGS_FILE="${HOME}/.claude/settings.json"
+CODEX_HOME_DIR="${CODEX_HOME:-${HOME}/.codex}"
+CODEX_HOOKS_FILE="${CODEX_HOME_DIR}/hooks.json"
 PURGE_BINARY=0
 PURGE_DATA=0
 ASSUME_YES=0
+SELECTED_CLAUDE_ONLY=0
+SELECTED_CODEX_ONLY=0
 
 for arg in "$@"; do
   case "$arg" in
     --local)
-      SETTINGS_FILE=".claude/settings.json"
-      SCOPE_DESC="from ./.claude/settings.json (this project only)"
+      CLAUDE_SETTINGS_FILE=".claude/settings.json"
+      CODEX_HOOKS_FILE=".codex/hooks.json"
       ;;
     --hook-only) WANT_APP=0 ;;
     --app-only) WANT_HOOK=0 ;;
+    --claude-only) WANT_CODEX_HOOK=0; SELECTED_CLAUDE_ONLY=1 ;;
+    --codex-only) WANT_CLAUDE_HOOK=0; SELECTED_CODEX_ONLY=1 ;;
     --purge-binary) PURGE_BINARY=1 ;;
     --purge-data) PURGE_DATA=1 ;;
     -y|--yes) ASSUME_YES=1 ;;
@@ -61,6 +68,11 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+if [ "$SELECTED_CLAUDE_ONLY" = "1" ] && [ "$SELECTED_CODEX_ONLY" = "1" ]; then
+  echo "error: --claude-only and --codex-only are mutually exclusive" >&2
+  exit 1
+fi
 
 if [ "$WANT_HOOK" = "0" ] && [ "$WANT_APP" = "0" ]; then
   echo "error: --hook-only and --app-only are mutually exclusive" >&2
@@ -76,46 +88,58 @@ if [ "$WANT_HOOK" = "1" ]; then
     exit 1
   fi
 
-  if [ -f "$SETTINGS_FILE" ]; then
-    BEFORE="$(jq '[.hooks // {} | .. | objects | select(has("command")) | .command | select((split("/") | last) == "'"${BINARY_NAME}"'")] | length' "$SETTINGS_FILE")"
-    if [ "$BEFORE" = "0" ]; then
-      echo "No ${BINARY_NAME} hook entries found in ${SETTINGS_FILE} — nothing to remove there."
+  remove_hook_entries() {
+    settings_file="$1"
+    binary_name="$2"
+    scope_desc="$3"
+
+    if [ -f "$settings_file" ]; then
+      before="$(jq '[.hooks // {} | .. | objects | select(has("command")) | .command | select((split("/") | last) == "'"${binary_name}"'")] | length' "$settings_file")"
+      if [ "$before" = "0" ]; then
+        echo "No ${binary_name} hook entries found in ${settings_file} — nothing to remove there."
+      else
+        tmp_file="$(mktemp)"
+        # Drop any hook command entry whose basename matches binary_name.
+        # Matching by basename rather than exact path handles machines whose
+        # absolute GOBIN path changed between install and uninstall. Matcher
+        # entries left with an empty hooks array are dropped entirely, and
+        # event keys left with an empty array are dropped too.
+        jq '
+          .hooks |= with_entries(
+            .value |= [
+              .[] | (. + {hooks: [.hooks[]? | select((.command // "" | (split("/") | last)) != "'"${binary_name}"'")]}) | select((.hooks | length) > 0)
+            ]
+          )
+          | .hooks |= with_entries(select((.value | length) > 0))
+        ' "$settings_file" > "$tmp_file"
+        mv "$tmp_file" "$settings_file"
+        echo "Removed ${before} ${binary_name} hook entr$([ "$before" = "1" ] && echo y || echo ies) ${scope_desc}."
+      fi
     else
-      TMP_FILE="$(mktemp)"
-      # Drop any hook command entry whose basename is claude-hook (matching by
-      # basename rather than an exact path, same as internal/registry's
-      # containsClaudeHookCommand, since the absolute GOBIN path can vary
-      # machine-to-machine and even installer-run to installer-run). Matcher
-      # entries left with an empty hooks array are dropped entirely, and event
-      # keys left with an empty array are dropped too, so the file doesn't
-      # accumulate empty scaffolding across repeated installs/uninstalls.
-      jq '
-        .hooks |= with_entries(
-          .value |= [
-            .[] | (. + {hooks: [.hooks[]? | select((.command // "" | (split("/") | last)) != "'"${BINARY_NAME}"'")]}) | select((.hooks | length) > 0)
-          ]
-        )
-        | .hooks |= with_entries(select((.value | length) > 0))
-      ' "$SETTINGS_FILE" > "$TMP_FILE"
-      mv "$TMP_FILE" "$SETTINGS_FILE"
-      echo "Removed ${BEFORE} ${BINARY_NAME} hook entr$([ "$BEFORE" = "1" ] && echo y || echo ies) ${SCOPE_DESC}."
+      echo "${settings_file} doesn't exist — nothing to remove there."
     fi
-  else
-    echo "${SETTINGS_FILE} doesn't exist — nothing to remove there."
-  fi
+  }
+
+  [ "$WANT_CLAUDE_HOOK" = "1" ] && remove_hook_entries "$CLAUDE_SETTINGS_FILE" "claude-hook" "from ${CLAUDE_SETTINGS_FILE}"
+  [ "$WANT_CODEX_HOOK" = "1" ] && remove_hook_entries "$CODEX_HOOKS_FILE" "codex-hook" "from ${CODEX_HOOKS_FILE}"
 
   if [ "$PURGE_BINARY" = "1" ]; then
     GOBIN="$(go env GOBIN 2>/dev/null || true)"
     if [ -z "$GOBIN" ]; then
       GOBIN="$(go env GOPATH 2>/dev/null || echo "${HOME}/go")/bin"
     fi
-    HOOK_PATH="${GOBIN}/${BINARY_NAME}"
-    if [ -f "$HOOK_PATH" ]; then
-      rm -f "$HOOK_PATH"
-      echo "Removed binary: ${HOOK_PATH}"
-    else
-      echo "No binary found at ${HOOK_PATH} — nothing to remove."
-    fi
+    purge_hook_binary() {
+      binary_name="$1"
+      hook_path="${GOBIN}/${binary_name}"
+      if [ -f "$hook_path" ]; then
+        rm -f "$hook_path"
+        echo "Removed binary: ${hook_path}"
+      else
+        echo "No binary found at ${hook_path} — nothing to remove."
+      fi
+    }
+    [ "$WANT_CLAUDE_HOOK" = "1" ] && purge_hook_binary "claude-hook"
+    [ "$WANT_CODEX_HOOK" = "1" ] && purge_hook_binary "codex-hook"
   fi
 fi
 

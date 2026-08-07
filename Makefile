@@ -1,7 +1,12 @@
-.PHONY: build test app tray nest-tray-darwin install uninstall
+.PHONY: build claude-hook codex-hook test app tray nest-tray-darwin install uninstall
 
-build:
+build: claude-hook codex-hook
+
+claude-hook:
 	go build -o bin/claude-hook ./cmd/claude-hook
+
+codex-hook:
+	go build -o bin/codex-hook ./cmd/codex-hook
 
 test:
 	go test ./...

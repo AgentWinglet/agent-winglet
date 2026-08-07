@@ -122,34 +122,36 @@ func Register(dir string) error {
 	return os.Rename(tmp, p)
 }
 
-// HookInstalled reports whether projectDir's own .claude/settings.json has a
-// hook command referencing the claude-hook binary. Registry presence alone
-// isn't enough — a project can be removed from the hook (settings.json
+// HookInstalled reports whether projectDir's own hook config has a command
+// referencing either supported hook binary. Registry presence alone isn't
+// enough — a project can be removed from the hook (settings.json/hooks.json
 // edited or hook config stripped) without being removed from this registry,
 // since Register only ever adds/prunes-by-existence, never removes an entry
 // because its hook config was edited.
 func HookInstalled(projectDir string) bool {
-	data, err := os.ReadFile(filepath.Join(projectDir, ".claude", "settings.json"))
-	if err != nil {
-		return false
-	}
-	var v interface{}
-	if err := json.Unmarshal(data, &v); err != nil {
-		return false
-	}
-	return containsClaudeHookCommand(v)
+	return hookFileContains(filepath.Join(projectDir, ".claude", "settings.json"), "claude-hook") ||
+		hookFileContains(filepath.Join(projectDir, ".codex", "hooks.json"), "codex-hook")
 }
 
-// GlobalHookInstalled reports whether the global ~/.claude/settings.json —
-// install.sh's default install target — has a hook command referencing the
-// claude-hook binary. Since the hook is global by default, this is true for
-// effectively every registered project unless the user has since removed it.
+// GlobalHookInstalled reports whether the global Claude or Codex hook config
+// has a command referencing its agent-winglet hook binary. Since hooks install
+// globally by default, this is true for effectively every registered project
+// unless the user has since removed the global hook config.
 func GlobalHookInstalled() bool {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return false
 	}
-	data, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
+	codexHome := os.Getenv("CODEX_HOME")
+	if codexHome == "" {
+		codexHome = filepath.Join(home, ".codex")
+	}
+	return hookFileContains(filepath.Join(home, ".claude", "settings.json"), "claude-hook") ||
+		hookFileContains(filepath.Join(codexHome, "hooks.json"), "codex-hook")
+}
+
+func hookFileContains(path, binaryName string) bool {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return false
 	}
@@ -157,27 +159,27 @@ func GlobalHookInstalled() bool {
 	if err := json.Unmarshal(data, &v); err != nil {
 		return false
 	}
-	return containsClaudeHookCommand(v)
+	return containsHookCommand(v, binaryName)
 }
 
-// containsClaudeHookCommand walks an arbitrary decoded-JSON value looking
-// for a "command" field whose value's basename is "claude-hook" — matching
+// containsHookCommand walks an arbitrary decoded-JSON value looking for a
+// "command" field whose value's basename matches binaryName — matching
 // install.sh's hook config shape without depending on the exact absolute
 // GOBIN path, which varies per machine.
-func containsClaudeHookCommand(v interface{}) bool {
+func containsHookCommand(v interface{}, binaryName string) bool {
 	switch node := v.(type) {
 	case map[string]interface{}:
-		if cmd, ok := node["command"].(string); ok && filepath.Base(cmd) == "claude-hook" {
+		if cmd, ok := node["command"].(string); ok && filepath.Base(cmd) == binaryName {
 			return true
 		}
 		for _, child := range node {
-			if containsClaudeHookCommand(child) {
+			if containsHookCommand(child, binaryName) {
 				return true
 			}
 		}
 	case []interface{}:
 		for _, child := range node {
-			if containsClaudeHookCommand(child) {
+			if containsHookCommand(child, binaryName) {
 				return true
 			}
 		}
