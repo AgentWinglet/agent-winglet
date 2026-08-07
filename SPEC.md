@@ -487,13 +487,25 @@ Complete.
 
 ### Phase 2 - Codex Rollout Parser
 
-1. Add `internal/codexrollout`.
-2. Add redacted fixtures from local Codex rollout files.
-3. Implement full and offset reads.
-4. Implement token and content-byte accounting.
-5. Add pricing support for OpenAI models.
-6. Exit: parser tests prove cumulative token handling, offset handling, and
-   fail-soft behavior.
+Complete.
+
+- `internal/codexrollout` streams Codex rollout JSONL into the shared
+  `transcript.SessionUsage` shape.
+- A redacted schema-preserving fixture covers the observed local rollout
+  `response_item`, `function_call_output`, and cumulative `token_count` rows.
+- Full reads reconcile the latest cumulative token totals and return the
+  consumed byte offset.
+- Offset reads skip incomplete trailing JSONL lines and return a true delta by
+  subtracting the caller's previous usage baseline from Codex's cumulative
+  token rows.
+- Content-byte accounting counts user-role message text and
+  `function_call_output` text, while assistant output, reasoning, cached-input
+  replays, and malformed rows are ignored.
+- `internal/pricing` now has provider-specific Claude and OpenAI lookups, with
+  Codex/OpenAI unknown models falling back to an OpenAI rate rather than a
+  Claude rate.
+- Exit: `go test ./internal/codexrollout ./internal/pricing`,
+  `go test ./...`, and `go build ./...` pass.
 
 ### Phase 3 - Minimal Codex Hook
 
