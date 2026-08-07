@@ -110,6 +110,38 @@ func TestSessionStartRegistersProjectAndResetsSession(t *testing.T) {
 	if !reset.IsZero() || reset.TranscriptContentBytes != 0 {
 		t.Fatalf("session was not reset: %+v", reset)
 	}
+	if reset.Agent != stats.AgentCodex {
+		t.Fatalf("Agent = %q, want %q", reset.Agent, stats.AgentCodex)
+	}
+}
+
+func TestSessionStartCreatesVisibleCodexSession(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	sessionID := "fresh-codex-session"
+
+	if _, err := handle(hookInput{SessionID: sessionID, Cwd: dir, HookEventName: "SessionStart"}); err != nil {
+		t.Fatalf("handle SessionStart errored: %v", err)
+	}
+
+	files, err := stats.ListSessions(dir)
+	if err != nil {
+		t.Fatalf("ListSessions errored: %v", err)
+	}
+	if len(files) != 1 || files[0].ID != sessionID {
+		t.Fatalf("session files = %+v, want one visible Codex session %q", files, sessionID)
+	}
+
+	got, err := stats.LoadSession(dir, sessionID)
+	if err != nil {
+		t.Fatalf("LoadSession errored: %v", err)
+	}
+	if got.Agent != stats.AgentCodex {
+		t.Fatalf("Agent = %q, want %q", got.Agent, stats.AgentCodex)
+	}
+	if !got.IsZero() || got.TranscriptContentBytes != 0 {
+		t.Fatalf("fresh session should only be a visibility marker, got %+v", got)
+	}
 }
 
 func TestPostCompactPreservesCodexAgentForExistingUsage(t *testing.T) {

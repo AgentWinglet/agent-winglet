@@ -483,19 +483,16 @@ func resetSession(in hookInput) error {
 	if err := stats.InvalidateSession(root, in.SessionID); err != nil {
 		return err
 	}
-	if err := ensureCodexAgentForExistingUsage(root, in.SessionID); err != nil {
+	if err := ensureCodexSessionVisible(root, in.SessionID); err != nil {
 		return err
 	}
 	return registry.Register(root)
 }
 
-func ensureCodexAgentForExistingUsage(projectDir, sessionID string) error {
+func ensureCodexSessionVisible(projectDir, sessionID string) error {
 	s, err := stats.LoadSession(projectDir, sessionID)
 	if err != nil {
 		return err
-	}
-	if s.TranscriptTokens == 0 && s.TranscriptCostUSD == 0 && s.TranscriptContentBytes == 0 && s.TranscriptOffset == 0 {
-		return nil
 	}
 	s.Agent = stats.AgentCodex
 	return stats.SaveSession(projectDir, sessionID, s)
