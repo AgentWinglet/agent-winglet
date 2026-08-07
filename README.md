@@ -21,13 +21,15 @@ By default this installs **both** agent hooks (`claude-hook` and
 `--app-only` to install just one side, or `--claude-only` / `--codex-only`
 to narrow hook installation to one agent.
 
-**The hooks**: fetched with `go install`, so it doesn't matter where you run
-this from, and it works even if you invoke `--hook-only` from outside a
-checkout. `claude-hook` merges config into `~/.claude/settings.json`.
-`codex-hook` merges config into `${CODEX_HOME:-~/.codex}/hooks.json`.
-Neither path overwrites existing settings. Installing once globally makes
-the hooks active for projects under that agent; Codex still requires you to
-run `/hooks` and trust the `agent-winglet` `codex-hook` before it will run.
+**The hooks**: installed with `go install`. From this checkout, the installer
+builds the local `cmd/claude-hook` and `cmd/codex-hook` packages. With
+`--hook-only` outside a checkout, it falls back to fetching
+`github.com/umitkaanusta/agent-winglet/...@latest`. `claude-hook` merges
+config into `~/.claude/settings.json`. `codex-hook` merges config into
+`${CODEX_HOME:-~/.codex}/hooks.json`. Neither path overwrites existing
+settings. Installing once globally makes the hooks active for projects under
+that agent; Codex still requires you to run `/hooks` and trust the
+`agent-winglet` `codex-hook` before Winglet can record Codex sessions.
 
 Ledger/stats state lives under `~/.agent-winglet/projects/...`, keyed by the
 session's project root. Each hook registers whichever project it's running
@@ -75,6 +77,12 @@ built from local source) but not for the hook (`go install ...@latest`
 always fetches fresh from GitHub regardless of your checkout's state) —
 just always pull first, it's harmless either way.
 
+For hook-only maintenance, `./install.sh --hook-only` installs both hooks and
+`./uninstall.sh --hook-only` removes both hook entries. Add `--claude-only` or
+`--codex-only` to either command to limit it to one agent. Add `--local` to
+write project-scoped hook config under `./.claude/` and `./.codex/` instead of
+the global agent config directories.
+
 ## Uninstall
 
 ```
@@ -101,6 +109,7 @@ above, it doesn't build anything. Add:
 ```
 make build   # builds bin/claude-hook and bin/codex-hook locally
 make test    # runs the Go test suite
+make installer-smoke
 ```
 
 This repo's own `.claude/settings.json` is a dev/test fixture — it points

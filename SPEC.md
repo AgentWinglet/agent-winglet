@@ -688,13 +688,28 @@ closed.
 
 ### Phase 10 - End-To-End Install
 
-1. Fresh install writes Claude and Codex hook config.
-2. `--claude-only`, `--codex-only`, `--hook-only`, `--app-only`, and `--local`
-   combinations behave predictably.
-3. Uninstall removes current hook entries.
-4. README explains Codex trust through `/hooks`.
-5. Exit: `go build ./...`, `go test ./...`, installer smoke tests, and one real
-   Codex dogfood session pass.
+Complete locally; real Codex dogfood remains before treating the exit as fully
+closed.
+
+- Fresh global hook install writes both Claude and Codex hook config.
+- Re-running global hook install is idempotent and does not duplicate hook
+  entries.
+- `--claude-only`, `--codex-only`, `--hook-only`, and `--local` combinations
+  are covered by an isolated smoke script with temp `HOME`, `CODEX_HOME`, and
+  `GOBIN`.
+- Invalid `--hook-only --app-only` and `--claude-only --codex-only`
+  combinations fail clearly for both install and uninstall.
+- Uninstall removes current `claude-hook` and `codex-hook` entries by basename.
+- README explains that global Codex installs still require `/hooks` trust before
+  Winglet can record Codex sessions, and documents hook-only/local selector
+  behavior.
+- `make installer-smoke` runs `scripts/smoke-install-hooks.sh`; CI runs it
+  after the Go test suite. The smoke test stubs `go install`, so compiler
+  validation remains the job of `go build ./...` and `make build`.
+- Exit so far: `make installer-smoke`, `go test ./...`, `go build ./...`,
+  `make build`, `git diff --check`, and global `./install.sh` pass. Remaining
+  validation for this phase: one real Codex dogfood session after trusting the
+  updated hook through `/hooks`.
 
 ## Non-Goals
 

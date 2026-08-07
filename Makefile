@@ -1,4 +1,4 @@
-.PHONY: build claude-hook codex-hook test app tray nest-tray-darwin install uninstall
+.PHONY: build claude-hook codex-hook test installer-smoke app tray nest-tray-darwin install uninstall
 
 build: claude-hook codex-hook
 
@@ -10,6 +10,9 @@ codex-hook:
 
 test:
 	go test ./...
+
+installer-smoke:
+	./scripts/smoke-install-hooks.sh
 
 install:
 	./install.sh
