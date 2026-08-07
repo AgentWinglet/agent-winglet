@@ -23,10 +23,10 @@ import (
 type Config struct {
 	Quiet bool `json:"quiet"`
 	// CompactNudgeDisabled opts out of the /compact nudge (see
-	// cmd/claude-hook's handlePhaseBoundary and cmd/agent-winglet-app's
-	// "Never show compact nudges" action) — false by default, unlike Quiet,
-	// since the nudge this gates is new and opt-in-by-default, not a
-	// pre-existing behavior being made quieter.
+	// cmd/claude-hook's handlePhaseBoundary, cmd/codex-hook's
+	// codexCompactNudgeOutput, and the dashboard settings toggle) — false by
+	// default, unlike Quiet, since the nudge this gates is new and
+	// opt-in-by-default, not a pre-existing behavior being made quieter.
 	CompactNudgeDisabled bool `json:"compactNudgeDisabled"`
 }
 

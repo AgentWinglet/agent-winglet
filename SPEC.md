@@ -78,6 +78,8 @@ Verified from the official Codex manual:
   `SubagentStop`, and `Stop` support shared `systemMessage`; `PostToolUse`
   also supports `systemMessage`.
 - `PreCompact` and `PostCompact` match `trigger` values `manual` and `auto`.
+- Codex exposes `/compact` for manual chat compaction and also compacts chats
+  automatically using model/default thresholds.
 - Codex stores local state under `CODEX_HOME`, defaulting to `~/.codex`.
 - Session transcripts live under `$CODEX_HOME/sessions` unless a run is
   ephemeral. The hook also receives `transcript_path` directly.
@@ -300,7 +302,7 @@ output before the model has enough context. Bias toward `Neutral`.
 | Output budgeting | Bash stdout, Grep content, Glob filenames | Bash/unified-exec output only |
 | Phase boundary | Tool-name sets | `cmdclass` investigate plus `apply_patch` implement |
 | Retirement | Retire investigate tools after boundary or threshold; retire long Bash output post-boundary | Retire classified investigate Bash output after boundary or threshold; retire long Bash output post-boundary |
-| Compact nudge | `PostToolUse` message and additional context | Build only after validating Codex auto-compact behavior and output UX |
+| Compact nudge | `PostToolUse` message and additional context | `PostToolUse` `systemMessage` plus Codex-native additional context |
 | Savings receipt | `SessionEnd` `systemMessage` | `SessionEnd` `systemMessage` |
 | Subagents | Claude `Task` tool counts as investigation | Codex `SubagentStart`/`SubagentStop` should count as investigation, but do not try to retire subagent transcript output in v1 |
 
@@ -660,13 +662,29 @@ closed.
 
 ### Phase 9 - Compact Guidance
 
-1. Validate whether Codex auto-compaction makes the existing nudge useful.
-2. If Codex auto-compacts well enough, do not implement the nudge for Codex.
-3. If still useful, emit a one-time `systemMessage` on the boundary using a
-   Codex-supported event/output shape.
-4. Do not instruct Codex to ask the user through a Claude-specific tool name.
-5. Exit: the nudge appears once and can be disabled by the existing
-   `CompactNudgeDisabled` config.
+Complete locally; real Codex dogfood remains before treating the exit as fully
+closed.
+
+- The refreshed Codex manual documents both manual `/compact` and automatic
+  compaction. The nudge is still useful because it is boundary-timed: it tells
+  the user when the session has shifted from investigation to implementation,
+  before more edit/test output accumulates.
+- `cmd/codex-hook` now emits the same user-facing `/compact nudge`
+  `systemMessage` on the first investigate-to-implement boundary crossing.
+- Codex also receives hook `additionalContext`, but it uses generic
+  "tell the user" wording instead of Claude's `AskUserQuestion` tool name.
+- The nudge does not use `continue: false`, so it does not replace a tool result
+  or interfere with apply-patch output.
+- The existing `CompactNudgeDisabled` config and dashboard toggle now gate both
+  Claude and Codex nudges.
+- The settings UI copy now names Claude and Codex without adding a new screen or
+  Codex-specific styling.
+- Unit tests cover one-time emission, disablement, no Claude-specific tool
+  wording, and retirement still working after the boundary nudge.
+- Exit so far: `go test ./...`, `go build ./...`, frontend `npm run build`,
+  `git diff --check`, and global `./install.sh --hook-only --codex-only` pass.
+- Remaining dogfood exit: a real Codex session shows the nudge once on the
+  apply-patch/edit boundary, and disabling compact nudges suppresses it.
 
 ### Phase 10 - End-To-End Install
 
@@ -696,7 +714,6 @@ closed.
   `continue: false` or `decision: "block"`?
 - What exact Bash `tool_response` shape does Codex pass to hooks on this CLI
   version, and does it expose success/stderr/interruption structurally?
-- Is Codex auto-compaction good enough to skip the compact nudge?
 - Where, if anywhere, does Codex persist hook trust state in a supported enough
   way for the app to display "installed but not trusted"?
 - Which OpenAI model strings should be considered first-class in

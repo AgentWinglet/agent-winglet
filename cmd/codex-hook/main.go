@@ -2,7 +2,8 @@
 // registers projects, resets per-session state at session starts/compacts,
 // records Codex rollout-derived usage, dedups repeated successful shell output,
 // budgets long first-time shell output, retires post-boundary investigation
-// output, and carries a disabled-by-default replacement probe.
+// output, emits the compact nudge, and carries a disabled-by-default
+// replacement probe.
 package main
 
 import (
@@ -91,7 +92,8 @@ func handle(in hookInput) (*hookOutput, error) {
 	case "SessionStart", "PostCompact":
 		return nil, resetSession(in)
 	case "SubagentStart", "SubagentStop":
-		return nil, observeCodexPhase(projectroot.Resolve(in.Cwd), in.SessionID, true, false)
+		_, err := observeCodexPhase(projectroot.Resolve(in.Cwd), in.SessionID, true, false)
+		return nil, err
 	case "PostToolUse":
 		return handlePostToolUse(in)
 	case "Stop":
@@ -111,8 +113,12 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 		return out, nil
 	}
 	class := codexPhaseClass(in)
-	if err := observeCodexPhase(root, in.SessionID, class == cmdclass.Investigate, class == cmdclass.Implement); err != nil {
+	crossed, err := observeCodexPhase(root, in.SessionID, class == cmdclass.Investigate, class == cmdclass.Implement)
+	if err != nil {
 		return nil, err
+	}
+	if crossed {
+		return codexCompactNudgeOutput(), nil
 	}
 	return handleShellPostToolUse(in, root, class)
 }
@@ -228,16 +234,16 @@ func handleShellPostToolUse(in hookInput, root string, class cmdclass.Class) (*h
 	return codexReplacementOutput(fmt.Sprintf("[agent-winglet] unchanged since turn %d (%s)", repeatOfTurn, key)), nil
 }
 
-func observeCodexPhase(root, sessionID string, isInvestigate, isImplement bool) error {
+func observeCodexPhase(root, sessionID string, isInvestigate, isImplement bool) (bool, error) {
 	if !isInvestigate && !isImplement {
-		return nil
+		return false, nil
 	}
 	st, err := phase.Load(root, sessionID)
 	if err != nil {
-		return err
+		return false, err
 	}
-	st.Observe(isInvestigate, isImplement)
-	return phase.Save(root, sessionID, st)
+	crossed := st.Observe(isInvestigate, isImplement)
+	return crossed, phase.Save(root, sessionID, st)
 }
 
 func codexPhaseStatus(root, sessionID string) (pastBoundary bool, overInvestigateThreshold bool, err error) {
@@ -440,6 +446,26 @@ func codexReplacementOutput(receipt string) *hookOutput {
 		Continue:      &keepGoing,
 		StopReason:    receipt,
 		SystemMessage: receipt,
+	}
+}
+
+func codexCompactNudgeOutput() *hookOutput {
+	if cfg, err := config.Load(); err == nil && cfg.CompactNudgeDisabled {
+		return nil
+	}
+
+	const msg = "[agent-winglet] /compact nudge - you can compact the " +
+		"session ahead of implementation, to save context while what's " +
+		"still relevant is still clear."
+	const modelInstruction = msg + " Before continuing with any further " +
+		"work, tell the user they can run /compact now if they want to compact first."
+
+	return &hookOutput{
+		SystemMessage: msg,
+		HookSpecificOutput: &hookSpecificOutput{
+			HookEventName:     "PostToolUse",
+			AdditionalContext: modelInstruction,
+		},
 	}
 }
 

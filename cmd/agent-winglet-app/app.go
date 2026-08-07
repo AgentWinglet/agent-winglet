@@ -36,9 +36,8 @@ func NewApp() *App {
 // config.Config.CompactNudgeDisabled (inverted, so the Settings screen's
 // toggle can talk in on/off terms without re-deriving the double negative).
 // The compact nudge itself is a systemMessage/additionalContext emitted
-// directly by cmd/claude-hook (see its handlePhaseBoundary) — this
-// dashboard has no part in showing it, only in this one preference for
-// turning it off.
+// directly by the hook binaries — this dashboard has no part in showing it,
+// only in this one preference for turning it off.
 func (a *App) GetCompactNudgesEnabled() bool {
 	cfg, err := config.Load()
 	if err != nil {
@@ -349,7 +348,7 @@ type mechanism struct {
 }
 
 const (
-	dedupTooltip = "When Claude re-runs a shell command it's already run with identical output this session, " +
+	dedupTooltip = "When an agent re-runs a shell command it's already run with identical output this session, " +
 		"agent-winglet replaces the repeat with a short reference instead of sending it to the model again."
 	budgetTrimTooltip = "Commands that succeed but print more than 500 tokens (AgentDiet recommendation) have " +
 		"their middle section collapsed to a head/tail summary."

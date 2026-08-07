@@ -357,7 +357,7 @@ async function loadProjects(container) {
         container.innerHTML = `
           <h1 class="screen-title">Projects</h1>
           <p class="screen-subtitle">Projects with the agent-winglet hook installed.</p>
-          <div class="empty-state">No projects registered yet — the hook installs globally; a project is added automatically the first time Claude Code starts a session in it.</div>
+          <div class="empty-state">No projects registered yet — the hooks install globally; a project is added automatically the first time Claude or Codex starts a session in it.</div>
         `;
       });
     });
@@ -524,10 +524,10 @@ async function renderSessionsSection(container, projectPath) {
 }
 
 // The compact-nudges toggle controls the systemMessage/additionalContext
-// cmd/claude-hook emits directly (handlePhaseBoundary) — this dashboard has
-// no part in showing it, only in this preference. Reading its state needs a
-// round-trip (GetCompactNudgesEnabled), so this is async like the other
-// screens, not fetched synchronously.
+// the hook binaries emit directly — this dashboard has no part in showing it,
+// only in this preference. Reading its state needs a round-trip
+// (GetCompactNudgesEnabled), so this is async like the other screens, not
+// fetched synchronously.
 async function renderSettingsScreen(container) {
   const enabled = await GetCompactNudgesEnabled();
   if (state.screen !== 'settings') return;
@@ -537,7 +537,7 @@ async function renderSettingsScreen(container) {
     <div class="settings-row">
       <div>
         <div class="settings-row-label">Compact nudges</div>
-        <div class="settings-row-desc">Tell Claude to nudge you, inside the session, to run /compact once it moves from investigating to editing.</div>
+        <div class="settings-row-desc">Tell Claude or Codex to nudge you, inside the session, to run /compact once it moves from investigating to editing.</div>
       </div>
       <button class="toggle ${enabled ? 'on' : ''}" data-toggle-nudges aria-pressed="${enabled}">
         <span class="toggle-knob"></span>

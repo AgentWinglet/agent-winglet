@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/umitkaanusta/agent-winglet/internal/config"
 	"github.com/umitkaanusta/agent-winglet/internal/outputbudget"
 	"github.com/umitkaanusta/agent-winglet/internal/phase"
 	"github.com/umitkaanusta/agent-winglet/internal/registry"
@@ -362,8 +363,8 @@ func TestPostToolUseRetiresInvestigateShellAfterBoundaryCrossed(t *testing.T) {
 	}
 	if out, err := handle(codexApplyPatchInput(t, dir, sessionID)); err != nil {
 		t.Fatalf("apply_patch boundary signal errored: %v", err)
-	} else if out != nil {
-		t.Fatalf("Phase 8 apply_patch should update phase silently, got %+v", out)
+	} else if out == nil || !strings.Contains(out.SystemMessage, "/compact nudge") {
+		t.Fatalf("apply_patch should emit the Phase 9 boundary nudge, got %+v", out)
 	}
 
 	output := "package main\n"
@@ -545,6 +546,78 @@ func TestPostToolUseDedupTakesPrecedenceOverRetirementPostBoundary(t *testing.T)
 	}
 	if strings.Contains(out.SystemMessage, "retired post-boundary") {
 		t.Fatalf("repeat should dedup instead of retire, got %q", out.SystemMessage)
+	}
+}
+
+func TestPostToolUseEmitsCodexCompactNudgeOnceOnBoundary(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	sessionID := "codex-session"
+
+	if out, err := handle(codexBashPostInput(t, dir, sessionID, "rg --files", map[string]interface{}{
+		"stdout":    "SPEC.md\n",
+		"stderr":    "",
+		"exit_code": 0,
+	})); err != nil {
+		t.Fatalf("investigate seed errored: %v", err)
+	} else if out != nil {
+		t.Fatalf("pre-boundary investigate shell should pass through, got %+v", out)
+	}
+
+	out, err := handle(codexApplyPatchInput(t, dir, sessionID))
+	if err != nil {
+		t.Fatalf("apply_patch boundary signal errored: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("expected compact nudge on first boundary crossing")
+	}
+	if out.Continue != nil || out.StopReason != "" {
+		t.Fatalf("compact nudge should not replace or stop the tool result, got %+v", out)
+	}
+	if !strings.Contains(out.SystemMessage, "/compact nudge") {
+		t.Fatalf("SystemMessage = %q, want /compact nudge", out.SystemMessage)
+	}
+	if out.HookSpecificOutput == nil || out.HookSpecificOutput.HookEventName != "PostToolUse" {
+		t.Fatalf("HookSpecificOutput = %+v, want PostToolUse additional context", out.HookSpecificOutput)
+	}
+	if !strings.Contains(out.HookSpecificOutput.AdditionalContext, "tell the user") {
+		t.Fatalf("AdditionalContext = %q, want Codex-native user-facing instruction", out.HookSpecificOutput.AdditionalContext)
+	}
+	if strings.Contains(out.HookSpecificOutput.AdditionalContext, "AskUserQuestion") {
+		t.Fatalf("AdditionalContext should not mention Claude-specific AskUserQuestion: %q", out.HookSpecificOutput.AdditionalContext)
+	}
+
+	out, err = handle(codexApplyPatchInput(t, dir, sessionID))
+	if err != nil {
+		t.Fatalf("second apply_patch errored: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("compact nudge should fire once per phase state, got %+v", out)
+	}
+}
+
+func TestPostToolUseSkipsCodexCompactNudgeWhenDisabled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	sessionID := "codex-session"
+	if err := config.Save(&config.Config{CompactNudgeDisabled: true}); err != nil {
+		t.Fatalf("config.Save errored: %v", err)
+	}
+
+	if _, err := handle(codexBashPostInput(t, dir, sessionID, "rg --files", map[string]interface{}{
+		"stdout":    "SPEC.md\n",
+		"stderr":    "",
+		"exit_code": 0,
+	})); err != nil {
+		t.Fatalf("investigate seed errored: %v", err)
+	}
+
+	out, err := handle(codexApplyPatchInput(t, dir, sessionID))
+	if err != nil {
+		t.Fatalf("apply_patch boundary signal errored: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("disabled compact nudge should emit nothing, got %+v", out)
 	}
 }
 
