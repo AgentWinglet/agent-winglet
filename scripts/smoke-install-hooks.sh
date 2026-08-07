@@ -103,6 +103,25 @@ assert_absent_or_zero() {
   assert_count "$file" "$binary" "0"
 }
 
+assert_event_has_binary() {
+  file="$1"
+  event="$2"
+  binary="$3"
+  got="$(jq -r '
+    [.hooks[$event][]? | .hooks[]? | .command | select((split("/") | last) == $binary)] | length
+  ' --arg event "$event" --arg binary "$binary" "$file")"
+  [ "$got" = "1" ] || fail "expected one ${binary} entry for ${event} in ${file}, got ${got}"
+}
+
+file_mtime() {
+  file="$1"
+  if stat -f %m "$file" >/dev/null 2>&1; then
+    stat -f %m "$file"
+  else
+    stat -c %Y "$file"
+  fi
+}
+
 if ! command -v jq >/dev/null 2>&1; then
   fail "jq is required"
 fi
@@ -114,11 +133,19 @@ case "$global_out" in
   *) fail "Codex trust reminder missing from global install output" ;;
 esac
 assert_count "${global_case}/home/.claude/settings.json" "claude-hook" "5"
-assert_count "${global_case}/codex-home/hooks.json" "codex-hook" "5"
+assert_count "${global_case}/codex-home/hooks.json" "codex-hook" "7"
+assert_event_has_binary "${global_case}/codex-home/hooks.json" "SubagentStart" "codex-hook"
+assert_event_has_binary "${global_case}/codex-home/hooks.json" "SubagentStop" "codex-hook"
 
+touch -t 202001010101 "${global_case}/codex-home/hooks.json"
+codex_before_update_mtime="$(file_mtime "${global_case}/codex-home/hooks.json")"
 run_in_case "$global_case" "$REPO_ROOT" "${REPO_ROOT}/install.sh" --hook-only >/dev/null
+codex_after_update_mtime="$(file_mtime "${global_case}/codex-home/hooks.json")"
+[ "$codex_after_update_mtime" = "$codex_before_update_mtime" ] || fail "Codex update should preserve hooks.json mtime"
 assert_count "${global_case}/home/.claude/settings.json" "claude-hook" "5"
-assert_count "${global_case}/codex-home/hooks.json" "codex-hook" "5"
+assert_count "${global_case}/codex-home/hooks.json" "codex-hook" "7"
+assert_event_has_binary "${global_case}/codex-home/hooks.json" "SubagentStart" "codex-hook"
+assert_event_has_binary "${global_case}/codex-home/hooks.json" "SubagentStop" "codex-hook"
 
 run_in_case "$global_case" "$REPO_ROOT" "${REPO_ROOT}/uninstall.sh" --hook-only >/dev/null
 assert_absent_or_zero "${global_case}/home/.claude/settings.json" "claude-hook"
@@ -132,14 +159,28 @@ assert_absent_or_zero "${claude_case}/codex-home/hooks.json" "codex-hook"
 codex_case="$(new_case codex-only)"
 run_in_case "$codex_case" "$REPO_ROOT" "${REPO_ROOT}/install.sh" --hook-only --codex-only >/dev/null
 assert_absent_or_zero "${codex_case}/home/.claude/settings.json" "claude-hook"
-assert_count "${codex_case}/codex-home/hooks.json" "codex-hook" "5"
+assert_count "${codex_case}/codex-home/hooks.json" "codex-hook" "7"
+assert_event_has_binary "${codex_case}/codex-home/hooks.json" "SubagentStart" "codex-hook"
+assert_event_has_binary "${codex_case}/codex-home/hooks.json" "SubagentStop" "codex-hook"
 run_in_case "$codex_case" "$REPO_ROOT" "${REPO_ROOT}/uninstall.sh" --hook-only --codex-only >/dev/null
 assert_absent_or_zero "${codex_case}/codex-home/hooks.json" "codex-hook"
+
+codex_first_case="$(new_case codex-first-existing-file)"
+printf '%s\n' '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/tmp/other-hook"}]}]}}' > "${codex_first_case}/codex-home/hooks.json"
+touch -t 202001010101 "${codex_first_case}/codex-home/hooks.json"
+codex_first_before_mtime="$(file_mtime "${codex_first_case}/codex-home/hooks.json")"
+run_in_case "$codex_first_case" "$REPO_ROOT" "${REPO_ROOT}/install.sh" --hook-only --codex-only >/dev/null
+codex_first_after_mtime="$(file_mtime "${codex_first_case}/codex-home/hooks.json")"
+[ "$codex_first_after_mtime" != "$codex_first_before_mtime" ] || fail "Codex first install should update hooks.json mtime"
+assert_count "${codex_first_case}/codex-home/hooks.json" "codex-hook" "7"
+assert_count "${codex_first_case}/codex-home/hooks.json" "other-hook" "1"
 
 local_case="$(new_case local)"
 run_in_case "$local_case" "${local_case}/project" "${REPO_ROOT}/install.sh" --hook-only --local >/dev/null
 assert_count "${local_case}/project/.claude/settings.json" "claude-hook" "5"
-assert_count "${local_case}/project/.codex/hooks.json" "codex-hook" "5"
+assert_count "${local_case}/project/.codex/hooks.json" "codex-hook" "7"
+assert_event_has_binary "${local_case}/project/.codex/hooks.json" "SubagentStart" "codex-hook"
+assert_event_has_binary "${local_case}/project/.codex/hooks.json" "SubagentStop" "codex-hook"
 assert_absent_or_zero "${local_case}/home/.claude/settings.json" "claude-hook"
 assert_absent_or_zero "${local_case}/codex-home/hooks.json" "codex-hook"
 run_in_case "$local_case" "${local_case}/project" "${REPO_ROOT}/uninstall.sh" --hook-only --local >/dev/null

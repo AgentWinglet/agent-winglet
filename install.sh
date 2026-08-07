@@ -153,6 +153,15 @@ if [ "$WANT_HOOK" = "1" ]; then
   merge_codex_hook() {
     hook_path="$1"
     mkdir -p "$(dirname "$CODEX_HOOKS_FILE")"
+    preserve_mtime=0
+    mtime_ref=""
+    if [ -f "$CODEX_HOOKS_FILE" ] && jq -e '
+      [.hooks // {} | .. | objects | select(has("command")) | .command | select((split("/") | last) == "codex-hook")] | length > 0
+    ' "$CODEX_HOOKS_FILE" >/dev/null; then
+      preserve_mtime=1
+      mtime_ref="$(mktemp)"
+      touch -r "$CODEX_HOOKS_FILE" "$mtime_ref"
+    fi
     if [ ! -f "$CODEX_HOOKS_FILE" ]; then
       echo '{}' > "$CODEX_HOOKS_FILE"
     fi
@@ -173,10 +182,18 @@ if [ "$WANT_HOOK" = "1" ]; then
       .hooks.PostCompact |= (if any(.[]; has_cmd) then . else . + [hook_entry(5)] end) |
       .hooks.Stop //= [] |
       .hooks.Stop |= (if any(.[]; has_cmd) then . else . + [hook_entry(5)] end) |
+      .hooks.SubagentStart //= [] |
+      .hooks.SubagentStart |= (if any(.[]; has_cmd) then . else . + [hook_entry(5)] end) |
+      .hooks.SubagentStop //= [] |
+      .hooks.SubagentStop |= (if any(.[]; has_cmd) then . else . + [hook_entry(5)] end) |
       .hooks.SessionEnd //= [] |
       .hooks.SessionEnd |= (if any(.[]; has_cmd) then . else . + [hook_entry(3)] end)
     ' "$CODEX_HOOKS_FILE" > "$tmp_file"
     mv "$tmp_file" "$CODEX_HOOKS_FILE"
+    if [ "$preserve_mtime" = "1" ]; then
+      touch -r "$mtime_ref" "$CODEX_HOOKS_FILE"
+      rm -f "$mtime_ref"
+    fi
   }
 
   if [ "$WANT_CLAUDE_HOOK" = "1" ]; then

@@ -742,6 +742,191 @@ func TestPostToolUseDedupReadsNestedResultOutput(t *testing.T) {
 	}
 }
 
+func TestCodexModelVisibleTextField(t *testing.T) {
+	successFalse := false
+	exitCodeOne := 1
+	cases := []struct {
+		name string
+		raw  interface{}
+		want string
+		ok   bool
+	}{
+		{name: "raw_string", raw: "plain text\n", want: "plain text\n", ok: true},
+		{name: "output", raw: map[string]interface{}{"output": "from output"}, want: "from output", ok: true},
+		{name: "content", raw: map[string]interface{}{"content": "from content"}, want: "from content", ok: true},
+		{name: "result_output", raw: map[string]interface{}{"result": map[string]interface{}{"output": "nested output"}}, want: "nested output", ok: true},
+		{name: "result_content", raw: map[string]interface{}{"result": map[string]interface{}{"content": "nested content"}}, want: "nested content", ok: true},
+		{name: "stdout_is_shell_only", raw: map[string]interface{}{"stdout": "shell stdout"}, ok: false},
+		{name: "error", raw: map[string]interface{}{"output": "bad", "error": "failed"}, ok: false},
+		{name: "root_error_with_result", raw: map[string]interface{}{"error": "failed", "result": map[string]interface{}{"output": "bad"}}, ok: false},
+		{name: "stderr", raw: map[string]interface{}{"output": "bad", "stderr": "failed"}, ok: false},
+		{name: "interrupted", raw: map[string]interface{}{"output": "bad", "interrupted": true}, ok: false},
+		{name: "image", raw: map[string]interface{}{"output": "bad", "is_image": true}, ok: false},
+		{name: "success_false", raw: map[string]interface{}{"output": "bad", "success": successFalse}, ok: false},
+		{name: "exit_code", raw: map[string]interface{}{"output": "bad", "exit_code": exitCodeOne}, ok: false},
+		{name: "unknown_object", raw: map[string]interface{}{"value": "leave alone"}, ok: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(tc.raw)
+			if err != nil {
+				t.Fatalf("Marshal errored: %v", err)
+			}
+			got, ok := codexModelVisibleTextField(raw)
+			if ok != tc.ok || got != tc.want {
+				t.Fatalf("codexModelVisibleTextField() = %q, %v; want %q, %v", got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+func TestPostToolUseDedupsNonShellLocalReadTool(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	sessionID := "codex-session"
+	response := map[string]interface{}{"content": "same file\n"}
+
+	if out, err := handle(codexLocalPostInput(t, dir, sessionID, "read_file", map[string]interface{}{"path": "main.go"}, response)); err != nil {
+		t.Fatalf("first PostToolUse errored: %v", err)
+	} else if out != nil {
+		t.Fatalf("first local read should pass through, got %+v", out)
+	}
+
+	out, err := handle(codexLocalPostInput(t, dir, sessionID, "read_file", map[string]interface{}{"path": "main.go"}, response))
+	if err != nil {
+		t.Fatalf("repeat PostToolUse errored: %v", err)
+	}
+	if out == nil || !strings.Contains(out.SystemMessage, `read_file:{"path":"main.go"}`) {
+		t.Fatalf("repeat local read should dedup with tool/input key, got %+v", out)
+	}
+
+	s, err := stats.LoadSession(dir, sessionID)
+	if err != nil {
+		t.Fatalf("LoadSession errored: %v", err)
+	}
+	if s.Agent != stats.AgentCodex || s.DedupHits != 1 || s.DedupBytes != int64(len("same file\n")) {
+		t.Fatalf("stats after non-shell dedup = %+v, want codex agent and one dedup", s)
+	}
+}
+
+func TestPostToolUseBudgetsLongNonShellLocalReadTool(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	sessionID := "codex-session"
+	longOutput := linesOfApproxTokens(outputbudget.TokenThreshold + 1)
+
+	out, err := handle(codexLocalPostInput(t, dir, sessionID, "grep", map[string]interface{}{"pattern": "TODO"}, map[string]interface{}{
+		"output": longOutput,
+	}))
+	if err != nil {
+		t.Fatalf("PostToolUse errored: %v", err)
+	}
+	if out == nil || !strings.Contains(out.SystemMessage, "lines omitted") || strings.Contains(out.SystemMessage, "exit 0") {
+		t.Fatalf("long non-shell output should be budgeted without shell exit marker, got %+v", out)
+	}
+	path := archivePathFromBudgetedOutput(t, out.SystemMessage, "full output at ")
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading archived output at %q errored: %v", path, err)
+	}
+	if string(stored) != longOutput {
+		t.Fatalf("archived output = %q, want original output", stored)
+	}
+}
+
+func TestPostToolUseRetiresNonShellLocalReadToolAfterBoundary(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	sessionID := "codex-session"
+
+	if out, err := handle(codexLocalPostInput(t, dir, sessionID, "list_dir", map[string]interface{}{"path": "."}, map[string]interface{}{
+		"output": "main.go\n",
+	})); err != nil {
+		t.Fatalf("investigate seed errored: %v", err)
+	} else if out != nil {
+		t.Fatalf("pre-boundary local read should pass through, got %+v", out)
+	}
+	if out, err := handle(codexApplyPatchInput(t, dir, sessionID)); err != nil {
+		t.Fatalf("apply_patch boundary signal errored: %v", err)
+	} else if out == nil || !strings.Contains(out.SystemMessage, "/compact nudge") {
+		t.Fatalf("apply_patch should emit the boundary nudge, got %+v", out)
+	}
+
+	output := "package main\n"
+	out, err := handle(codexLocalPostInput(t, dir, sessionID, "read_file", map[string]interface{}{"path": "main.go"}, map[string]interface{}{
+		"content": output,
+	}))
+	if err != nil {
+		t.Fatalf("post-boundary local read errored: %v", err)
+	}
+	if out == nil || !strings.Contains(out.SystemMessage, "investigate output retired post-boundary") {
+		t.Fatalf("post-boundary local read should retire, got %+v", out)
+	}
+	path := archivePathFromBudgetedOutput(t, out.SystemMessage, "full output at ")
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading retired output at %q errored: %v", path, err)
+	}
+	if string(stored) != output {
+		t.Fatalf("retired output = %q, want %q", stored, output)
+	}
+}
+
+func TestPostToolUseRetiresNonShellLocalReadToolAfterThresholdExceededPreBoundary(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	sessionID := "codex-session"
+
+	for i := 0; i < phase.InvestigateCallThreshold; i++ {
+		out, err := handle(codexLocalPostInput(t, dir, sessionID, "read_file", map[string]interface{}{"path": fmt.Sprintf("file-%d.go", i)}, map[string]interface{}{
+			"content": fmt.Sprintf("package p%d\n", i),
+		}))
+		if err != nil {
+			t.Fatalf("seed call %d errored: %v", i+1, err)
+		}
+		if out != nil {
+			t.Fatalf("seed call %d should pass through, got %+v", i+1, out)
+		}
+	}
+
+	output := "one more file\n"
+	out, err := handle(codexLocalPostInput(t, dir, sessionID, "read_file", map[string]interface{}{"path": "tail.go"}, map[string]interface{}{
+		"content": output,
+	}))
+	if err != nil {
+		t.Fatalf("threshold call errored: %v", err)
+	}
+	if out == nil || !strings.Contains(out.SystemMessage, investigateThresholdReason) {
+		t.Fatalf("threshold local read should retire, got %+v", out)
+	}
+	path := archivePathFromBudgetedOutput(t, out.SystemMessage, "full output at ")
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading retired output at %q errored: %v", path, err)
+	}
+	if string(stored) != output {
+		t.Fatalf("retired output = %q, want %q", stored, output)
+	}
+}
+
+func TestPostToolUseLeavesUnknownStructuredNonShellResponseUntouched(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	sessionID := "codex-session"
+	response := map[string]interface{}{"items": []string{"one", "two"}}
+
+	for i := 0; i < 2; i++ {
+		out, err := handle(codexLocalPostInput(t, dir, sessionID, "read_file", map[string]interface{}{"path": "main.go"}, response))
+		if err != nil {
+			t.Fatalf("PostToolUse %d errored: %v", i+1, err)
+		}
+		if out != nil {
+			t.Fatalf("unknown structured response should pass through untouched, got %+v", out)
+		}
+	}
+}
+
 func TestPostToolUseProbeDisabledByDefault(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv(codexProbeEnvVar, "")
@@ -938,6 +1123,26 @@ func codexBashPostInput(t *testing.T, dir, sessionID, command string, response i
 func codexShellPostInput(t *testing.T, dir, sessionID, toolName, commandField, command string, response interface{}) hookInput {
 	t.Helper()
 	toolInput, err := json.Marshal(map[string]string{commandField: command})
+	if err != nil {
+		t.Fatalf("Marshal tool input errored: %v", err)
+	}
+	toolResponse, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("Marshal tool response errored: %v", err)
+	}
+	return hookInput{
+		SessionID:     sessionID,
+		Cwd:           dir,
+		HookEventName: "PostToolUse",
+		ToolName:      toolName,
+		ToolInput:     toolInput,
+		ToolResponse:  toolResponse,
+	}
+}
+
+func codexLocalPostInput(t *testing.T, dir, sessionID, toolName string, input interface{}, response interface{}) hookInput {
+	t.Helper()
+	toolInput, err := json.Marshal(input)
 	if err != nil {
 		t.Fatalf("Marshal tool input errored: %v", err)
 	}

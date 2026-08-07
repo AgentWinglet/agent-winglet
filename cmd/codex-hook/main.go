@@ -120,7 +120,7 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 	if crossed {
 		return codexCompactNudgeOutput(), nil
 	}
-	return handleShellPostToolUse(in, root, class)
+	return handleCodexToolPostUse(in, root, class)
 }
 
 const (
@@ -167,26 +167,26 @@ func codexProbeMode() string {
 
 const investigateThresholdReason = "past the pre-boundary investigate-call threshold"
 
-func handleShellPostToolUse(in hookInput, root string, class cmdclass.Class) (*hookOutput, error) {
-	if in.HookEventName != "PostToolUse" || !codexShellTool(in.ToolName) {
+type codexToolOutput struct {
+	Key          string
+	Text         string
+	Shell        bool
+	CanRewrite   bool
+	RetireLabel  string
+	BudgetRetire string
+}
+
+func handleCodexToolPostUse(in hookInput, root string, class cmdclass.Class) (*hookOutput, error) {
+	toolOutput, ok := codexNormalizeToolOutput(in, class)
+	if !ok || !toolOutput.CanRewrite {
 		return nil, nil
 	}
 
-	command, ok := codexShellCommand(in.ToolInput)
-	if !ok {
-		return nil, nil
-	}
-	output, ok := codexModelVisibleOutput(in.ToolResponse)
-	if !ok {
-		return nil, nil
-	}
-
-	key := "Bash:" + command
 	st, err := ledger.Load(root, in.SessionID)
 	if err != nil {
 		return nil, err
 	}
-	repeatOfTurn, isRepeat := st.Check(key, output)
+	repeatOfTurn, isRepeat := st.Check(toolOutput.Key, toolOutput.Text)
 	if !isRepeat {
 		if err := ledger.Save(root, in.SessionID, st); err != nil {
 			return nil, err
@@ -197,16 +197,16 @@ func handleShellPostToolUse(in hookInput, root string, class cmdclass.Class) (*h
 		}
 		if class == cmdclass.Investigate {
 			if pastBoundary {
-				return handleShellRetire(in, root, output, command, "post-boundary", "investigate output")
+				return handleCodexRetire(in, root, toolOutput, "post-boundary", toolOutput.RetireLabel)
 			}
 			if overInvestigateThreshold {
-				return handleShellRetire(in, root, output, command, investigateThresholdReason, "investigate output")
+				return handleCodexRetire(in, root, toolOutput, investigateThresholdReason, toolOutput.RetireLabel)
 			}
 		}
-		if pastBoundary && outputbudget.EstimatedTokens(output) > outputbudget.TokenThreshold {
-			return handleShellRetire(in, root, output, command, "post-boundary", "bash output")
+		if toolOutput.Shell && pastBoundary && outputbudget.EstimatedTokens(toolOutput.Text) > outputbudget.TokenThreshold {
+			return handleCodexRetire(in, root, toolOutput, "post-boundary", toolOutput.BudgetRetire)
 		}
-		budgeted, omittedLines, omittedBytes, ok, err := outputbudget.Stdout(output, root, in.SessionID)
+		budgeted, omittedLines, omittedBytes, ok, err := budgetCodexToolOutput(toolOutput, root, in.SessionID)
 		if err != nil {
 			return nil, err
 		}
@@ -226,12 +226,12 @@ func handleShellPostToolUse(in hookInput, root string, class cmdclass.Class) (*h
 	}
 	if err := recordStat(root, in.SessionID, func(s *stats.Session) {
 		s.Agent = stats.AgentCodex
-		s.RecordDedup(len(output))
+		s.RecordDedup(len(toolOutput.Text))
 	}); err != nil {
 		return nil, err
 	}
 
-	return codexReplacementOutput(fmt.Sprintf("[agent-winglet] unchanged since turn %d (%s)", repeatOfTurn, key)), nil
+	return codexReplacementOutput(fmt.Sprintf("[agent-winglet] unchanged since turn %d (%s)", repeatOfTurn, toolOutput.Key)), nil
 }
 
 func observeCodexPhase(root, sessionID string, isInvestigate, isImplement bool) (bool, error) {
@@ -255,37 +255,28 @@ func codexPhaseStatus(root, sessionID string) (pastBoundary bool, overInvestigat
 }
 
 func codexPhaseClass(in hookInput) cmdclass.Class {
-	if codexImplementTool(in.ToolName) {
-		return cmdclass.Implement
+	if codexShellTool(in.ToolName) {
+		command, ok := codexShellCommand(in.ToolInput)
+		if !ok {
+			return cmdclass.Neutral
+		}
+		return cmdclass.Classify(command)
 	}
-	if !codexShellTool(in.ToolName) {
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(in.ToolName)), "mcp__") {
 		return cmdclass.Neutral
 	}
-	command, ok := codexShellCommand(in.ToolInput)
-	if !ok {
-		return cmdclass.Neutral
-	}
-	return cmdclass.Classify(command)
+	return codexLocalToolClass(in.ToolName)
 }
 
-func codexImplementTool(toolName string) bool {
-	switch strings.ToLower(strings.TrimSpace(toolName)) {
-	case "apply_patch", "edit", "write":
-		return true
-	default:
-		return false
-	}
-}
-
-func handleShellRetire(in hookInput, root, output, command, reason, label string) (*hookOutput, error) {
-	path, err := retire.Store(root, in.SessionID, []byte(output))
+func handleCodexRetire(in hookInput, root string, toolOutput codexToolOutput, reason, label string) (*hookOutput, error) {
+	path, err := retire.Store(root, in.SessionID, []byte(toolOutput.Text))
 	if err != nil {
 		return nil, err
 	}
-	n := len(output)
+	n := len(toolOutput.Text)
 	receipt := fmt.Sprintf(
-		"[agent-winglet] %s retired %s (Bash:%s, %d bytes) - full output at %s",
-		label, reason, command, n, path,
+		"[agent-winglet] %s retired %s (%s, %d bytes) - full output at %s",
+		label, reason, toolOutput.Key, n, path,
 	)
 	if err := recordStat(root, in.SessionID, func(s *stats.Session) {
 		s.Agent = stats.AgentCodex
@@ -294,6 +285,93 @@ func handleShellRetire(in hookInput, root, output, command, reason, label string
 		return nil, err
 	}
 	return codexReplacementOutput(receipt), nil
+}
+
+func budgetCodexToolOutput(toolOutput codexToolOutput, root, sessionID string) (string, int, int64, bool, error) {
+	if toolOutput.Shell {
+		return outputbudget.Stdout(toolOutput.Text, root, sessionID)
+	}
+	return outputbudget.TextField(toolOutput.Text, root, sessionID)
+}
+
+func codexNormalizeToolOutput(in hookInput, class cmdclass.Class) (codexToolOutput, bool) {
+	if in.HookEventName != "PostToolUse" {
+		return codexToolOutput{}, false
+	}
+	if codexShellTool(in.ToolName) {
+		command, ok := codexShellCommand(in.ToolInput)
+		if !ok {
+			return codexToolOutput{}, false
+		}
+		output, ok := codexModelVisibleOutput(in.ToolResponse)
+		if !ok {
+			return codexToolOutput{}, false
+		}
+		return codexToolOutput{
+			Key:          "Bash:" + command,
+			Text:         output,
+			Shell:        true,
+			CanRewrite:   true,
+			RetireLabel:  "investigate output",
+			BudgetRetire: "bash output",
+		}, true
+	}
+
+	name := strings.TrimSpace(in.ToolName)
+	if name == "" || strings.HasPrefix(strings.ToLower(name), "mcp__") {
+		return codexToolOutput{}, false
+	}
+	if class != cmdclass.Investigate {
+		return codexToolOutput{Key: name, CanRewrite: false}, true
+	}
+	output, ok := codexModelVisibleTextField(in.ToolResponse)
+	if !ok {
+		return codexToolOutput{}, false
+	}
+	return codexToolOutput{
+		Key:         codexLocalToolKey(name, in.ToolInput),
+		Text:        output,
+		CanRewrite:  true,
+		RetireLabel: "investigate output",
+	}, true
+}
+
+func codexLocalToolKey(toolName string, rawInput json.RawMessage) string {
+	toolName = strings.TrimSpace(toolName)
+	input := strings.TrimSpace(string(rawInput))
+	if input == "" {
+		return toolName
+	}
+	var decoded interface{}
+	if err := json.Unmarshal(rawInput, &decoded); err == nil {
+		if compact, err := json.Marshal(decoded); err == nil {
+			input = string(compact)
+		}
+	}
+	return toolName + ":" + input
+}
+
+func codexLocalToolClass(toolName string) cmdclass.Class {
+	base := codexToolBaseName(toolName)
+	switch base {
+	case "read_file", "read", "list_dir", "ls", "grep", "search", "find", "glob":
+		return cmdclass.Investigate
+	case "apply_patch", "edit", "write", "write_file", "replace":
+		return cmdclass.Implement
+	default:
+		return cmdclass.Neutral
+	}
+}
+
+func codexToolBaseName(toolName string) string {
+	name := strings.ToLower(strings.TrimSpace(toolName))
+	name = strings.TrimPrefix(name, "functions.")
+	for _, sep := range []string{".", "/", ":"} {
+		if i := strings.LastIndex(name, sep); i >= 0 {
+			name = name[i+1:]
+		}
+	}
+	return name
 }
 
 func codexShellTool(toolName string) bool {
@@ -345,6 +423,31 @@ func codexModelVisibleOutput(raw json.RawMessage) (string, bool) {
 	return output, output != ""
 }
 
+func codexModelVisibleTextField(raw json.RawMessage) (string, bool) {
+	if len(raw) == 0 {
+		return "", false
+	}
+
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		if rejectedModelVisibleText(text) {
+			return "", false
+		}
+		return text, text != ""
+	}
+
+	var response codexToolResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return "", false
+	}
+	if !response.Successful() {
+		return "", false
+	}
+
+	output := response.TextField()
+	return output, output != ""
+}
+
 type codexToolResponse struct {
 	Stdout      string `json:"stdout"`
 	Stderr      string `json:"stderr"`
@@ -373,6 +476,22 @@ type codexToolResponse struct {
 }
 
 func (r codexToolResponse) Successful() bool {
+	if r.Interrupted || r.IsImage || r.Stderr != "" || r.Error != "" {
+		return false
+	}
+	if r.ExitCode != nil && *r.ExitCode != 0 {
+		return false
+	}
+	if r.ExitCodeAlt != nil && *r.ExitCodeAlt != 0 {
+		return false
+	}
+	if r.Success != nil && !*r.Success {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(r.Status)) {
+	case "error", "failed", "failure", "interrupted", "cancelled", "canceled":
+		return false
+	}
 	if r.Result != nil {
 		nested := codexToolResponse{
 			Stdout:      r.Result.Stdout,
@@ -389,23 +508,9 @@ func (r codexToolResponse) Successful() bool {
 		}
 		return nested.Successful()
 	}
-	if r.Interrupted || r.IsImage || r.Stderr != "" || r.Error != "" {
-		return false
-	}
-	if r.ExitCode != nil && *r.ExitCode != 0 {
-		return false
-	}
-	if r.ExitCodeAlt != nil && *r.ExitCodeAlt != 0 {
-		return false
-	}
-	if r.Success != nil && !*r.Success {
-		return false
-	}
 	switch strings.ToLower(strings.TrimSpace(r.Status)) {
 	case "", "ok", "success", "succeeded", "completed":
 		return true
-	case "error", "failed", "failure", "interrupted", "cancelled", "canceled":
-		return false
 	default:
 		return true
 	}
@@ -428,6 +533,20 @@ func (r codexToolResponse) Text() string {
 	default:
 		return r.Content
 	}
+}
+
+func (r codexToolResponse) TextField() string {
+	if r.Result != nil {
+		nested := codexToolResponse{
+			Output:  r.Result.Output,
+			Content: r.Result.Content,
+		}
+		return nested.TextField()
+	}
+	if r.Output != "" {
+		return r.Output
+	}
+	return r.Content
 }
 
 func rejectedModelVisibleText(text string) bool {

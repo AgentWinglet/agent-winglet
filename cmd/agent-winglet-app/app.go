@@ -381,7 +381,7 @@ func mergeHookEntries(root map[string]interface{}, binaryName, hookPath string) 
 		hooks = map[string]interface{}{}
 		root["hooks"] = hooks
 	}
-	for _, event := range []string{"PostToolUse", "SessionStart", "PostCompact", "Stop", "SessionEnd"} {
+	for _, event := range []string{"PostToolUse", "SessionStart", "PostCompact", "Stop", "SubagentStart", "SubagentStop", "SessionEnd"} {
 		entry := map[string]interface{}{
 			"hooks": []interface{}{hookCommandEntry(binaryName, hookPath, event)},
 		}
