@@ -1,16 +1,12 @@
-// Package phase tracks, per Claude Code session, whether the session has
-// crossed the investigate→implement boundary: at least one
-// investigate-classified tool call, followed by the first
-// implement-classified call.
+// Package phase tracks, per agent session, whether the session has crossed the
+// investigate→implement boundary: at least one investigate-classified tool
+// call, followed by the first implement-classified call.
 //
-// Claude Code exposes no hook mechanism to trigger compaction
-// programmatically (PreCompact can only observe or block an already-pending
-// compaction) — confirmed against the hooks reference, 2026-08-03 — so this
-// package only ever surfaces a one-time signal for a hook to turn into a
-// suggestion. It fires at most once per state lifetime, and — like the
-// Session Ledger — that lifetime never survives a session restart or
-// compaction: callers invalidate this state on SessionStart/PostCompact
-// exactly as they do the Ledger's.
+// The hooks only need a one-time signal for each integration to turn into a
+// compact suggestion. It fires at most once per state lifetime, and — like the
+// Session Ledger — that lifetime never survives a session restart or compaction:
+// callers invalidate this state on SessionStart/PostCompact exactly as they do
+// the Ledger's.
 package phase
 
 import (
@@ -30,12 +26,17 @@ type State struct {
 	// InvestigateCalls counts every investigate-classified tool call seen
 	// this session so far, independent of Suggested/Investigated — it keeps
 	// counting after the boundary crosses, and it's what's checked
-	// pre-boundary to decide when a session has been investigating long
-	// enough that letting every further call's output accumulate raw would
-	// grow context unboundedly (see cmd/ledger-hook's
-	// investigateCallThreshold).
+	// pre-boundary to decide when a session has been investigating long enough
+	// that letting every further call's output accumulate raw would grow context
+	// unboundedly.
 	InvestigateCalls int `json:"investigateCalls"`
 }
+
+// InvestigateCallThreshold is the shared "prefix stays, tail retires" cutoff
+// for investigation-heavy sessions. Hooks count investigate-classified calls
+// through State.Observe; once this threshold is exceeded, later investigation
+// output can be archived and replaced with a receipt.
+const InvestigateCallThreshold = 20
 
 func statePath(projectDir, sessionID string) (string, error) {
 	d, err := statedir.Dir(projectDir)

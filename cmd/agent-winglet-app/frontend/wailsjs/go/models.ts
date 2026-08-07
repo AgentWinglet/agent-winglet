@@ -31,6 +31,7 @@ export namespace main {
 	    tooltip: string;
 	    detail: string;
 	    sub: string;
+	    estimated: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Card(source);
@@ -42,6 +43,41 @@ export namespace main {
 	        this.tooltip = source["tooltip"];
 	        this.detail = source["detail"];
 	        this.sub = source["sub"];
+	        this.estimated = source["estimated"];
+	    }
+	}
+	export class HookHealth {
+	    claudeConfigured: boolean;
+	    claudeObserved: boolean;
+	    claudeReviewLikely: boolean;
+	    claudeStatus: string;
+	    claudeDetail: string;
+	    claudeAction: string;
+	    codexConfigured: boolean;
+	    codexObserved: boolean;
+	    codexReviewLikely: boolean;
+	    codexStatus: string;
+	    codexDetail: string;
+	    codexAction: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HookHealth(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.claudeConfigured = source["claudeConfigured"];
+	        this.claudeObserved = source["claudeObserved"];
+	        this.claudeReviewLikely = source["claudeReviewLikely"];
+	        this.claudeStatus = source["claudeStatus"];
+	        this.claudeDetail = source["claudeDetail"];
+	        this.claudeAction = source["claudeAction"];
+	        this.codexConfigured = source["codexConfigured"];
+	        this.codexObserved = source["codexObserved"];
+	        this.codexReviewLikely = source["codexReviewLikely"];
+	        this.codexStatus = source["codexStatus"];
+	        this.codexDetail = source["codexDetail"];
+	        this.codexAction = source["codexAction"];
 	    }
 	}
 	export class Overview {
@@ -140,6 +176,7 @@ export namespace main {
 	}
 	export class SessionRow {
 	    sessionId: string;
+	    agent: string;
 	    overview: Overview;
 	
 	    static createFrom(source: any = {}) {
@@ -149,6 +186,7 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.sessionId = source["sessionId"];
+	        this.agent = source["agent"];
 	        this.overview = this.convertValues(source["overview"], Overview);
 	    }
 	

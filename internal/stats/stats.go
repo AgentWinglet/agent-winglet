@@ -3,10 +3,15 @@
 // a session-end receipt instead of leaving every substitution invisible.
 //
 // Session is the only thing persisted: one file per session_id under
-// projectDir, wiped on SessionStart/PostCompact same as ledger/phase/retire
-// (a receipt describing "this session's" activity is meaningless once the
-// session it describes is gone), but never deleted once a session ends —
-// see ListSessions. Project and cross-project totals are never separately
+// projectDir, accumulated for as long as that session_id is active —
+// including across a compact or resume, since dedup/budget/retire savings
+// already happened and neither event undoes bytes that were genuinely kept
+// out of the model's context — and never deleted once a session ends, see
+// ListSessions. Unlike Session, ledger/phase/retire's own state IS wiped on
+// SessionStart/PostCompact, but that's a different thing: it's operational
+// state for detecting future repeats/boundaries against content that's now
+// gone from context, not a receipt of what already happened. Project and
+// cross-project totals are never separately
 // stored; SumProject computes them fresh by summing every on-disk session
 // file every time it's called, so a project's total and the sum of its
 // sessions can never disagree. This used to be two lifecycles — Session plus
@@ -28,15 +33,21 @@ import (
 	"github.com/umitkaanusta/agent-winglet/internal/transcript"
 )
 
+const (
+	AgentClaudeCode = "claude-code"
+	AgentCodex      = "codex"
+)
+
 // Session is the running tally of mechanism activity for one session.
 type Session struct {
-	DedupHits          int   `json:"dedupHits"`
-	DedupBytes         int64 `json:"dedupBytes"`
-	BudgetTrims        int   `json:"budgetTrims"`
-	BudgetLinesOmitted int   `json:"budgetLinesOmitted"`
-	BudgetBytesOmitted int64 `json:"budgetBytesOmitted"`
-	RetiredCalls       int   `json:"retiredCalls"`
-	RetiredBytes       int64 `json:"retiredBytes"`
+	Agent              string `json:"agent"`
+	DedupHits          int    `json:"dedupHits"`
+	DedupBytes         int64  `json:"dedupBytes"`
+	BudgetTrims        int    `json:"budgetTrims"`
+	BudgetLinesOmitted int    `json:"budgetLinesOmitted"`
+	BudgetBytesOmitted int64  `json:"budgetBytesOmitted"`
+	RetiredCalls       int    `json:"retiredCalls"`
+	RetiredBytes       int64  `json:"retiredBytes"`
 	// TranscriptTokens, TranscriptCostUSD, and TranscriptContentBytes carry
 	// this session's real transcript-derived usage (see internal/transcript)
 	// — the input-side token total, its priced cost at real per-token
@@ -77,7 +88,7 @@ func (s *Session) RecordBudgetTrim(linesOmitted int, bytesOmitted int64) {
 // length was archived instead of replayed — either because the
 // investigate→implement boundary was already crossed, or because the
 // session's pre-boundary investigate-call threshold was exceeded (see
-// cmd/ledger-hook's investigateCallThreshold).
+// cmd/claude-hook's investigateCallThreshold).
 func (s *Session) RecordRetire(bytes int) {
 	s.RetiredCalls++
 	s.RetiredBytes += int64(bytes)
@@ -110,7 +121,7 @@ func (s *Session) SetTranscriptUsage(u transcript.SessionUsage, offset int64) {
 // AddTranscriptUsage folds one incremental transcript.ReadSessionUsageFrom
 // delta onto the running total and advances TranscriptOffset past it — the
 // PostToolUse-time counterpart to SetTranscriptUsage's SessionEnd-time
-// one-shot copy. Called on every PostToolUse (see cmd/ledger-hook's
+// one-shot copy. Called on every PostToolUse (see cmd/claude-hook's
 // handlePostToolUse), so the desktop app's tokens/$ figures move live
 // instead of staying at zero until the session ends.
 func (s *Session) AddTranscriptUsage(delta transcript.SessionUsage, newOffset int64) {
@@ -227,7 +238,7 @@ func sessionPath(projectDir, sessionID string) (string, error) {
 // its JSON shape overlaps enough of Session's fields that parsing it as a
 // session would silently double-count an old install's history — and (b)
 // let a caller migrate that leftover file's data forward (see
-// cmd/ledger-hook's migrateLegacyData).
+// cmd/claude-hook's migrateLegacyData).
 const LifetimeFileName = "lifetime.stats.json"
 
 func LoadSession(projectDir, sessionID string) (*Session, error) {
@@ -239,6 +250,7 @@ func LoadSession(projectDir, sessionID string) (*Session, error) {
 	if err := loadJSON(p, &s); err != nil {
 		return nil, err
 	}
+	s.ensureAgent()
 	return &s, nil
 }
 
@@ -247,52 +259,14 @@ func SaveSession(projectDir, sessionID string, s *Session) error {
 	if err != nil {
 		return err
 	}
+	s.ensureAgent()
 	return saveJSON(p, s)
 }
 
-// InvalidateSession resets the session's mechanism counters (dedup,
-// budget-trim, retire). Called on SessionStart and PostCompact, same as
-// ledger.Invalidate/phase.Invalidate/retire.Invalidate, so a resumed or
-// compacted session doesn't report a receipt describing activity from a
-// part of the session that's now gone.
-//
-// The transcript-usage fields are deliberately left alone: they're a
-// running total of real usage that already happened, true regardless of a
-// later compact — unlike the mechanism counters, they aren't tied to
-// ledger/phase state that a compact invalidates. Resetting the mechanism
-// fields in place, rather than deleting the whole file, avoids a real
-// crash window: a delete-then-self-heal approach loses the pre-compact
-// usage for good if the process dies between the compact and SessionEnd's
-// later full re-read.
-//
-// If resetting the mechanism counters leaves the session entirely zero
-// (including transcript usage), the file is still removed rather than left
-// behind as an empty husk.
-func InvalidateSession(projectDir, sessionID string) error {
-	p, err := sessionPath(projectDir, sessionID)
-	if err != nil {
-		return err
+func (s *Session) ensureAgent() {
+	if s.Agent == "" {
+		s.Agent = AgentClaudeCode
 	}
-	var s Session
-	if err := loadJSON(p, &s); err != nil {
-		return err
-	}
-	s.DedupHits = 0
-	s.DedupBytes = 0
-	s.BudgetTrims = 0
-	s.BudgetLinesOmitted = 0
-	s.BudgetBytesOmitted = 0
-	s.RetiredCalls = 0
-	s.RetiredBytes = 0
-
-	if s.TranscriptTokens == 0 && s.TranscriptCostUSD == 0 && s.TranscriptContentBytes == 0 {
-		err := os.Remove(p)
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	return saveJSON(p, &s)
 }
 
 // SessionFile identifies one on-disk session-stats file and its

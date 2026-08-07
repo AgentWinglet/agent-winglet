@@ -1,6 +1,6 @@
 # Winglet
 
-**Get more Claude Code usage out of the same weekly cap.**
+**Get more Claude Code and Codex usage out of the same cap.**
 
 [![CI](https://github.com/umitkaanusta/agent-winglet/actions/workflows/ci.yml/badge.svg)](https://github.com/umitkaanusta/agent-winglet/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -16,20 +16,24 @@ cd agent-winglet
 ./install.sh
 ```
 
-By default this installs **both** the Session Ledger hook and the desktop
-app (`Winglet`). Pass `--hook-only` or `--app-only` to install just one.
+By default this installs **both** agent hooks (`claude-hook` and
+`codex-hook`) and the desktop app (`Winglet`). Pass `--hook-only` or
+`--app-only` to install just one side, or `--claude-only` / `--codex-only`
+to narrow hook installation to one agent.
 
-**The hook** (`ledger-hook`): fetched with `go install`, so it doesn't
-matter where you run this from, and it works even if you invoke `--hook-only`
-from outside a checkout. It merges its config into `~/.claude/settings.json`
-(Claude Code's user-level settings) without touching any existing settings
-there. Claude Code merges user-level hooks with any project-level ones, so
-this makes the hook active for every project's Claude Code sessions from
-then on — no per-project install step. Ledger/stats state still lives under
-each project's own `.claude/agent-winglet/` (keyed off the session's working
-directory) — installing once globally doesn't change per-project isolation,
-just where the hook gets registered. It also registers whichever project
-it's running in — the first time it fires there — into
+**The hooks**: installed with `go install`. From this checkout, the installer
+builds the local `cmd/claude-hook` and `cmd/codex-hook` packages. With
+`--hook-only` outside a checkout, it falls back to fetching
+`github.com/umitkaanusta/agent-winglet/...@latest`. `claude-hook` merges
+config into `~/.claude/settings.json`. `codex-hook` merges config into
+`${CODEX_HOME:-~/.codex}/hooks.json`. Neither path overwrites existing
+settings. Installing once globally makes the hooks active for projects under
+that agent; Codex still requires you to open Settings > Hooks and trust the
+`agent-winglet` `codex-hook` before Winglet can record Codex sessions.
+
+Ledger/stats state lives under `~/.agent-winglet/projects/...`, keyed by the
+session's project root. Each hook registers whichever project it's running
+in — the first time it fires there — into
 `~/.agent-winglet/projects.json` (deduped, pruned of stale/deleted entries
 on each run), which is what feeds the desktop app's Projects screen.
 
@@ -39,13 +43,9 @@ straight from git instead, using whatever git credentials you already have
 configured for github.com (an SSH key, or `gh auth setup-git` for HTTPS).
 If that's not set up yet, `install.sh` will fail with a pointer to fix it.
 
-Pass `--local` to install the hook into just the current directory's project
-instead (`./.claude/settings.json`) — hook scope only, the app has no such
-concept. **Migration note:** if a project already has a per-project install
-from before, remove its `ledger-hook` entry from that project's
-`.claude/settings.json` after installing globally — running both at once
-fires the hook twice per event for that project and will double-count stats
-and corrupt the ledger's turn tracking.
+Pass `--local` to install hooks into just the current directory's project
+instead (`./.claude/settings.json` and/or `./.codex/hooks.json`) — hook
+scope only, the app has no such concept.
 
 **The app**: unlike the hook, this is always built from your local
 checkout — its frontend build output isn't checked into git (it's
@@ -77,19 +77,25 @@ built from local source) but not for the hook (`go install ...@latest`
 always fetches fresh from GitHub regardless of your checkout's state) —
 just always pull first, it's harmless either way.
 
+For hook-only maintenance, `./install.sh --hook-only` installs both hooks and
+`./uninstall.sh --hook-only` removes both hook entries. Add `--claude-only` or
+`--codex-only` to either command to limit it to one agent. Add `--local` to
+write project-scoped hook config under `./.claude/` and `./.codex/` instead of
+the global agent config directories.
+
 ## Uninstall
 
 ```
 ./uninstall.sh
 ```
 
-By default removes **both** the hook wiring and the installed app. Same
-`--hook-only`/`--app-only`/`--local` flags as `install.sh`. Uninstalling the
-app doesn't need to be run from inside a checkout — it just removes files
-from the known per-OS install locations above, it doesn't build anything.
-Add:
+By default removes **both** hook wiring paths and the installed app. Same
+`--hook-only`/`--app-only`/`--local`/`--claude-only`/`--codex-only` flags as
+`install.sh`. Uninstalling the app doesn't need to be run from inside a
+checkout — it just removes files from the known per-OS install locations
+above, it doesn't build anything. Add:
 
-- `--purge-binary` to also delete the installed `ledger-hook` binary
+- `--purge-binary` to also delete the selected installed hook binaries
 - `--purge-data` to also delete `~/.agent-winglet` (the global project
   registry and quiet-mode config) and every registered project's
   `.claude/agent-winglet/` (that project's savings-ledger/stats history) —
@@ -101,14 +107,16 @@ Add:
 ## Developing this repo
 
 ```
-make build   # builds bin/ledger-hook locally
+make build   # builds bin/claude-hook and bin/codex-hook locally
 make test    # runs the Go test suite
+make installer-smoke
 ```
 
 This repo's own `.claude/settings.json` is a dev/test fixture — it points
-at the locally-built `bin/ledger-hook` so the hook can be exercised against
-this repo itself while working on it. It is not the install mechanism end
-users go through; that's `install.sh`/`uninstall.sh` above.
+at the locally-built `bin/claude-hook` so the hook can be exercised against
+this repo itself while working on it. A Codex local fixture would live under
+`.codex/hooks.json`. Neither is the install mechanism end users go through;
+that's `install.sh`/`uninstall.sh` above.
 
 ## License
 

@@ -50,3 +50,6 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+      - name: Installer smoke
+        run: make installer-smoke

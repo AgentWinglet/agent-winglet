@@ -6,6 +6,10 @@ export function GetCompactNudgesEnabled() {
   return window['go']['main']['App']['GetCompactNudgesEnabled']();
 }
 
+export function GetHookHealth() {
+  return window['go']['main']['App']['GetHookHealth']();
+}
+
 export function GetOverview() {
   return window['go']['main']['App']['GetOverview']();
 }
@@ -20,6 +24,14 @@ export function GetProjects() {
 
 export function GetSessionStats(arg1) {
   return window['go']['main']['App']['GetSessionStats'](arg1);
+}
+
+export function SetClaudeHookEnabled(arg1) {
+  return window['go']['main']['App']['SetClaudeHookEnabled'](arg1);
+}
+
+export function SetCodexHookEnabled(arg1) {
+  return window['go']['main']['App']['SetCodexHookEnabled'](arg1);
 }
 
 export function SetCompactNudgesEnabled(arg1) {

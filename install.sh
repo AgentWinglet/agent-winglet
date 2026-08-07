@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Installs (or updates — see below) agent-winglet: the Session Ledger hook,
-# the desktop dashboard app, or both (the default).
+# Installs (or updates — see below) agent-winglet: the agent hooks, the
+# desktop dashboard app, or both (the default).
 #
 # Usage:
-#   ./install.sh                 # install/update the hook (global) + the app
-#   ./install.sh --hook-only     # just the hook
+#   ./install.sh                 # install/update both hooks (global) + the app
+#   ./install.sh --hook-only     # just the hooks
 #   ./install.sh --app-only      # just the app
-#   ./install.sh --local         # hook into ./.claude/settings.json instead
-#                                 # of ~/.claude/settings.json (--hook-only
+#   ./install.sh --claude-only   # install/update only the Claude hook
+#   ./install.sh --codex-only    # install/update only the Codex hook
+#   ./install.sh --local         # hook into project config files instead
+#                                 # of global config files (--hook-only
 #                                 # scope only; the app has no such concept)
 #
 # When run from a clone of this repo, the hook and app are both built from
@@ -21,11 +23,6 @@
 # checkout's* current source — run it from a clone of this repo, and `git
 # pull` first if you want the latest app code.
 #
-# Migration note: if a project already has a per-project hook install from
-# before, remove its `ledger-hook` entry from that project's
-# `.claude/settings.json` after installing globally — running both at once
-# fires the hook twice per event for that project and will double-count
-# stats and corrupt the ledger's turn tracking.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,27 +30,42 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/scripts/lib.sh"
 
 REPO_URL="github.com/umitkaanusta/agent-winglet"
-BINARY_NAME="ledger-hook"
 
 WANT_HOOK=1
 WANT_APP=1
-SETTINGS_FILE="${HOME}/.claude/settings.json"
-SCOPE_DESC="globally (~/.claude/settings.json)"
+WANT_CLAUDE_HOOK=1
+WANT_CODEX_HOOK=1
+CLAUDE_SETTINGS_FILE="${HOME}/.claude/settings.json"
+CODEX_HOME_DIR="${CODEX_HOME:-${HOME}/.codex}"
+CODEX_HOOKS_FILE="${CODEX_HOME_DIR}/hooks.json"
+CODEX_CONFIG_FILE="${CODEX_HOME_DIR}/config.toml"
+SCOPE_DESC="globally"
+SELECTED_CLAUDE_ONLY=0
+SELECTED_CODEX_ONLY=0
 
 for arg in "$@"; do
   case "$arg" in
     --local)
-      SETTINGS_FILE=".claude/settings.json"
-      SCOPE_DESC="for this project only (./.claude/settings.json)"
+      CLAUDE_SETTINGS_FILE=".claude/settings.json"
+      CODEX_HOOKS_FILE=".codex/hooks.json"
+      CODEX_CONFIG_FILE=".codex/config.toml"
+      SCOPE_DESC="for this project only"
       ;;
     --hook-only) WANT_APP=0 ;;
     --app-only) WANT_HOOK=0 ;;
+    --claude-only) WANT_CODEX_HOOK=0; SELECTED_CLAUDE_ONLY=1 ;;
+    --codex-only) WANT_CLAUDE_HOOK=0; SELECTED_CODEX_ONLY=1 ;;
     *)
       echo "error: unknown argument '${arg}'" >&2
       exit 1
       ;;
   esac
 done
+
+if [ "$SELECTED_CLAUDE_ONLY" = "1" ] && [ "$SELECTED_CODEX_ONLY" = "1" ]; then
+  echo "error: --claude-only and --codex-only are mutually exclusive" >&2
+  exit 1
+fi
 
 if [ "$WANT_HOOK" = "0" ] && [ "$WANT_APP" = "0" ]; then
   echo "error: --hook-only and --app-only are mutually exclusive" >&2
@@ -83,64 +95,132 @@ if [ "$WANT_HOOK" = "1" ]; then
   # is additive to any GOPRIVATE the caller already had set.
   export GOPRIVATE="${GOPRIVATE:+${GOPRIVATE},}${REPO_URL}"
 
-  HOOK_INSTALL_TARGET="${REPO_URL}/cmd/${BINARY_NAME}@latest"
-  if [ -f "go.mod" ] && [ -d "cmd/${BINARY_NAME}" ] && grep -q "^module ${REPO_URL}$" go.mod; then
-    HOOK_INSTALL_TARGET="./cmd/${BINARY_NAME}"
-  fi
-
-  echo "Installing/updating ${BINARY_NAME} ${SCOPE_DESC} from ${HOOK_INSTALL_TARGET}..."
-  if ! go install "${HOOK_INSTALL_TARGET}"; then
-    echo "error: go install failed — since this repo is private, this is usually" >&2
-    echo "a git auth problem rather than a go problem. Make sure git can fetch" >&2
-    echo "${REPO_URL} (e.g. 'gh auth setup-git' for HTTPS, or an SSH key added" >&2
-    echo "to your GitHub account for the git@ form), then re-run this script." >&2
-    exit 1
-  fi
-
   GOBIN="$(go env GOBIN)"
   if [ -z "$GOBIN" ]; then
     GOBIN="$(go env GOPATH)/bin"
   fi
-  HOOK_PATH="${GOBIN}/${BINARY_NAME}"
 
-  if [ ! -x "$HOOK_PATH" ]; then
-    echo "error: expected binary at ${HOOK_PATH} after go install, but it's not there." >&2
-    echo "Make sure ${GOBIN} is on your PATH." >&2
-    exit 1
+  install_hook_binary() {
+    binary_name="$1"
+    hook_install_target="${REPO_URL}/cmd/${binary_name}@latest"
+    if [ -f "go.mod" ] && [ -d "cmd/${binary_name}" ] && grep -q "^module ${REPO_URL}$" go.mod; then
+      hook_install_target="./cmd/${binary_name}"
+    fi
+
+    echo "Installing/updating ${binary_name} ${SCOPE_DESC} from ${hook_install_target}..." >&2
+    if ! go install "${hook_install_target}"; then
+      echo "error: go install failed — since this repo is private, this is usually" >&2
+      echo "a git auth problem rather than a go problem. Make sure git can fetch" >&2
+      echo "${REPO_URL} (e.g. 'gh auth setup-git' for HTTPS, or an SSH key added" >&2
+      echo "to your GitHub account for the git@ form), then re-run this script." >&2
+      exit 1
+    fi
+
+    hook_path="${GOBIN}/${binary_name}"
+    if [ ! -x "$hook_path" ]; then
+      echo "error: expected binary at ${hook_path} after go install, but it's not there." >&2
+      echo "Make sure ${GOBIN} is on your PATH." >&2
+      exit 1
+    fi
+    printf '%s\n' "$hook_path"
+  }
+
+  merge_claude_hook() {
+    hook_path="$1"
+    mkdir -p "$(dirname "$CLAUDE_SETTINGS_FILE")"
+    if [ ! -f "$CLAUDE_SETTINGS_FILE" ]; then
+      echo '{}' > "$CLAUDE_SETTINGS_FILE"
+    fi
+
+    tmp_file="$(mktemp)"
+    jq --arg cmd "$hook_path" '
+      def has_cmd: any(.hooks[]?; .command == $cmd);
+      .hooks //= {} |
+      .hooks.PostToolUse //= [] |
+      .hooks.PostToolUse |= (if any(.[]; has_cmd) then . else . + [{"hooks": [{"type": "command", "command": $cmd}]}] end) |
+      .hooks.SessionStart //= [] |
+      .hooks.SessionStart |= (if any(.[]; has_cmd) then . else . + [{"hooks": [{"type": "command", "command": $cmd}]}] end) |
+      .hooks.PostCompact //= [] |
+      .hooks.PostCompact |= (if any(.[]; has_cmd) then . else . + [{"hooks": [{"type": "command", "command": $cmd}]}] end) |
+      .hooks.Stop //= [] |
+      .hooks.Stop |= (if any(.[]; has_cmd) then . else . + [{"hooks": [{"type": "command", "command": $cmd}]}] end) |
+      .hooks.SessionEnd //= [] |
+      .hooks.SessionEnd |= (if any(.[]; has_cmd) then . else . + [{"hooks": [{"type": "command", "command": $cmd}]}] end)
+    ' "$CLAUDE_SETTINGS_FILE" > "$tmp_file"
+    mv "$tmp_file" "$CLAUDE_SETTINGS_FILE"
+  }
+
+  merge_codex_hook() {
+    hook_path="$1"
+    mkdir -p "$(dirname "$CODEX_HOOKS_FILE")"
+    preserve_mtime=0
+    mtime_ref=""
+    if [ -f "$CODEX_HOOKS_FILE" ] && jq -e '
+      [.hooks // {} | .. | objects | select(has("command")) | .command | select((split("/") | last) == "codex-hook")] | length > 0
+    ' "$CODEX_HOOKS_FILE" >/dev/null; then
+      preserve_mtime=1
+      mtime_ref="$(mktemp)"
+      touch -r "$CODEX_HOOKS_FILE" "$mtime_ref"
+    fi
+    if [ ! -f "$CODEX_HOOKS_FILE" ]; then
+      echo '{}' > "$CODEX_HOOKS_FILE"
+    fi
+
+    tmp_file="$(mktemp)"
+    # Codex clamps a SessionEnd hook's timeout to 3s (and logs a "clamping
+    # SessionEnd hook timeout" warning if configured any higher), so it gets
+    # its own lower ceiling here instead of sharing hook_entry's default 5s.
+    jq --arg cmd "$hook_path" '
+      def has_cmd: any(.hooks[]?; .command == $cmd);
+      def hook_entry(timeout): {"hooks": [{"type": "command", "command": $cmd, "timeout": timeout}]};
+      .hooks //= {} |
+      .hooks.PostToolUse //= [] |
+      .hooks.PostToolUse |= (if any(.[]; has_cmd) then . else . + [hook_entry(5) + {"matcher": ""}] end) |
+      .hooks.SessionStart //= [] |
+      .hooks.SessionStart |= (if any(.[]; has_cmd) then . else . + [hook_entry(5)] end) |
+      .hooks.PostCompact //= [] |
+      .hooks.PostCompact |= (if any(.[]; has_cmd) then . else . + [hook_entry(5)] end) |
+      .hooks.Stop //= [] |
+      .hooks.Stop |= (if any(.[]; has_cmd) then . else . + [hook_entry(5)] end) |
+      .hooks.SubagentStart //= [] |
+      .hooks.SubagentStart |= (if any(.[]; has_cmd) then . else . + [hook_entry(5)] end) |
+      .hooks.SubagentStop //= [] |
+      .hooks.SubagentStop |= (if any(.[]; has_cmd) then . else . + [hook_entry(5)] end) |
+      .hooks.SessionEnd //= [] |
+      .hooks.SessionEnd |= (if any(.[]; has_cmd) then . else . + [hook_entry(3)] end)
+    ' "$CODEX_HOOKS_FILE" > "$tmp_file"
+    mv "$tmp_file" "$CODEX_HOOKS_FILE"
+    if [ "$preserve_mtime" = "1" ]; then
+      touch -r "$mtime_ref" "$CODEX_HOOKS_FILE"
+      rm -f "$mtime_ref"
+    fi
+  }
+
+  if [ "$WANT_CLAUDE_HOOK" = "1" ]; then
+    CLAUDE_HOOK_PATH="$(install_hook_binary "claude-hook")"
+    merge_claude_hook "$CLAUDE_HOOK_PATH"
+    echo "Installed/updated Claude hook binary: ${CLAUDE_HOOK_PATH}"
+    echo "Updated: ${CLAUDE_SETTINGS_FILE}"
   fi
 
-  mkdir -p "$(dirname "$SETTINGS_FILE")"
-  if [ ! -f "$SETTINGS_FILE" ]; then
-    echo '{}' > "$SETTINGS_FILE"
+  if [ "$WANT_CODEX_HOOK" = "1" ]; then
+    CODEX_HOOK_PATH="$(install_hook_binary "codex-hook")"
+    merge_codex_hook "$CODEX_HOOK_PATH"
+    echo "Installed/updated Codex hook binary: ${CODEX_HOOK_PATH}"
+    echo "Updated: ${CODEX_HOOKS_FILE}"
+    if [ -f "$CODEX_CONFIG_FILE" ] && grep -Eq '^[[:space:]]*hooks[[:space:]]*=[[:space:]]*false' "$CODEX_CONFIG_FILE"; then
+      echo "warning: ${CODEX_CONFIG_FILE} appears to set hooks = false; Codex will not run hooks until you re-enable them."
+    fi
+    echo "In Codex, open Settings > Hooks and trust the agent-winglet codex-hook before Winglet can record Codex sessions."
   fi
-
-  TMP_FILE="$(mktemp)"
-  jq --arg cmd "$HOOK_PATH" '
-    def has_cmd: any(.hooks[]?; .command == $cmd);
-    .hooks //= {} |
-    .hooks.PostToolUse //= [] |
-    .hooks.PostToolUse |= (if any(.[]; has_cmd) then . else . + [{"hooks": [{"type": "command", "command": $cmd}]}] end) |
-    .hooks.SessionStart //= [] |
-    .hooks.SessionStart |= (if any(.[]; has_cmd) then . else . + [{"hooks": [{"type": "command", "command": $cmd}]}] end) |
-    .hooks.PostCompact //= [] |
-    .hooks.PostCompact |= (if any(.[]; has_cmd) then . else . + [{"hooks": [{"type": "command", "command": $cmd}]}] end) |
-    .hooks.Stop //= [] |
-    .hooks.Stop |= (if any(.[]; has_cmd) then . else . + [{"hooks": [{"type": "command", "command": $cmd}]}] end) |
-    .hooks.SessionEnd //= [] |
-    .hooks.SessionEnd |= (if any(.[]; has_cmd) then . else . + [{"hooks": [{"type": "command", "command": $cmd}]}] end)
-  ' "$SETTINGS_FILE" > "$TMP_FILE"
-  mv "$TMP_FILE" "$SETTINGS_FILE"
 
   # Unlike before, this script no longer registers a project in
   # ~/.agent-winglet/projects.json itself: with a global install there's no
-  # single project directory to register at install time. Instead, the hook
+  # single project directory to register at install time. Instead, each hook
   # binary registers whatever project it's running in the first time it fires
-  # there (see cmd/ledger-hook's SessionStart/PostCompact handling and
+  # there (see cmd/claude-hook and cmd/codex-hook SessionStart handling and
   # internal/registry.Register) — the desktop app's Projects screen fills in
-  # on its own as you use Claude Code in each project.
-
-  echo "Installed/updated. Hook binary: ${HOOK_PATH}"
-  echo "Updated: ${SETTINGS_FILE}"
+  # on its own as you use Claude Code or Codex in each project.
 fi
 
 ##############################################################################

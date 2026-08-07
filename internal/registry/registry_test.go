@@ -57,8 +57,24 @@ func TestHookInstalledTrueWhenCommandPresent(t *testing.T) {
 	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll errored: %v", err)
 	}
-	settings := `{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"/Users/x/go/bin/ledger-hook"}]}]}}`
+	settings := `{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"/Users/x/go/bin/claude-hook"}]}]}}`
 	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(settings), 0o644); err != nil {
+		t.Fatalf("WriteFile errored: %v", err)
+	}
+
+	if !HookInstalled(dir) {
+		t.Fatalf("expected HookInstalled to be true")
+	}
+}
+
+func TestHookInstalledTrueWhenCodexCommandPresent(t *testing.T) {
+	dir := t.TempDir()
+	codexDir := filepath.Join(dir, ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll errored: %v", err)
+	}
+	settings := `{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"/Users/x/go/bin/codex-hook"}]}]}}`
+	if err := os.WriteFile(filepath.Join(codexDir, "hooks.json"), []byte(settings), 0o644); err != nil {
 		t.Fatalf("WriteFile errored: %v", err)
 	}
 
@@ -157,13 +173,46 @@ func TestGlobalHookInstalledTrueWhenCommandPresent(t *testing.T) {
 	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll errored: %v", err)
 	}
-	settings := `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/Users/x/go/bin/ledger-hook"}]}]}}`
+	settings := `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/Users/x/go/bin/claude-hook"}]}]}}`
 	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(settings), 0o644); err != nil {
 		t.Fatalf("WriteFile errored: %v", err)
 	}
 
 	if !GlobalHookInstalled() {
 		t.Fatalf("expected GlobalHookInstalled to be true")
+	}
+}
+
+func TestGlobalHookInstalledTrueWhenCodexCommandPresent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	codexDir := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll errored: %v", err)
+	}
+	settings := `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/Users/x/go/bin/codex-hook"}]}]}}`
+	if err := os.WriteFile(filepath.Join(codexDir, "hooks.json"), []byte(settings), 0o644); err != nil {
+		t.Fatalf("WriteFile errored: %v", err)
+	}
+
+	if !GlobalHookInstalled() {
+		t.Fatalf("expected GlobalHookInstalled to be true")
+	}
+}
+
+func TestGlobalHookInstalledUsesCodexHome(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+
+	settings := `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/Users/x/go/bin/codex-hook"}]}]}}`
+	if err := os.WriteFile(filepath.Join(codexHome, "hooks.json"), []byte(settings), 0o644); err != nil {
+		t.Fatalf("WriteFile errored: %v", err)
+	}
+
+	if !GlobalHookInstalled() {
+		t.Fatalf("expected GlobalHookInstalled to honor CODEX_HOME")
 	}
 }
 

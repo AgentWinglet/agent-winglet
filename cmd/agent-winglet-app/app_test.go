@@ -149,6 +149,15 @@ func TestBuildOverviewWithTranscriptDataPricesDollarCard(t *testing.T) {
 		t.Fatalf("expected HasTranscriptData = true when TranscriptContentBytes > 0")
 	}
 	// tokensSaved = 100 suppressed bytes * 1 token/byte = 100 tokens.
+	if o.BytesSavedCard.Label != "Bytes saved" || o.BytesSavedCard.Estimated {
+		t.Fatalf("BytesSavedCard label/estimated = %q/%v, want Bytes saved/false", o.BytesSavedCard.Label, o.BytesSavedCard.Estimated)
+	}
+	if o.TokensSavedCard.Label != "Tokens saved" || !o.TokensSavedCard.Estimated {
+		t.Fatalf("TokensSavedCard label/estimated = %q/%v, want Tokens saved/true", o.TokensSavedCard.Label, o.TokensSavedCard.Estimated)
+	}
+	if o.DollarSavedCard.Label != "Money saved" || !o.DollarSavedCard.Estimated {
+		t.Fatalf("DollarSavedCard label/estimated = %q/%v, want Money saved/true", o.DollarSavedCard.Label, o.DollarSavedCard.Estimated)
+	}
 	if o.TokensSavedCard.Detail != "100" {
 		t.Fatalf("TokensSavedCard.Detail = %q, want %q", o.TokensSavedCard.Detail, "100")
 	}
@@ -351,6 +360,251 @@ func TestGetSessionStatsListsSessionsNewestFirstAndSkipsLifetime(t *testing.T) {
 	if rows[0].SessionID != "sess-newer" {
 		t.Fatalf("rows[0].SessionID = %q, want %q (newest by mtime first)", rows[0].SessionID, "sess-newer")
 	}
+	if rows[0].Agent != stats.AgentClaudeCode {
+		t.Fatalf("legacy rows[0].Agent = %q, want %q", rows[0].Agent, stats.AgentClaudeCode)
+	}
+}
+
+func TestGetSessionStatsIncludesAgent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	if err := stats.SaveSession(dir, "sess-codex", &stats.Session{Agent: stats.AgentCodex, DedupHits: 1}); err != nil {
+		t.Fatalf("SaveSession codex errored: %v", err)
+	}
+
+	a := NewApp()
+	rows, err := a.GetSessionStats(dir)
+	if err != nil {
+		t.Fatalf("GetSessionStats errored: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	if rows[0].Agent != stats.AgentCodex {
+		t.Fatalf("rows[0].Agent = %q, want %q", rows[0].Agent, stats.AgentCodex)
+	}
+}
+
+func TestGetHookHealthReportsCodexNotInstalled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	h, err := NewApp().GetHookHealth()
+	if err != nil {
+		t.Fatalf("GetHookHealth errored: %v", err)
+	}
+	if h.CodexConfigured || h.CodexObserved || h.CodexReviewLikely {
+		t.Fatalf("unexpected Codex hook health: %+v", h)
+	}
+	if h.CodexStatus != "Inactive" {
+		t.Fatalf("CodexStatus = %q, want %q", h.CodexStatus, "Inactive")
+	}
+}
+
+func TestGetHookHealthReportsClaudeWaitingForActivity(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeClaudeHookConfig(t, filepath.Join(home, ".claude", "settings.json"))
+
+	h, err := NewApp().GetHookHealth()
+	if err != nil {
+		t.Fatalf("GetHookHealth errored: %v", err)
+	}
+	if !h.ClaudeConfigured || h.ClaudeObserved || h.ClaudeReviewLikely {
+		t.Fatalf("unexpected Claude hook health: %+v", h)
+	}
+	if h.ClaudeStatus != "Waiting for activity" {
+		t.Fatalf("ClaudeStatus = %q, want %q", h.ClaudeStatus, "Waiting for activity")
+	}
+}
+
+func TestGetHookHealthReportsClaudeActiveAfterObservedSession(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	hooksPath := filepath.Join(home, ".claude", "settings.json")
+	writeClaudeHookConfig(t, hooksPath)
+
+	dir := t.TempDir()
+	if err := registry.Register(dir); err != nil {
+		t.Fatalf("Register errored: %v", err)
+	}
+	if err := stats.SaveSession(dir, "sess-claude", &stats.Session{Agent: stats.AgentClaudeCode}); err != nil {
+		t.Fatalf("SaveSession errored: %v", err)
+	}
+	future := time.Now().Add(time.Hour)
+	sessionPath, err := statsSessionPath(dir, "sess-claude")
+	if err != nil {
+		t.Fatalf("statsSessionPath errored: %v", err)
+	}
+	if err := os.Chtimes(sessionPath, future, future); err != nil {
+		t.Fatalf("Chtimes errored: %v", err)
+	}
+
+	h, err := NewApp().GetHookHealth()
+	if err != nil {
+		t.Fatalf("GetHookHealth errored: %v", err)
+	}
+	if !h.ClaudeConfigured || !h.ClaudeObserved || h.ClaudeReviewLikely {
+		t.Fatalf("unexpected Claude hook health: %+v", h)
+	}
+	if h.ClaudeStatus != "Active" {
+		t.Fatalf("ClaudeStatus = %q, want %q", h.ClaudeStatus, "Active")
+	}
+}
+
+func TestSetClaudeHookEnabledAddsAndRemovesGlobalEntries(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeExecutable(t, filepath.Join(home, "go", "bin", "claude-hook"))
+
+	app := NewApp()
+	h, err := app.SetClaudeHookEnabled(true)
+	if err != nil {
+		t.Fatalf("SetClaudeHookEnabled(true) errored: %v", err)
+	}
+	if !h.ClaudeConfigured {
+		t.Fatalf("ClaudeConfigured = false after enable: %+v", h)
+	}
+	settingsPath := filepath.Join(home, ".claude", "settings.json")
+	if !hookFileContainsCommand(settingsPath, "claude-hook") {
+		t.Fatalf("settings file does not contain claude-hook after enable")
+	}
+
+	h, err = app.SetClaudeHookEnabled(false)
+	if err != nil {
+		t.Fatalf("SetClaudeHookEnabled(false) errored: %v", err)
+	}
+	if h.ClaudeConfigured {
+		t.Fatalf("ClaudeConfigured = true after disable: %+v", h)
+	}
+	if hookFileContainsCommand(settingsPath, "claude-hook") {
+		t.Fatalf("settings file still contains claude-hook after disable")
+	}
+}
+
+func TestSetCodexHookEnabledPreservesUnrelatedHooks(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeExecutable(t, filepath.Join(home, "go", "bin", "codex-hook"))
+	hooksPath := filepath.Join(home, ".codex", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(hooksPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll errored: %v", err)
+	}
+	data := `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/tmp/other-hook"}]}]}}`
+	if err := os.WriteFile(hooksPath, []byte(data), 0o644); err != nil {
+		t.Fatalf("WriteFile errored: %v", err)
+	}
+
+	app := NewApp()
+	if _, err := app.SetCodexHookEnabled(true); err != nil {
+		t.Fatalf("SetCodexHookEnabled(true) errored: %v", err)
+	}
+	if !hookFileContainsCommand(hooksPath, "codex-hook") {
+		t.Fatalf("hooks file does not contain codex-hook after enable")
+	}
+	if !hookFileContainsCommand(hooksPath, "other-hook") {
+		t.Fatalf("hooks file lost unrelated hook after enable")
+	}
+
+	if _, err := app.SetCodexHookEnabled(false); err != nil {
+		t.Fatalf("SetCodexHookEnabled(false) errored: %v", err)
+	}
+	if hookFileContainsCommand(hooksPath, "codex-hook") {
+		t.Fatalf("hooks file still contains codex-hook after disable")
+	}
+	if !hookFileContainsCommand(hooksPath, "other-hook") {
+		t.Fatalf("hooks file lost unrelated hook after disable")
+	}
+}
+
+func TestGetHookHealthReportsCodexReviewLikely(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeCodexHookConfig(t, filepath.Join(home, ".codex", "hooks.json"))
+
+	h, err := NewApp().GetHookHealth()
+	if err != nil {
+		t.Fatalf("GetHookHealth errored: %v", err)
+	}
+	if !h.CodexConfigured || h.CodexObserved || !h.CodexReviewLikely {
+		t.Fatalf("unexpected Codex hook health: %+v", h)
+	}
+	if h.CodexStatus != "Extra steps needed" {
+		t.Fatalf("CodexStatus = %q, want %q", h.CodexStatus, "Extra steps needed")
+	}
+}
+
+func TestGetHookHealthReportsCodexActiveAfterObservedSession(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	hooksPath := filepath.Join(home, ".codex", "hooks.json")
+	writeCodexHookConfig(t, hooksPath)
+
+	dir := t.TempDir()
+	if err := registry.Register(dir); err != nil {
+		t.Fatalf("Register errored: %v", err)
+	}
+	if err := stats.SaveSession(dir, "sess-codex", &stats.Session{Agent: stats.AgentCodex}); err != nil {
+		t.Fatalf("SaveSession errored: %v", err)
+	}
+	future := time.Now().Add(time.Hour)
+	sessionPath, err := statsSessionPath(dir, "sess-codex")
+	if err != nil {
+		t.Fatalf("statsSessionPath errored: %v", err)
+	}
+	if err := os.Chtimes(sessionPath, future, future); err != nil {
+		t.Fatalf("Chtimes errored: %v", err)
+	}
+
+	h, err := NewApp().GetHookHealth()
+	if err != nil {
+		t.Fatalf("GetHookHealth errored: %v", err)
+	}
+	if !h.CodexConfigured || !h.CodexObserved || h.CodexReviewLikely {
+		t.Fatalf("unexpected Codex hook health: %+v", h)
+	}
+	if h.CodexStatus != "Active" {
+		t.Fatalf("CodexStatus = %q, want %q", h.CodexStatus, "Active")
+	}
+}
+
+func writeExecutable(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll errored: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile errored: %v", err)
+	}
+}
+
+func writeClaudeHookConfig(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll errored: %v", err)
+	}
+	data := `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/tmp/claude-hook","timeout":5}]}]}}`
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatalf("WriteFile errored: %v", err)
+	}
+}
+
+func writeCodexHookConfig(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll errored: %v", err)
+	}
+	data := `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/tmp/codex-hook","timeout":5}]}]}}`
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatalf("WriteFile errored: %v", err)
+	}
+}
+
+func statsSessionPath(projectDir, sessionID string) (string, error) {
+	d, err := statedir.Dir(projectDir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(d, sessionID+".stats.json"), nil
 }
 
 func TestGetSessionStatsMissingDirReturnsEmpty(t *testing.T) {
