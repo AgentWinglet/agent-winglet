@@ -77,7 +77,7 @@ func (s *Session) RecordBudgetTrim(linesOmitted int, bytesOmitted int64) {
 // length was archived instead of replayed — either because the
 // investigate→implement boundary was already crossed, or because the
 // session's pre-boundary investigate-call threshold was exceeded (see
-// cmd/ledger-hook's investigateCallThreshold).
+// cmd/claude-hook's investigateCallThreshold).
 func (s *Session) RecordRetire(bytes int) {
 	s.RetiredCalls++
 	s.RetiredBytes += int64(bytes)
@@ -110,7 +110,7 @@ func (s *Session) SetTranscriptUsage(u transcript.SessionUsage, offset int64) {
 // AddTranscriptUsage folds one incremental transcript.ReadSessionUsageFrom
 // delta onto the running total and advances TranscriptOffset past it — the
 // PostToolUse-time counterpart to SetTranscriptUsage's SessionEnd-time
-// one-shot copy. Called on every PostToolUse (see cmd/ledger-hook's
+// one-shot copy. Called on every PostToolUse (see cmd/claude-hook's
 // handlePostToolUse), so the desktop app's tokens/$ figures move live
 // instead of staying at zero until the session ends.
 func (s *Session) AddTranscriptUsage(delta transcript.SessionUsage, newOffset int64) {
@@ -227,7 +227,7 @@ func sessionPath(projectDir, sessionID string) (string, error) {
 // its JSON shape overlaps enough of Session's fields that parsing it as a
 // session would silently double-count an old install's history — and (b)
 // let a caller migrate that leftover file's data forward (see
-// cmd/ledger-hook's migrateLegacyData).
+// cmd/claude-hook's migrateLegacyData).
 const LifetimeFileName = "lifetime.stats.json"
 
 func LoadSession(projectDir, sessionID string) (*Session, error) {

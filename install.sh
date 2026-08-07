@@ -21,11 +21,6 @@
 # checkout's* current source — run it from a clone of this repo, and `git
 # pull` first if you want the latest app code.
 #
-# Migration note: if a project already has a per-project hook install from
-# before, remove its `ledger-hook` entry from that project's
-# `.claude/settings.json` after installing globally — running both at once
-# fires the hook twice per event for that project and will double-count
-# stats and corrupt the ledger's turn tracking.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,7 +28,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/scripts/lib.sh"
 
 REPO_URL="github.com/umitkaanusta/agent-winglet"
-BINARY_NAME="ledger-hook"
+BINARY_NAME="claude-hook"
 
 WANT_HOOK=1
 WANT_APP=1
@@ -135,7 +130,7 @@ if [ "$WANT_HOOK" = "1" ]; then
   # ~/.agent-winglet/projects.json itself: with a global install there's no
   # single project directory to register at install time. Instead, the hook
   # binary registers whatever project it's running in the first time it fires
-  # there (see cmd/ledger-hook's SessionStart/PostCompact handling and
+  # there (see cmd/claude-hook's SessionStart/PostCompact handling and
   # internal/registry.Register) — the desktop app's Projects screen fills in
   # on its own as you use Claude Code in each project.
 

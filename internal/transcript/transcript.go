@@ -94,7 +94,7 @@ func ReadSessionUsage(path string) (SessionUsage, error) {
 
 // ReadSessionUsageWithOffset is ReadSessionUsage's counterpart for callers
 // that need to keep an incremental reader's offset in sync with a full
-// read — namely cmd/ledger-hook's handleSessionEnd, whose full reconciliation
+// read — namely cmd/claude-hook's handleSessionEnd, whose full reconciliation
 // pass overwrites stats.Session's transcript totals via SetTranscriptUsage.
 // Without also advancing TranscriptOffset to match, a session resumed later
 // (same session_id, transcript file kept growing) would have its next

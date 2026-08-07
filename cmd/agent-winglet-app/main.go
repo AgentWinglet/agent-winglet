@@ -1,6 +1,6 @@
 // Command agent-winglet-app is a small cross-platform desktop dashboard
 // (Wails — Go backend, OS-native webview frontend) that shows the savings
-// receipt already computed by cmd/ledger-hook, without the user reading
+// receipt already computed by cmd/claude-hook, without the user reading
 // JSON files or hook stdout by hand.
 //
 // The menu-bar/tray glance icon lives in a separate binary,

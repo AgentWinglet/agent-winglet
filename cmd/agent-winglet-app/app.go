@@ -36,7 +36,7 @@ func NewApp() *App {
 // config.Config.CompactNudgeDisabled (inverted, so the Settings screen's
 // toggle can talk in on/off terms without re-deriving the double negative).
 // The compact nudge itself is a systemMessage/additionalContext emitted
-// directly by cmd/ledger-hook (see its handlePhaseBoundary) — this
+// directly by cmd/claude-hook (see its handlePhaseBoundary) — this
 // dashboard has no part in showing it, only in this one preference for
 // turning it off.
 func (a *App) GetCompactNudgesEnabled() bool {
@@ -226,7 +226,7 @@ type Overview struct {
 	// need nothing but the hook's own live-written stats file; the percent-
 	// saved figure additionally needs this session's transcript, which is
 	// only read once, at SessionEnd (see internal/transcript and
-	// cmd/ledger-hook's handleSessionEnd). Without this split, a session
+	// cmd/claude-hook's handleSessionEnd). Without this split, a session
 	// that's still running always renders identically to a session that
 	// never did anything — real, live, moment-to-moment suppression data was
 	// being discarded for the entire lifetime of every in-progress session.

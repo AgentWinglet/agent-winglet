@@ -4,7 +4,7 @@
 //
 // Now that the hook installs globally (into ~/.claude/settings.json, see
 // install.sh) rather than per-project, there's no longer an install.sh
-// invocation inside each project to register it at. Instead, cmd/ledger-hook
+// invocation inside each project to register it at. Instead, cmd/claude-hook
 // calls Register itself on SessionStart/PostCompact — the first time the
 // hook fires for a given project's cwd, that project lands in the registry.
 // Register dedupes and prunes stale entries (directories moved/deleted since
@@ -123,8 +123,7 @@ func Register(dir string) error {
 }
 
 // HookInstalled reports whether projectDir's own .claude/settings.json has a
-// hook command referencing the ledger-hook binary — a project-level install,
-// as install.sh wrote before the hook became global. Registry presence alone
+// hook command referencing the claude-hook binary. Registry presence alone
 // isn't enough — a project can be removed from the hook (settings.json
 // edited or hook config stripped) without being removed from this registry,
 // since Register only ever adds/prunes-by-existence, never removes an entry
@@ -138,12 +137,12 @@ func HookInstalled(projectDir string) bool {
 	if err := json.Unmarshal(data, &v); err != nil {
 		return false
 	}
-	return containsLedgerHookCommand(v)
+	return containsClaudeHookCommand(v)
 }
 
 // GlobalHookInstalled reports whether the global ~/.claude/settings.json —
 // install.sh's default install target — has a hook command referencing the
-// ledger-hook binary. Since the hook is global by default, this is true for
+// claude-hook binary. Since the hook is global by default, this is true for
 // effectively every registered project unless the user has since removed it.
 func GlobalHookInstalled() bool {
 	home, err := os.UserHomeDir()
@@ -158,27 +157,27 @@ func GlobalHookInstalled() bool {
 	if err := json.Unmarshal(data, &v); err != nil {
 		return false
 	}
-	return containsLedgerHookCommand(v)
+	return containsClaudeHookCommand(v)
 }
 
-// containsLedgerHookCommand walks an arbitrary decoded-JSON value looking
-// for a "command" field whose value's basename is "ledger-hook" — matching
+// containsClaudeHookCommand walks an arbitrary decoded-JSON value looking
+// for a "command" field whose value's basename is "claude-hook" — matching
 // install.sh's hook config shape without depending on the exact absolute
 // GOBIN path, which varies per machine.
-func containsLedgerHookCommand(v interface{}) bool {
+func containsClaudeHookCommand(v interface{}) bool {
 	switch node := v.(type) {
 	case map[string]interface{}:
-		if cmd, ok := node["command"].(string); ok && filepath.Base(cmd) == "ledger-hook" {
+		if cmd, ok := node["command"].(string); ok && filepath.Base(cmd) == "claude-hook" {
 			return true
 		}
 		for _, child := range node {
-			if containsLedgerHookCommand(child) {
+			if containsClaudeHookCommand(child) {
 				return true
 			}
 		}
 	case []interface{}:
 		for _, child := range node {
-			if containsLedgerHookCommand(child) {
+			if containsClaudeHookCommand(child) {
 				return true
 			}
 		}

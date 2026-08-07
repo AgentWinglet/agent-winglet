@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reverses install.sh: strips every ledger-hook entry out of Claude Code's
+# Reverses install.sh: strips every claude-hook entry out of Claude Code's
 # hook config and removes the installed app (both, by default), then
 # optionally removes the hook binary and/or agent-winglet's data files too.
 #
@@ -11,7 +11,7 @@
 #                                   # instead of ~/.claude/settings.json
 #                                   # (--hook-only scope only; the app has no
 #                                   # such concept)
-#   ./uninstall.sh --purge-binary  # also delete the installed ledger-hook binary
+#   ./uninstall.sh --purge-binary  # also delete the installed claude-hook binary
 #   ./uninstall.sh --purge-data    # also delete ~/.agent-winglet (global registry/config
 #                                   # and, since all per-project state now lives under
 #                                   # ~/.agent-winglet/projects/, this alone is the primary
@@ -34,7 +34,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 source "${SCRIPT_DIR}/scripts/lib.sh"
 
-BINARY_NAME="ledger-hook"
+BINARY_NAME="claude-hook"
 
 WANT_HOOK=1
 WANT_APP=1
@@ -82,9 +82,9 @@ if [ "$WANT_HOOK" = "1" ]; then
       echo "No ${BINARY_NAME} hook entries found in ${SETTINGS_FILE} — nothing to remove there."
     else
       TMP_FILE="$(mktemp)"
-      # Drop any hook command entry whose basename is ledger-hook (matching by
+      # Drop any hook command entry whose basename is claude-hook (matching by
       # basename rather than an exact path, same as internal/registry's
-      # containsLedgerHookCommand, since the absolute GOBIN path can vary
+      # containsClaudeHookCommand, since the absolute GOBIN path can vary
       # machine-to-machine and even installer-run to installer-run). Matcher
       # entries left with an empty hooks array are dropped entirely, and event
       # keys left with an empty array are dropped too, so the file doesn't

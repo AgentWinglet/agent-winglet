@@ -26,10 +26,10 @@ Claude Code support.
 
 ## Current Winglet Shape
 
-The current hook is `cmd/ledger-hook`, but it is Claude-specific despite the
-generic name.
+The current Claude hook is `cmd/claude-hook`, renamed from the older generic
+`cmd/ledger-hook` path.
 
-- `cmd/ledger-hook/main.go` implements Claude Code hooks for `SessionStart`,
+- `cmd/claude-hook/main.go` implements Claude Code hooks for `SessionStart`,
   `PostCompact`, `PostToolUse`, `Stop`, and `SessionEnd`.
 - `internal/ledger` stores same-session output hashes by `(project root,
   session_id)`.
@@ -306,7 +306,7 @@ output before the model has enough context. Bias toward `Neutral`.
 
 ## Codex Hook Binary
 
-`cmd/codex-hook/main.go` should mirror the structure of `cmd/ledger-hook`:
+`cmd/codex-hook/main.go` should mirror the structure of `cmd/claude-hook`:
 
 - Package doc comment describes the behavior and non-goals.
 - `run()` reads stdin and writes optional JSON stdout.
@@ -350,14 +350,13 @@ Tool input/output extraction:
 
 ## Install And Uninstall
 
-Rename the existing hook before adding Codex:
+The existing hook has been renamed before adding Codex:
 
-- `cmd/ledger-hook` becomes `cmd/claude-hook`.
-- Installed binary becomes `claude-hook`.
-- Update README, Makefile, install/uninstall scripts, registry helpers, tests,
-  and doc comments.
-- Keep migration compatibility by detecting old `ledger-hook` entries during
-  uninstall and project-installed checks for at least one release.
+- `cmd/ledger-hook` has become `cmd/claude-hook`.
+- Installed binary is now `claude-hook`.
+- README, Makefile, install/uninstall scripts, registry helpers, tests, and doc
+  comments now use the new name.
+- No pre-v1 `ledger-hook` compatibility path is kept.
 
 Add `codex-hook` installation:
 
@@ -375,8 +374,7 @@ Add `codex-hook` installation:
   rather than rewriting their preference.
 - After Codex install, print: `Run /hooks in Codex and trust the agent-winglet
   codex-hook before Winglet can record Codex sessions.`
-- `uninstall.sh` removes `claude-hook`, legacy `ledger-hook`, and `codex-hook`
-  entries by basename.
+- `uninstall.sh` removes `claude-hook` and `codex-hook` entries by basename.
 - `--purge-data` continues deleting `~/.agent-winglet`; no Codex transcript
   files are deleted.
 
@@ -394,7 +392,7 @@ Required mixed-agent changes:
 - Existing aggregate Overview and Project rows continue summing all sessions.
 - Project install detection should become agent-aware:
   - Claude installed if global or project `.claude/settings.json` contains
-    `claude-hook` or legacy `ledger-hook`.
+    `claude-hook`.
   - Codex installed if global or project `.codex/hooks.json` contains
     `codex-hook`.
   - Trust status may not be reliably visible. If it is not visible, do not
@@ -464,12 +462,14 @@ same UI phase so the frontend model shape matches Go.
 
 ### Phase 0 - Rename Claude Hook
 
-1. `git mv cmd/ledger-hook cmd/claude-hook`.
-2. Rename the installed binary to `claude-hook`.
-3. Update references in Go, shell scripts, README, Makefile, tests, and app
-   copy.
-4. Keep uninstall and registry detection compatible with old `ledger-hook`.
-5. Exit: `go build ./...` and `go test ./...` pass.
+Complete.
+
+- `cmd/ledger-hook` is now `cmd/claude-hook`.
+- Installed binary is `claude-hook`.
+- Go, shell scripts, README, Makefile, tests, app copy, and doc comments use
+  the new name.
+- No compatibility path is kept for the old `ledger-hook` name.
+- Exit: `go build ./...` and `go test ./...` pass.
 
 ### Phase 1 - Agent Field And UI Badge
 
@@ -567,7 +567,7 @@ same UI phase so the frontend model shape matches Go.
 1. Fresh install writes Claude and Codex hook config.
 2. `--claude-only`, `--codex-only`, `--hook-only`, `--app-only`, and `--local`
    combinations behave predictably.
-3. Uninstall removes current and legacy hook entries.
+3. Uninstall removes current hook entries.
 4. README explains Codex trust through `/hooks`.
 5. Exit: `go build ./...`, `go test ./...`, installer smoke tests, and one real
    Codex dogfood session pass.

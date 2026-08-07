@@ -517,7 +517,7 @@ async function renderSessionsSection(container, projectPath) {
 }
 
 // The compact-nudges toggle controls the systemMessage/additionalContext
-// cmd/ledger-hook emits directly (handlePhaseBoundary) — this dashboard has
+// cmd/claude-hook emits directly (handlePhaseBoundary) — this dashboard has
 // no part in showing it, only in this preference. Reading its state needs a
 // round-trip (GetCompactNudgesEnabled), so this is async like the other
 // screens, not fetched synchronously.

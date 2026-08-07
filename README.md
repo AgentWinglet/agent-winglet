@@ -19,7 +19,7 @@ cd agent-winglet
 By default this installs **both** the Session Ledger hook and the desktop
 app (`Winglet`). Pass `--hook-only` or `--app-only` to install just one.
 
-**The hook** (`ledger-hook`): fetched with `go install`, so it doesn't
+**The hook** (`claude-hook`): fetched with `go install`, so it doesn't
 matter where you run this from, and it works even if you invoke `--hook-only`
 from outside a checkout. It merges its config into `~/.claude/settings.json`
 (Claude Code's user-level settings) without touching any existing settings
@@ -41,11 +41,7 @@ If that's not set up yet, `install.sh` will fail with a pointer to fix it.
 
 Pass `--local` to install the hook into just the current directory's project
 instead (`./.claude/settings.json`) — hook scope only, the app has no such
-concept. **Migration note:** if a project already has a per-project install
-from before, remove its `ledger-hook` entry from that project's
-`.claude/settings.json` after installing globally — running both at once
-fires the hook twice per event for that project and will double-count stats
-and corrupt the ledger's turn tracking.
+concept.
 
 **The app**: unlike the hook, this is always built from your local
 checkout — its frontend build output isn't checked into git (it's
@@ -89,7 +85,7 @@ app doesn't need to be run from inside a checkout — it just removes files
 from the known per-OS install locations above, it doesn't build anything.
 Add:
 
-- `--purge-binary` to also delete the installed `ledger-hook` binary
+- `--purge-binary` to also delete the installed `claude-hook` binary
 - `--purge-data` to also delete `~/.agent-winglet` (the global project
   registry and quiet-mode config) and every registered project's
   `.claude/agent-winglet/` (that project's savings-ledger/stats history) —
@@ -101,12 +97,12 @@ Add:
 ## Developing this repo
 
 ```
-make build   # builds bin/ledger-hook locally
+make build   # builds bin/claude-hook locally
 make test    # runs the Go test suite
 ```
 
 This repo's own `.claude/settings.json` is a dev/test fixture — it points
-at the locally-built `bin/ledger-hook` so the hook can be exercised against
+at the locally-built `bin/claude-hook` so the hook can be exercised against
 this repo itself while working on it. It is not the install mechanism end
 users go through; that's `install.sh`/`uninstall.sh` above.
 

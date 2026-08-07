@@ -1,7 +1,7 @@
 .PHONY: build test app tray nest-tray-darwin install uninstall
 
 build:
-	go build -o bin/ledger-hook ./cmd/ledger-hook
+	go build -o bin/claude-hook ./cmd/claude-hook
 
 test:
 	go test ./...

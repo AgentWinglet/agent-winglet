@@ -1,4 +1,4 @@
-// ledger-hook is the Claude Code hook binary for agent-winglet. It is
+// claude-hook is the Claude Code hook binary for agent-winglet. It is
 // registered for four hook events:
 //
 //   - PostToolUse (all tools, no matcher): on Bash, an exact repeat of a
@@ -265,7 +265,7 @@ type hookOutput struct {
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "ledger-hook:", err)
+		fmt.Fprintln(os.Stderr, "claude-hook:", err)
 		os.Exit(1)
 	}
 }
@@ -366,7 +366,7 @@ func migrateLegacyData(cwd, root string) {
 	if info, err := os.Stat(legacyDir); err == nil && info.IsDir() {
 		mergeLegacyLifetime(root, filepath.Join(legacyDir, stats.LifetimeFileName))
 		if err := os.RemoveAll(legacyDir); err != nil {
-			fmt.Fprintln(os.Stderr, "ledger-hook: migration: removing legacy dir failed:", err)
+			fmt.Fprintln(os.Stderr, "claude-hook: migration: removing legacy dir failed:", err)
 		}
 	}
 
@@ -386,13 +386,13 @@ func mergeLegacyLifetime(root, path string) {
 	}
 	var old legacyLifetime
 	if err := json.Unmarshal(data, &old); err != nil {
-		fmt.Fprintln(os.Stderr, "ledger-hook: migration: corrupt legacy lifetime stats, skipping merge:", err)
+		fmt.Fprintln(os.Stderr, "claude-hook: migration: corrupt legacy lifetime stats, skipping merge:", err)
 		return
 	}
 
 	seed, err := stats.LoadSession(root, legacySessionID)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "ledger-hook: migration: loading seed session failed:", err)
+		fmt.Fprintln(os.Stderr, "claude-hook: migration: loading seed session failed:", err)
 		return
 	}
 	seed.DedupHits += old.DedupHits
@@ -406,11 +406,11 @@ func mergeLegacyLifetime(root, path string) {
 	seed.TranscriptCostUSD += old.TranscriptCostUSD
 	seed.TranscriptContentBytes += old.TranscriptContentBytes
 	if err := stats.SaveSession(root, legacySessionID, seed); err != nil {
-		fmt.Fprintln(os.Stderr, "ledger-hook: migration: saving seed session failed:", err)
+		fmt.Fprintln(os.Stderr, "claude-hook: migration: saving seed session failed:", err)
 		return
 	}
 	if err := os.Remove(path); err != nil {
-		fmt.Fprintln(os.Stderr, "ledger-hook: migration: removing legacy lifetime file failed:", err)
+		fmt.Fprintln(os.Stderr, "claude-hook: migration: removing legacy lifetime file failed:", err)
 	}
 }
 

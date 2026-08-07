@@ -32,7 +32,7 @@ type State struct {
 	// counting after the boundary crosses, and it's what's checked
 	// pre-boundary to decide when a session has been investigating long
 	// enough that letting every further call's output accumulate raw would
-	// grow context unboundedly (see cmd/ledger-hook's
+	// grow context unboundedly (see cmd/claude-hook's
 	// investigateCallThreshold).
 	InvestigateCalls int `json:"investigateCalls"`
 }

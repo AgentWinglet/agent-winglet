@@ -57,7 +57,7 @@ func TestHookInstalledTrueWhenCommandPresent(t *testing.T) {
 	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll errored: %v", err)
 	}
-	settings := `{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"/Users/x/go/bin/ledger-hook"}]}]}}`
+	settings := `{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"/Users/x/go/bin/claude-hook"}]}]}}`
 	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(settings), 0o644); err != nil {
 		t.Fatalf("WriteFile errored: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestGlobalHookInstalledTrueWhenCommandPresent(t *testing.T) {
 	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll errored: %v", err)
 	}
-	settings := `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/Users/x/go/bin/ledger-hook"}]}]}}`
+	settings := `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/Users/x/go/bin/claude-hook"}]}]}}`
 	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(settings), 0o644); err != nil {
 		t.Fatalf("WriteFile errored: %v", err)
 	}
