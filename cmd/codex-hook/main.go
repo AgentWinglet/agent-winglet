@@ -1,8 +1,8 @@
 // codex-hook is the Codex hook binary for agent-winglet. In this phase it
 // registers projects, resets per-session state at session starts/compacts,
 // records Codex rollout-derived usage, dedups repeated successful shell output,
-// budgets long first-time shell output, and carries a disabled-by-default
-// replacement probe.
+// budgets long first-time shell output, retires post-boundary investigation
+// output, and carries a disabled-by-default replacement probe.
 package main
 
 import (
@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/umitkaanusta/agent-winglet/internal/cmdclass"
 	"github.com/umitkaanusta/agent-winglet/internal/codexrollout"
 	"github.com/umitkaanusta/agent-winglet/internal/config"
 	"github.com/umitkaanusta/agent-winglet/internal/ledger"
@@ -89,6 +90,8 @@ func handle(in hookInput) (*hookOutput, error) {
 	switch in.HookEventName {
 	case "SessionStart", "PostCompact":
 		return nil, resetSession(in)
+	case "SubagentStart", "SubagentStop":
+		return nil, observeCodexPhase(projectroot.Resolve(in.Cwd), in.SessionID, true, false)
 	case "PostToolUse":
 		return handlePostToolUse(in)
 	case "Stop":
@@ -107,7 +110,11 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 	if out := maybeCodexProbeOutput(in); out != nil {
 		return out, nil
 	}
-	return handleShellPostToolUse(in, root)
+	class := codexPhaseClass(in)
+	if err := observeCodexPhase(root, in.SessionID, class == cmdclass.Investigate, class == cmdclass.Implement); err != nil {
+		return nil, err
+	}
+	return handleShellPostToolUse(in, root, class)
 }
 
 const (
@@ -152,7 +159,9 @@ func codexProbeMode() string {
 	}
 }
 
-func handleShellPostToolUse(in hookInput, root string) (*hookOutput, error) {
+const investigateThresholdReason = "past the pre-boundary investigate-call threshold"
+
+func handleShellPostToolUse(in hookInput, root string, class cmdclass.Class) (*hookOutput, error) {
 	if in.HookEventName != "PostToolUse" || !codexShellTool(in.ToolName) {
 		return nil, nil
 	}
@@ -175,6 +184,21 @@ func handleShellPostToolUse(in hookInput, root string) (*hookOutput, error) {
 	if !isRepeat {
 		if err := ledger.Save(root, in.SessionID, st); err != nil {
 			return nil, err
+		}
+		pastBoundary, overInvestigateThreshold, err := codexPhaseStatus(root, in.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		if class == cmdclass.Investigate {
+			if pastBoundary {
+				return handleShellRetire(in, root, output, command, "post-boundary", "investigate output")
+			}
+			if overInvestigateThreshold {
+				return handleShellRetire(in, root, output, command, investigateThresholdReason, "investigate output")
+			}
+		}
+		if pastBoundary && outputbudget.EstimatedTokens(output) > outputbudget.TokenThreshold {
+			return handleShellRetire(in, root, output, command, "post-boundary", "bash output")
 		}
 		budgeted, omittedLines, omittedBytes, ok, err := outputbudget.Stdout(output, root, in.SessionID)
 		if err != nil {
@@ -202,6 +226,68 @@ func handleShellPostToolUse(in hookInput, root string) (*hookOutput, error) {
 	}
 
 	return codexReplacementOutput(fmt.Sprintf("[agent-winglet] unchanged since turn %d (%s)", repeatOfTurn, key)), nil
+}
+
+func observeCodexPhase(root, sessionID string, isInvestigate, isImplement bool) error {
+	if !isInvestigate && !isImplement {
+		return nil
+	}
+	st, err := phase.Load(root, sessionID)
+	if err != nil {
+		return err
+	}
+	st.Observe(isInvestigate, isImplement)
+	return phase.Save(root, sessionID, st)
+}
+
+func codexPhaseStatus(root, sessionID string) (pastBoundary bool, overInvestigateThreshold bool, err error) {
+	st, err := phase.Load(root, sessionID)
+	if err != nil {
+		return false, false, err
+	}
+	return st.Suggested, st.InvestigateCalls > phase.InvestigateCallThreshold, nil
+}
+
+func codexPhaseClass(in hookInput) cmdclass.Class {
+	if codexImplementTool(in.ToolName) {
+		return cmdclass.Implement
+	}
+	if !codexShellTool(in.ToolName) {
+		return cmdclass.Neutral
+	}
+	command, ok := codexShellCommand(in.ToolInput)
+	if !ok {
+		return cmdclass.Neutral
+	}
+	return cmdclass.Classify(command)
+}
+
+func codexImplementTool(toolName string) bool {
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "apply_patch", "edit", "write":
+		return true
+	default:
+		return false
+	}
+}
+
+func handleShellRetire(in hookInput, root, output, command, reason, label string) (*hookOutput, error) {
+	path, err := retire.Store(root, in.SessionID, []byte(output))
+	if err != nil {
+		return nil, err
+	}
+	n := len(output)
+	receipt := fmt.Sprintf(
+		"[agent-winglet] %s retired %s (Bash:%s, %d bytes) - full output at %s",
+		label, reason, command, n, path,
+	)
+	if err := recordStat(root, in.SessionID, func(s *stats.Session) {
+		s.Agent = stats.AgentCodex
+		s.RecordRetire(n)
+	}); err != nil {
+		return nil, err
+	}
+	return codexReplacementOutput(receipt), nil
 }
 
 func codexShellTool(toolName string) bool {

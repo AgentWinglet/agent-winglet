@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/umitkaanusta/agent-winglet/internal/outputbudget"
+	"github.com/umitkaanusta/agent-winglet/internal/phase"
 	"github.com/umitkaanusta/agent-winglet/internal/registry"
 	"github.com/umitkaanusta/agent-winglet/internal/stats"
 )
@@ -345,6 +346,208 @@ func TestPostToolUseDedupTakesPrecedenceOverBudgeting(t *testing.T) {
 	}
 }
 
+func TestPostToolUseRetiresInvestigateShellAfterBoundaryCrossed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	sessionID := "codex-session"
+
+	if out, err := handle(codexBashPostInput(t, dir, sessionID, "rg --files", map[string]interface{}{
+		"stdout":    "SPEC.md\n",
+		"stderr":    "",
+		"exit_code": 0,
+	})); err != nil {
+		t.Fatalf("investigate seed errored: %v", err)
+	} else if out != nil {
+		t.Fatalf("pre-boundary investigate shell should pass through, got %+v", out)
+	}
+	if out, err := handle(codexApplyPatchInput(t, dir, sessionID)); err != nil {
+		t.Fatalf("apply_patch boundary signal errored: %v", err)
+	} else if out != nil {
+		t.Fatalf("Phase 8 apply_patch should update phase silently, got %+v", out)
+	}
+
+	output := "package main\n"
+	out, err := handle(codexBashPostInput(t, dir, sessionID, "cat main.go", map[string]interface{}{
+		"stdout":    output,
+		"stderr":    "",
+		"exit_code": 0,
+	}))
+	if err != nil {
+		t.Fatalf("post-boundary investigate shell errored: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("expected post-boundary investigate shell retirement")
+	}
+	if !strings.Contains(out.SystemMessage, "investigate output retired post-boundary") {
+		t.Fatalf("SystemMessage = %q, want post-boundary retire receipt", out.SystemMessage)
+	}
+	path := archivePathFromBudgetedOutput(t, out.SystemMessage, "full output at ")
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading retired output at %q errored: %v", path, err)
+	}
+	if string(stored) != output {
+		t.Fatalf("retired output = %q, want %q", stored, output)
+	}
+
+	s, err := stats.LoadSession(dir, sessionID)
+	if err != nil {
+		t.Fatalf("LoadSession errored: %v", err)
+	}
+	if s.Agent != stats.AgentCodex || s.RetiredCalls != 1 || s.RetiredBytes != int64(len(output)) {
+		t.Fatalf("stats after retire = %+v, want codex agent and one retire", s)
+	}
+}
+
+func TestPostToolUseRetiresInvestigateShellAfterThresholdExceededPreBoundary(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	sessionID := "codex-session"
+
+	for i := 0; i < phase.InvestigateCallThreshold; i++ {
+		out, err := handle(codexBashPostInput(t, dir, sessionID, fmt.Sprintf("ls dir-%d", i), map[string]interface{}{
+			"stdout":    fmt.Sprintf("file-%d\n", i),
+			"stderr":    "",
+			"exit_code": 0,
+		}))
+		if err != nil {
+			t.Fatalf("seed call %d errored: %v", i+1, err)
+		}
+		if out != nil {
+			t.Fatalf("seed call %d should pass through, got %+v", i+1, out)
+		}
+	}
+
+	output := "one more file\n"
+	out, err := handle(codexBashPostInput(t, dir, sessionID, "find .", map[string]interface{}{
+		"stdout":    output,
+		"stderr":    "",
+		"exit_code": 0,
+	}))
+	if err != nil {
+		t.Fatalf("threshold call errored: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("expected threshold retirement")
+	}
+	if !strings.Contains(out.SystemMessage, investigateThresholdReason) {
+		t.Fatalf("SystemMessage = %q, want threshold reason", out.SystemMessage)
+	}
+	if strings.Contains(out.SystemMessage, "post-boundary") {
+		t.Fatalf("threshold receipt should not claim post-boundary: %q", out.SystemMessage)
+	}
+}
+
+func TestPostToolUseRetiresLongNeutralShellOutputPostBoundary(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	sessionID := "codex-session"
+
+	if _, err := handle(codexBashPostInput(t, dir, sessionID, "rg --files", map[string]interface{}{
+		"stdout":    "SPEC.md\n",
+		"stderr":    "",
+		"exit_code": 0,
+	})); err != nil {
+		t.Fatalf("investigate seed errored: %v", err)
+	}
+	if _, err := handle(codexApplyPatchInput(t, dir, sessionID)); err != nil {
+		t.Fatalf("apply_patch boundary signal errored: %v", err)
+	}
+
+	longOutput := linesOfApproxTokens(outputbudget.TokenThreshold + 1)
+	out, err := handle(codexBashPostInput(t, dir, sessionID, "go test ./...", map[string]interface{}{
+		"stdout":    longOutput,
+		"stderr":    "",
+		"exit_code": 0,
+	}))
+	if err != nil {
+		t.Fatalf("post-boundary neutral shell errored: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("expected long neutral shell retirement")
+	}
+	if !strings.Contains(out.SystemMessage, "bash output retired post-boundary") {
+		t.Fatalf("SystemMessage = %q, want bash retire receipt", out.SystemMessage)
+	}
+	if strings.Contains(out.SystemMessage, "lines omitted") {
+		t.Fatalf("post-boundary long output should retire instead of budget: %q", out.SystemMessage)
+	}
+	path := archivePathFromBudgetedOutput(t, out.SystemMessage, "full output at ")
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading retired output at %q errored: %v", path, err)
+	}
+	if string(stored) != longOutput {
+		t.Fatalf("retired output = %q, want original long output", stored)
+	}
+}
+
+func TestSubagentEventsCountAsInvestigationForCodexBoundary(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	sessionID := "codex-session"
+
+	if out, err := handle(hookInput{SessionID: sessionID, Cwd: dir, HookEventName: "SubagentStart"}); err != nil {
+		t.Fatalf("SubagentStart errored: %v", err)
+	} else if out != nil {
+		t.Fatalf("SubagentStart should not emit output, got %+v", out)
+	}
+	if _, err := handle(codexApplyPatchInput(t, dir, sessionID)); err != nil {
+		t.Fatalf("apply_patch boundary signal errored: %v", err)
+	}
+
+	out, err := handle(codexBashPostInput(t, dir, sessionID, "cat README.md", map[string]interface{}{
+		"stdout":    "readme\n",
+		"stderr":    "",
+		"exit_code": 0,
+	}))
+	if err != nil {
+		t.Fatalf("post-subagent boundary shell errored: %v", err)
+	}
+	if out == nil || !strings.Contains(out.SystemMessage, "investigate output retired post-boundary") {
+		t.Fatalf("subagent should count as investigation before apply_patch boundary, got %+v", out)
+	}
+}
+
+func TestPostToolUseDedupTakesPrecedenceOverRetirementPostBoundary(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	sessionID := "codex-session"
+	longOutput := linesOfApproxTokens(outputbudget.TokenThreshold + 1)
+	input := codexBashPostInput(t, dir, sessionID, "go test ./...", map[string]interface{}{
+		"stdout":    longOutput,
+		"stderr":    "",
+		"exit_code": 0,
+	})
+
+	if first, err := handle(input); err != nil {
+		t.Fatalf("first PostToolUse errored: %v", err)
+	} else if first == nil || !strings.Contains(first.SystemMessage, "lines omitted") {
+		t.Fatalf("first long output should be budgeted, got %+v", first)
+	}
+	if _, err := handle(codexBashPostInput(t, dir, sessionID, "rg --files", map[string]interface{}{
+		"stdout":    "SPEC.md\n",
+		"stderr":    "",
+		"exit_code": 0,
+	})); err != nil {
+		t.Fatalf("investigate seed errored: %v", err)
+	}
+	if _, err := handle(codexApplyPatchInput(t, dir, sessionID)); err != nil {
+		t.Fatalf("apply_patch boundary signal errored: %v", err)
+	}
+
+	out, err := handle(input)
+	if err != nil {
+		t.Fatalf("repeat PostToolUse errored: %v", err)
+	}
+	if out == nil || !strings.Contains(out.SystemMessage, "unchanged since turn 1 (Bash:go test ./...)") {
+		t.Fatalf("repeat post-boundary output should be deduped, got %+v", out)
+	}
+	if strings.Contains(out.SystemMessage, "retired post-boundary") {
+		t.Fatalf("repeat should dedup instead of retire, got %q", out.SystemMessage)
+	}
+}
+
 func TestPostToolUseDedupUsesModelFacingStringOutput(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
@@ -632,6 +835,22 @@ func codexShellPostInput(t *testing.T, dir, sessionID, toolName, commandField, c
 		HookEventName: "PostToolUse",
 		ToolName:      toolName,
 		ToolInput:     toolInput,
+		ToolResponse:  toolResponse,
+	}
+}
+
+func codexApplyPatchInput(t *testing.T, dir, sessionID string) hookInput {
+	t.Helper()
+	toolResponse, err := json.Marshal("Done")
+	if err != nil {
+		t.Fatalf("Marshal tool response errored: %v", err)
+	}
+	return hookInput{
+		SessionID:     sessionID,
+		Cwd:           dir,
+		HookEventName: "PostToolUse",
+		ToolName:      "apply_patch",
+		ToolInput:     json.RawMessage(`{"patch":"*** Begin Patch\n*** End Patch\n"}`),
 		ToolResponse:  toolResponse,
 	}
 }

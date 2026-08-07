@@ -37,6 +37,12 @@ type State struct {
 	InvestigateCalls int `json:"investigateCalls"`
 }
 
+// InvestigateCallThreshold is the shared "prefix stays, tail retires" cutoff
+// for investigation-heavy sessions. Hooks count investigate-classified calls
+// through State.Observe; once this threshold is exceeded, later investigation
+// output can be archived and replaced with a receipt.
+const InvestigateCallThreshold = 20
+
 func statePath(projectDir, sessionID string) (string, error) {
 	d, err := statedir.Dir(projectDir)
 	if err != nil {

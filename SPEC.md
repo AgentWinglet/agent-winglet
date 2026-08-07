@@ -634,14 +634,29 @@ closed.
 
 ### Phase 8 - Phase And Retirement
 
-1. Wire `cmdclass.Investigate` and `apply_patch` implement signals through
-   `internal/phase`.
-2. Preserve `investigateCallThreshold`.
-3. Retire later investigate-classified Bash output after boundary or threshold.
-4. Retire long first-time Bash output post-boundary as Claude does.
-5. Count Codex subagent start/stop as investigation, but do not retire subagent
-   transcripts in v1.
-6. Exit: dogfood sessions cover post-boundary retire and threshold retire.
+Complete locally; real Codex dogfood remains before treating the exit as fully
+closed.
+
+- `internal/phase` now exports the shared investigate-call threshold, with
+  `cmd/claude-hook` preserving its local constant as an alias.
+- `cmd/codex-hook` classifies shell/unified-exec commands through
+  `internal/cmdclass` and treats `apply_patch`, `Edit`, and `Write` as
+  implement signals.
+- Codex phase tracking is intentionally silent in Phase 8; compact guidance
+  stays deferred to Phase 9.
+- Later first-time investigate-classified shell output is archived and replaced
+  after the investigate-to-implement boundary or after the pre-boundary
+  investigate-call threshold.
+- Later first-time neutral shell output post-boundary is retired when it crosses
+  the same long-output token threshold that would otherwise trigger budgeting.
+- Exact repeat shell output still dedups before retirement.
+- `SubagentStart` and `SubagentStop` count as investigation state, but no
+  subagent transcript output is retired in v1.
+- Retirement hits record `RetiredCalls`, `RetiredBytes`, and `AgentCodex`.
+- Exit so far: `go test ./cmd/codex-hook ./cmd/claude-hook ./internal/phase`
+  passes.
+- Remaining dogfood exit: real Codex sessions cover post-boundary retire and
+  threshold retire, and the archived output paths are recoverable.
 
 ### Phase 9 - Compact Guidance
 

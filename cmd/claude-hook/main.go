@@ -369,7 +369,7 @@ var implementTools = map[string]bool{
 // replayed N turns ago. Picked generously rather than derived from either
 // paper's window size; tune down only if dogfooding shows 20 is too late
 // to matter.
-const investigateCallThreshold = 20
+const investigateCallThreshold = phase.InvestigateCallThreshold
 
 // handlePhaseBoundary suggests running /compact once the session has moved
 // from investigating to implementing. Claude Code has no hook mechanism to
