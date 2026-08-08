@@ -188,8 +188,8 @@ function heroRing(overview) {
 
 // hero renders the primary figure: the signature ring beside the
 // headline percent-saved text (e.g. "38% saved") and a one-line restatement
-// of that same figure as extra runway ("→ goes ~61% further on the same
-// plan") — the actual claim agent-winglet makes.
+// of that same figure as plan stretch ("→ Your plan goes ~61% further") —
+// the actual claim agent-winglet makes.
 function hero(overview) {
   // hasTranscriptData gates the ring's real percent (it needs the completed
   // transcript, only read at SessionEnd) but must not gate the usage-detail
@@ -272,7 +272,7 @@ function cardRow(overview) {
 // Projects-screen row, and each expanded session row nested inside one:
 // hero (percent saved, or live suppressed bytes so far — see hero's own doc
 // comment) -> summary cards (bytes/tokens/$) -> per-mechanism bars. One
-// function, three call sites, so the "X% saved / goes X% further / bar"
+// function, three call sites, so the "X% saved / plan goes X% further / bar"
 // treatment can never drift between them — a session watched live gets the
 // same story an already-ended one gets in the Overview rollup, not a
 // stripped-down view.
@@ -317,7 +317,7 @@ async function renderOverviewScreen(container) {
 // heroInline renders the compact one-line summary shown on every collapsed
 // expander (a project row or a session row): the percent-saved headline,
 // the raw bytes behind it in parentheses, and the same figure reframed as
-// extra usage runway — the one line that has to justify expanding the row,
+// plan stretch — the one line that has to justify expanding the row,
 // so it carries the same three numbers the expanded statsBlock leads with
 // rather than a status readout unrelated to savings. Before the transcript
 // is read (see Overview.HasTranscriptData), pct/bytes/runway aren't
