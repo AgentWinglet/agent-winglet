@@ -945,17 +945,20 @@ func buildOverview(t overviewTotals, projectCount, sessionCount int) Overview {
 	// percent rather than a bare "Ax" multiplier with no unit. stats.Stretch
 	// gives that runway as a ratio of 1 (e.g. 1.6129), so subtracting 100
 	// after scaling to a percent yields "how much more," not "how much
-	// total." Tokens/dollars genuinely require the completed transcript
-	// (a cost-per-token rate derived from it), so those two cards stay "no
-	// data yet" through an in-progress session — that's an honest gap, not
-	// the same bug as the headline hiding data it already has.
+	// total." Phrased as "goes ~X% further," not "~X% more usage": "usage"
+	// reads as consumption, so "more usage" sounded like the opposite of the
+	// claim (using more, not saving) — "further" unambiguously means extra
+	// runway on the same cap. Tokens/dollars genuinely require the completed
+	// transcript (a cost-per-token rate derived from it), so those two cards
+	// stay "no data yet" through an in-progress session — that's an honest
+	// gap, not the same bug as the headline hiding data it already has.
 	heroUsageDetail := "no data yet"
 	heroUsageSub := ""
 	switch {
 	case hasPct:
 		extraPercent := stats.Stretch(pct)*100 - 100
-		heroUsageDetail = fmt.Sprintf("~%.0f%% more usage", extraPercent)
-		heroUsageSub = "with the same plan"
+		heroUsageDetail = fmt.Sprintf("goes ~%.0f%% further", extraPercent)
+		heroUsageSub = "on the same plan"
 	case hasActivity:
 		heroUsageDetail = "% saved lands once this session ends"
 	}

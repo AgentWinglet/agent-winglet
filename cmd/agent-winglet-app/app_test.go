@@ -103,12 +103,14 @@ func TestBuildOverviewComputesBytesAndStretch(t *testing.T) {
 		t.Fatalf("TokensSavedCard.Detail = %q, want %q (no TranscriptTokens seeded)", o.TokensSavedCard.Detail, "no data yet")
 	}
 	// HeroUsageDetail restates the same stretch (≈1.6129x) as a percent
-	// instead of a multiplier: (1.6129 - 1) * 100 ≈ 61%.
-	if !strings.Contains(o.HeroUsageDetail, "61%") || !strings.Contains(o.HeroUsageDetail, "usage") {
-		t.Fatalf("HeroUsageDetail missing expected percent or 'usage' wording, got %q", o.HeroUsageDetail)
+	// instead of a multiplier: (1.6129 - 1) * 100 ≈ 61%. Phrased as "further"
+	// rather than "more usage" — the latter reads as consumption, the
+	// opposite of the claim being made.
+	if !strings.Contains(o.HeroUsageDetail, "61%") || !strings.Contains(o.HeroUsageDetail, "further") {
+		t.Fatalf("HeroUsageDetail missing expected percent or 'further' wording, got %q", o.HeroUsageDetail)
 	}
-	if o.HeroUsageSub != "with the same plan" {
-		t.Fatalf("HeroUsageSub = %q, want %q", o.HeroUsageSub, "with the same plan")
+	if o.HeroUsageSub != "on the same plan" {
+		t.Fatalf("HeroUsageSub = %q, want %q", o.HeroUsageSub, "on the same plan")
 	}
 
 	// Bars: dedup(20) > budget(10) > retired(8), descending by bytes.

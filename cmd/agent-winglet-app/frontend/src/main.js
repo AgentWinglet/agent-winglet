@@ -188,7 +188,7 @@ function heroRing(overview) {
 
 // hero renders the primary figure: the signature ring beside the
 // headline percent-saved text (e.g. "38% saved") and a one-line restatement
-// of that same figure as extra runway ("→ ~61% more usage with the same
+// of that same figure as extra runway ("→ goes ~61% further on the same
 // plan") — the actual claim agent-winglet makes.
 function hero(overview) {
   // hasTranscriptData gates the ring's real percent (it needs the completed
@@ -272,7 +272,7 @@ function cardRow(overview) {
 // Projects-screen row, and each expanded session row nested inside one:
 // hero (percent saved, or live suppressed bytes so far — see hero's own doc
 // comment) -> summary cards (bytes/tokens/$) -> per-mechanism bars. One
-// function, three call sites, so the "X% saved / X% more usage / bar"
+// function, three call sites, so the "X% saved / goes X% further / bar"
 // treatment can never drift between them — a session watched live gets the
 // same story an already-ended one gets in the Overview rollup, not a
 // stripped-down view.
