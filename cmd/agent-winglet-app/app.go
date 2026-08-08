@@ -736,6 +736,14 @@ type overviewTotals struct {
 	TranscriptTokens       int64
 	TranscriptCostUSD      float64
 	TranscriptContentBytes int64
+
+	// TokensSaved and DollarSaved are literal sums of each underlying
+	// session's own stats.Session.TokensSaved()/DollarSaved() — see those
+	// methods' doc comments for why buildOverview must use these summed
+	// values instead of re-deriving tokens/dollars saved from this totals'
+	// own aggregate percentage.
+	TokensSaved float64
+	DollarSaved float64
 }
 
 // add folds o into t in place, so a caller summing across many projects (or
@@ -751,6 +759,8 @@ func (t *overviewTotals) add(o overviewTotals) {
 	t.TranscriptTokens += o.TranscriptTokens
 	t.TranscriptCostUSD += o.TranscriptCostUSD
 	t.TranscriptContentBytes += o.TranscriptContentBytes
+	t.TokensSaved += o.TokensSaved
+	t.DollarSaved += o.DollarSaved
 }
 
 func totalsFromRollup(r stats.Rollup) overviewTotals {
@@ -766,10 +776,15 @@ func totalsFromRollup(r stats.Rollup) overviewTotals {
 		TranscriptTokens:       r.TranscriptTokens,
 		TranscriptCostUSD:      r.TranscriptCostUSD,
 		TranscriptContentBytes: r.TranscriptContentBytes,
+
+		TokensSaved: r.TokensSaved,
+		DollarSaved: r.DollarSaved,
 	}
 }
 
 func totalsFromSession(s *stats.Session) overviewTotals {
+	tokensSaved, _ := s.TokensSaved()
+	dollarSaved, _ := s.DollarSaved()
 	return overviewTotals{
 		DedupHits:          s.DedupHits,
 		DedupBytes:         s.DedupBytes,
@@ -782,6 +797,9 @@ func totalsFromSession(s *stats.Session) overviewTotals {
 		TranscriptTokens:       s.TranscriptTokens,
 		TranscriptCostUSD:      s.TranscriptCostUSD,
 		TranscriptContentBytes: s.TranscriptContentBytes,
+
+		TokensSaved: tokensSaved,
+		DollarSaved: dollarSaved,
 	}
 }
 
@@ -867,20 +885,24 @@ func barRows(t overviewTotals, total int64) []BarRow {
 // buildOverview composes the percent-saved hero, the summary cards, and the
 // suppressed-by-mechanism bars from a totals tally.
 //
-// HeroHeadline is always the headline percent-saved figure. The tokens and
-// dollar cards price the suppressed-byte figure as a proxy for tokens
-// saved, ccusage-style: pct/(100-pct) is the odds form of the same
-// percent-saved figure the hero already shows (suppressed /
-// (suppressed+actual)), so it's algebraically the same scale factor a
-// separately-computed bytes-per-token ratio would give, just derived from
-// the number already on screen. Those priced tokens then convert to
-// dollars at this rollup's own cost-per-token rate. TranscriptTokens and
-// TranscriptCostUSD count only content newly fed to the model — cache-read
+// HeroHeadline is always the headline percent-saved figure, a genuine
+// weighted average over t's aggregate bytes (see stats.Percent) — correct to
+// compute at any rollup level since it's an intensive quantity, not
+// something that should sum across sessions.
+//
+// The tokens and dollar cards are different: they're extensive quantities
+// (a project's tokens/dollars saved is literally the sum of its sessions'),
+// so t.TokensSaved/t.DollarSaved must already be sums of each session's own
+// stats.Session.TokensSaved()/DollarSaved() (see overviewTotals and
+// stats.Rollup) by the time they reach here — buildOverview must not
+// re-derive them from t's own aggregate pct and TranscriptTokens, since
+// tokens*pct/(100-pct) is a ratio, and a ratio of summed inputs isn't the
+// same number as the sum of that ratio computed per session when sessions
+// have different suppression densities. TranscriptTokens and
+// TranscriptCostUSD (which each session's own TokensSaved/DollarSaved is
+// priced from) count only content newly fed to the model — cache-read
 // replays and output tokens are excluded at the source — so the rate stays
 // a stable per-content-unit price instead of inflating with turn count.
-// Cost, tokens, and content bytes are summed independently across sessions
-// before dividing, so a lifetime/project rollup comes out as a weighted
-// average, not distorted by any single outlier session.
 func buildOverview(t overviewTotals, projectCount, sessionCount int) Overview {
 	suppressed := t.DedupBytes + t.BudgetBytesOmitted + t.RetiredBytes
 	total := t.TranscriptContentBytes + suppressed
@@ -906,15 +928,16 @@ func buildOverview(t overviewTotals, projectCount, sessionCount int) Overview {
 	hasTranscriptData := t.TranscriptContentBytes > 0
 	hasTokenData := hasTranscriptData && t.TranscriptTokens > 0
 
+	// tokensSavedDetail and dollarDetail use t.TokensSaved/t.DollarSaved —
+	// sums of each underlying session's own figure (see overviewTotals'
+	// doc comment) — rather than re-deriving from pct and t.TranscriptTokens
+	// here, which would reintroduce the ratio-of-sums-vs-sum-of-ratios
+	// mismatch between a project's total and the sum of its sessions.
 	tokensSavedDetail := "no data yet"
 	dollarDetail := "no data yet"
 	if hasTokenData {
-		tokensSaved := float64(t.TranscriptTokens) * pct / (100 - pct)
-		tokensSavedDetail = formatTokens(tokensSaved)
-
-		costPerToken := t.TranscriptCostUSD / float64(t.TranscriptTokens)
-		usdSaved := tokensSaved * costPerToken
-		dollarDetail = fmt.Sprintf("$%.2f", usdSaved)
+		tokensSavedDetail = formatTokens(t.TokensSaved)
+		dollarDetail = fmt.Sprintf("$%.2f", t.DollarSaved)
 	}
 
 	// HeroUsageDetail reframes the percent-saved figure as extra runway on

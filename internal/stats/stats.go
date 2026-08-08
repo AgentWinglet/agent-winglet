@@ -138,6 +138,38 @@ func (s *Session) IsZero() bool {
 	return s.DedupHits == 0 && s.BudgetTrims == 0 && s.RetiredCalls == 0
 }
 
+// TokensSaved estimates the tokens this session's suppressed bytes
+// represent, scaled by this session's own tokens-per-content-byte density.
+// It's deliberately computed per session and summed by Rollup.add (see
+// Rollup.TokensSaved) rather than re-derived from an aggregate percentage at
+// rollup time: tokens*pct/(100-pct) is a ratio, and a ratio computed from
+// summed inputs isn't the same number as the sum of that same ratio computed
+// per session when sessions have different suppression densities — which
+// used to make a project's "tokens saved" figure disagree with the sum of
+// its sessions' own figures. ok is false under the same "no data yet"
+// condition as Percent: TranscriptContentBytes == 0.
+func (s *Session) TokensSaved() (tokens float64, ok bool) {
+	pct, ok := Percent(s.DedupBytes, s.BudgetBytesOmitted, s.RetiredBytes, s.TranscriptContentBytes)
+	if !ok {
+		return 0, false
+	}
+	return float64(s.TranscriptTokens) * pct / (100 - pct), true
+}
+
+// DollarSaved prices TokensSaved at this session's own real cost-per-token
+// rate (TranscriptCostUSD / TranscriptTokens) — see TokensSaved's doc
+// comment for why this must be computed per session and summed, not
+// re-derived at rollup time. ok is false when TokensSaved has no data yet,
+// or this session has no priced tokens to derive a rate from.
+func (s *Session) DollarSaved() (dollars float64, ok bool) {
+	tokensSaved, ok := s.TokensSaved()
+	if !ok || s.TranscriptTokens == 0 {
+		return 0, false
+	}
+	costPerToken := s.TranscriptCostUSD / float64(s.TranscriptTokens)
+	return tokensSaved * costPerToken, true
+}
+
 // Rollup is a plain summed total across a set of sessions, plus a count of
 // how many sessions contributed to it — the shape SumProject returns.
 // Unlike the old Lifetime type, a Rollup is never itself persisted: it's
@@ -156,6 +188,14 @@ type Rollup struct {
 	TranscriptTokens       int64
 	TranscriptCostUSD      float64
 	TranscriptContentBytes int64
+
+	// TokensSaved and DollarSaved are literal sums of each session's own
+	// Session.TokensSaved()/DollarSaved() — see those methods' doc comments
+	// for why summing per-session values, rather than re-deriving from this
+	// rollup's own aggregate percentage, is what keeps a project's total
+	// equal to the sum of its sessions.
+	TokensSaved float64
+	DollarSaved float64
 }
 
 // add folds one session's tally into the rollup and counts it toward
@@ -172,6 +212,13 @@ func (r *Rollup) add(s *Session) {
 	r.TranscriptTokens += s.TranscriptTokens
 	r.TranscriptCostUSD += s.TranscriptCostUSD
 	r.TranscriptContentBytes += s.TranscriptContentBytes
+
+	if tokensSaved, ok := s.TokensSaved(); ok {
+		r.TokensSaved += tokensSaved
+	}
+	if dollarSaved, ok := s.DollarSaved(); ok {
+		r.DollarSaved += dollarSaved
+	}
 }
 
 // Percent computes winglet_pct = suppressed / total * 100, where suppressed

@@ -133,9 +133,14 @@ func TestBuildOverviewComputesBytesAndStretch(t *testing.T) {
 }
 
 func TestBuildOverviewWithTranscriptDataPricesDollarCard(t *testing.T) {
-	o := buildOverview(overviewTotals{
+	// Built via a stats.Session + totalsFromSession (not a hand-rolled
+	// overviewTotals literal) so this exercises the same path production
+	// code takes: TokensSaved/DollarSaved come from stats.Session's own
+	// methods, not re-derived from an aggregate ratio inside buildOverview
+	// (see overviewTotals' doc comment).
+	s := &stats.Session{
 		DedupHits: 1, DedupBytes: 100,
-		// This rollup's transcript usage: $1 cost backed by 4000 content
+		// This session's transcript usage: $1 cost backed by 4000 content
 		// bytes -> costPerByte = $0.00025/byte. TranscriptTokens: 4000 gives
 		// a clean 1 token/byte ratio, so TokensSavedCard's expected value
 		// below is easy to check; the dollar figure would come out the same
@@ -143,7 +148,8 @@ func TestBuildOverviewWithTranscriptDataPricesDollarCard(t *testing.T) {
 		TranscriptTokens:       4000,
 		TranscriptCostUSD:      1.0,
 		TranscriptContentBytes: 4000,
-	}, 1, 1)
+	}
+	o := buildOverview(totalsFromSession(s), 1, 1)
 
 	if !o.HasTranscriptData {
 		t.Fatalf("expected HasTranscriptData = true when TranscriptContentBytes > 0")
@@ -171,21 +177,23 @@ func TestBuildOverviewWithTranscriptDataPricesDollarCard(t *testing.T) {
 }
 
 func TestBuildOverviewDollarCardStaysProportionalAcrossOutlierSessions(t *testing.T) {
-	// Regression test: cost, tokens, and content bytes must each be summed
-	// independently across sessions before dividing, never averaged as a
-	// per-session ratio first — a lifetime rollup mixing a content-heavy
-	// session with a trivial one that still burned huge context-replay
-	// tokens must not distort the $ estimate by orders of magnitude. Going
-	// through a tokens intermediate is safe here specifically because
-	// TranscriptTokens/TranscriptCostUSD (see internal/transcript) exclude
-	// cache-read replays and output tokens at the source, so they scale
-	// with actual content size, not with how many turns a session ran.
-	o := buildOverview(overviewTotals{
+	// Regression test: a single outlier session's own tokens/cost/content
+	// bytes must price its dollar card proportionally to its suppressed
+	// bytes, not distort it by orders of magnitude. Built via stats.Session +
+	// totalsFromSession (see overviewTotals' doc comment) so this exercises
+	// the real production path: TokensSaved/DollarSaved come from
+	// stats.Session's own methods. Going through a tokens intermediate is
+	// safe here specifically because TranscriptTokens/TranscriptCostUSD (see
+	// internal/transcript) exclude cache-read replays and output tokens at
+	// the source, so they scale with actual content size, not with how many
+	// turns a session ran.
+	s := &stats.Session{
 		DedupHits: 1, DedupBytes: 13926, // ~13.6 KiB, matches the observed regression
 		TranscriptTokens:       100, // cancels out of the dollar math; only sizes TokensSavedCard below
 		TranscriptCostUSD:      0.1578,
 		TranscriptContentBytes: 455, // tiny, from a mostly-trivial session
-	}, 1, 1)
+	}
+	o := buildOverview(totalsFromSession(s), 1, 1)
 
 	if !o.HasTranscriptData {
 		t.Fatalf("expected HasTranscriptData = true")
@@ -242,6 +250,86 @@ func TestGetOverviewSumsAcrossProjects(t *testing.T) {
 	}
 	if o.HeroHeadline == "No data yet" {
 		t.Fatalf("expected a computed hero headline across projects, got %q", o.HeroHeadline)
+	}
+}
+
+// TestProjectTotalMatchesSumOfItsSessions is the regression test for the
+// bug report this fix addressed: a project's Tokens saved / Money saved
+// cards (from GetProjects) didn't equal the sum of the same cards across
+// its own sessions (from GetSessionStats), because buildOverview used to
+// re-derive tokensSaved as TranscriptTokens*pct/(100-pct) from each rollup's
+// own aggregate percentage — a ratio, not a sum — instead of summing each
+// session's already-computed figure. The two sessions below are
+// deliberately heterogeneous (one all suppression/low tokens, one no
+// suppression/high tokens) so a ratio-of-sums would visibly diverge from a
+// sum-of-ratios if the bug were still present.
+func TestProjectTotalMatchesSumOfItsSessions(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	if err := registry.Register(dir); err != nil {
+		t.Fatalf("Register errored: %v", err)
+	}
+
+	s1 := &stats.Session{
+		DedupBytes: 5000, TranscriptTokens: 5000, TranscriptCostUSD: 5.0, TranscriptContentBytes: 10000,
+	}
+	if err := stats.SaveSession(dir, "sess1", s1); err != nil {
+		t.Fatalf("SaveSession sess1 errored: %v", err)
+	}
+	s2 := &stats.Session{
+		TranscriptTokens: 20000, TranscriptCostUSD: 10.0, TranscriptContentBytes: 10000,
+	}
+	if err := stats.SaveSession(dir, "sess2", s2); err != nil {
+		t.Fatalf("SaveSession sess2 errored: %v", err)
+	}
+
+	a := NewApp()
+	rows, err := a.GetProjects()
+	if err != nil {
+		t.Fatalf("GetProjects errored: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d project rows, want 1", len(rows))
+	}
+
+	sessions, err := a.GetSessionStats(dir)
+	if err != nil {
+		t.Fatalf("GetSessionStats errored: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("got %d session rows, want 2", len(sessions))
+	}
+
+	// sess1: suppressed=5000/content=10000 -> tokensSaved=5000*5000/10000=2500
+	// ("2.5K"), priced at $5/5000tok -> dollarSaved=$2.50.
+	// sess2: no suppression -> tokensSaved=0, dollarSaved=$0.00.
+	// Sum across sessions: 2500 tokens / $2.50 — that must be exactly what
+	// the project row shows. Before this fix, buildOverview re-derived the
+	// project's figure from the rollup's own aggregate percentage instead
+	// (tokensSaved=25000*20%/80%=6250, dollarSaved=$3.75) — 2.5x too high.
+	for id, want := range map[string][2]string{"sess1": {"2.5K", "$2.50"}, "sess2": {"0", "$0.00"}} {
+		var row *SessionRow
+		for i := range sessions {
+			if sessions[i].SessionID == id {
+				row = &sessions[i]
+			}
+		}
+		if row == nil {
+			t.Fatalf("no session row for %q", id)
+		}
+		if row.Overview.TokensSavedCard.Detail != want[0] || row.Overview.DollarSavedCard.Detail != want[1] {
+			t.Fatalf("%s cards = tokens=%q dollars=%q, want tokens=%q dollars=%q",
+				id, row.Overview.TokensSavedCard.Detail, row.Overview.DollarSavedCard.Detail, want[0], want[1])
+		}
+	}
+
+	if rows[0].Overview.TokensSavedCard.Detail != "2.5K" {
+		t.Fatalf("project TokensSavedCard.Detail = %q, want %q (sum of session cards, not the pre-fix 6.3K)",
+			rows[0].Overview.TokensSavedCard.Detail, "2.5K")
+	}
+	if rows[0].Overview.DollarSavedCard.Detail != "$2.50" {
+		t.Fatalf("project DollarSavedCard.Detail = %q, want %q (sum of session cards, not the pre-fix $3.75)",
+			rows[0].Overview.DollarSavedCard.Detail, "$2.50")
 	}
 }
 
