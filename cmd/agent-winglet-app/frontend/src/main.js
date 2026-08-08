@@ -1,5 +1,6 @@
 import './style.css';
 import { icons } from './icons.js';
+import { renderBrand } from './brand.js';
 import {
   GetCompactNudgesEnabled,
   GetHookHealth,
@@ -29,15 +30,6 @@ const SETTINGS_ITEMS = [
   { id: 'preferences', label: 'Preferences' },
   { id: 'installations', label: 'Installations' },
 ];
-
-const BRAND_MARK = `
-  <svg class="sidebar-mark" viewBox="0 0 910.64 910.64" aria-hidden="true" focusable="false">
-    <g transform="translate(41.39,169.39)">
-      <g transform="translate(-98.049066,798.528051) scale(0.100000,-0.100000)">
-        <path d="M1220 7981 c-152 -9 -207 -17 -227 -33 -16 -13 -17 -80 -2 -133 27 -98 218 -479 909 -1815 831 -1607 1520 -2959 1520 -2983 0 -9 -10 -23 -22 -31 -13 -8 -207 -98 -433 -201 -475 -217 -609 -283 -647 -318 -23 -22 -28 -34 -28 -76 0 -45 3 -52 28 -64 41 -22 141 -36 343 -50 139 -9 710 -11 2344 -10 2859 3 4095 18 4221 52 27 7 29 11 32 65 3 57 2 59 -40 98 -59 55 -331 234 -643 423 -745 453 -818 516 -3735 3260 -1181 1110 -1695 1578 -1855 1687 -88 59 -295 98 -630 118 -226 14 -953 20 -1135 11z m610 -231 c618 -20 891 -50 1013 -111 103 -52 123 -71 2207 -2024 2031 -1903 2261 -2116 2535 -2347 225 -189 285 -231 785 -544 l334 -209 -529 -8 c-567 -9 -4514 -1 -4904 9 l-235 7 40 20 c107 56 545 256 1394 637 424 190 620 283 684 324 l56 36 0 59 c0 54 -4 64 -44 118 -148 201 -1721 2192 -2137 2703 -516 636 -717 839 -895 901 -85 30 -178 38 -429 39 l-230 0 -92 193 -92 192 47 6 c76 10 169 9 492 -1z m93 -651 c163 -17 183 -26 274 -127 451 -499 2663 -3241 2663 -3300 0 -14 -269 -150 -579 -294 -238 -110 -555 -248 -571 -248 -11 0 -83 121 -187 315 -329 609 -1903 3637 -1903 3659 0 16 123 14 303 -5z"/>
-      </g>
-    </g>
-  </svg>`;
 
 // Session/project stats files on disk are updated live by the hook (every
 // dedup hit, budget trim, and retire is written immediately — see
@@ -708,10 +700,7 @@ function render() {
   const app = document.querySelector('#app');
   app.innerHTML = `
     <div class="sidebar">
-      <div class="sidebar-title">
-        ${BRAND_MARK}
-        <span>Winglet</span>
-      </div>
+      <div class="sidebar-title">${renderBrand()}</div>
       <nav class="nav">
         ${NAV_ITEMS.map(
           (item) => `

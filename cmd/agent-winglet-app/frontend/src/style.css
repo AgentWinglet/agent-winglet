@@ -118,6 +118,15 @@ body {
 }
 
 .sidebar-title {
+  padding: 18px 12px 18px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+/* Winglet wordmark lockup (see brand.js) — always left-aligned, no
+   justify-content/margin override, so it reads consistently anywhere it's
+   dropped in. */
+.brand {
   display: flex;
   align-items: center;
   gap: 5px;
@@ -126,12 +135,9 @@ body {
   line-height: 1;
   font-weight: 600;
   color: var(--text-primary);
-  padding: 18px 12px 18px;
-  margin-bottom: 10px;
-  border-bottom: 1px solid var(--hairline);
 }
 
-.sidebar-mark {
+.brand-mark {
   width: 38px;
   height: 30px;
   flex: 0 0 auto;
