@@ -118,15 +118,25 @@ body {
 }
 
 .sidebar-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   font-family: var(--font-display);
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  padding: 0 10px 10px;
+  font-size: 22px;
+  line-height: 1;
+  font-weight: 600;
+  color: var(--text-primary);
+  padding: 18px 12px 18px;
   margin-bottom: 10px;
   border-bottom: 1px solid var(--hairline);
+}
+
+.sidebar-mark {
+  width: 38px;
+  height: 30px;
+  flex: 0 0 auto;
+  fill: currentColor;
+  display: block;
 }
 
 .nav {
