@@ -840,7 +840,6 @@ function gateContent(status) {
     // never had a trial.
     case 'expired':
       return {
-        badge: { text: 'Trial ended', muted: true },
         title: 'Subscribe to keep using Winglet',
         subtitle: 'Your trial has ended. Subscribe to keep Winglet running.',
         primaryAction: 'pricing',
@@ -888,33 +887,16 @@ function gateScreenMarkup(status) {
 
 // trialWelcomeMarkup is the first-run screen a newly signed-in account with
 // an unclaimed trial lands on (status.state === 'trial_available' — see
-// appauth.Status.TrialEligible's doc comment). The two-stop timeline is
-// decorative (both trial days are fixed at 72h from the click, not tied to
-// any real progress yet) — its job is just to make the "3 days, then it's
-// gone" shape of the offer legible at a glance before the user commits.
+// appauth.Status.TrialEligible's doc comment).
 function trialWelcomeMarkup() {
   return `
     <div class="gate-screen">
       <div class="gate-card">
-        <div class="gate-badge">${icons.sparkle}3-Day Free Trial</div>
         <div class="gate-brand">${renderBrand()}</div>
         <h1 class="gate-title">Welcome to Winglet</h1>
-        <p class="gate-subtitle">Start your free 3-day trial — full access, instantly.</p>
-        <div class="gate-timeline">
-          <div class="gate-day active">
-            <span class="gate-day-dot"></span>
-            <span class="gate-day-label">Today</span>
-            <span class="gate-day-desc">Full access unlocks instantly</span>
-          </div>
-          <div class="gate-day">
-            <span class="gate-day-dot"></span>
-            <span class="gate-day-label">Day 3</span>
-            <span class="gate-day-desc">Trial ends — subscribe to keep it</span>
-          </div>
-        </div>
+        <p class="gate-subtitle">Start your free 3-day trial. No credit card required.</p>
         <button class="gate-cta" type="button" data-account-action="start-trial">Start my 3-day trial</button>
         <button class="gate-secondary" type="button" data-account-action="pricing">See pricing instead</button>
-        <div class="gate-fineprint">${icons.check}No credit card required</div>
         ${state.accountError ? `<p class="gate-error">${escapeHtml(state.accountError)}</p>` : ''}
       </div>
     </div>`;
