@@ -8,7 +8,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -19,12 +21,12 @@ import (
 )
 
 const (
-	firebaseAPIKeyEnv   = "AGENT_WINGLET_FIREBASE_API_KEY"
-	siteBaseURL         = "https://agentwinglet.com"
-	defaultHTTPTimeout  = 15 * time.Second
-	defaultAppVersion   = "dev"
-	contentTypeJSON     = "application/json"
-	identityToolkitBase = "https://identitytoolkit.googleapis.com/v1"
+	siteBaseURL          = "https://agentwinglet.com"
+	defaultHTTPTimeout   = 15 * time.Second
+	defaultAppVersion    = "dev"
+	contentTypeJSON      = "application/json"
+	browserSignInTimeout = 3 * time.Minute
+	revokeRequestTimeout = 5 * time.Second
 )
 
 type AuthFile struct {
@@ -136,14 +138,39 @@ func (c *Client) AccountStatus() Status {
 	return status
 }
 
-func (c *Client) CompleteFirebaseSignIn(idToken string, info DeviceInfo) (Status, error) {
-	idToken = strings.TrimSpace(idToken)
-	if idToken == "" {
-		return Status{}, fmt.Errorf("Firebase ID token is required")
-	}
-	deviceID, err := existingOrNewDeviceID()
+// BrowserSignIn is one in-flight attempt to sign in through the system
+// browser. Google and Firebase magic-link sign-in are both blocked from
+// running inside the app's own embedded webview (Google's
+// disallowed_useragent policy applies to any embedded webview, not just a
+// specific auth method), so sign-in happens on agentwinglet.com/app-signin
+// in the user's real browser, and hands control back to the app via a
+// loopback redirect — the same pattern `gh auth login`/`gcloud auth login`
+// use. See SPEC.md's "Desktop App Work" section.
+type BrowserSignIn struct {
+	// URL is the agentwinglet.com/app-signin address to open in the system
+	// browser. The caller (app.go, which holds the Wails context) is
+	// responsible for actually opening it.
+	URL string
+
+	listener net.Listener
+	state    string
+	device   DeviceInfo
+	client   *Client
+}
+
+// PrepareBrowserSignIn starts a loopback listener on an OS-assigned port and
+// builds the browser URL for it. Call Await immediately after opening URL in
+// the browser; the listener stays open (and unused ports held) until Await
+// returns or times out.
+func (c *Client) PrepareBrowserSignIn(info DeviceInfo) (*BrowserSignIn, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return Status{}, err
+		return nil, err
+	}
+	state, err := randomHex(16)
+	if err != nil {
+		listener.Close()
+		return nil, err
 	}
 	if info.Platform == "" {
 		info.Platform = runtime.GOOS
@@ -151,14 +178,85 @@ func (c *Client) CompleteFirebaseSignIn(idToken string, info DeviceInfo) (Status
 	if info.AppVersion == "" {
 		info.AppVersion = defaultAppVersion
 	}
+
+	port := listener.Addr().(*net.TCPAddr).Port
+	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", port)
+	signInURL := SiteBaseURL() + "/app-signin?redirect_uri=" + url.QueryEscape(redirectURI) + "&state=" + url.QueryEscape(state)
+
+	return &BrowserSignIn{
+		URL:      signInURL,
+		listener: listener,
+		state:    state,
+		device:   info,
+		client:   c,
+	}, nil
+}
+
+// Await blocks until the browser tab redirects back with a sign-in code, the
+// state doesn't match (a stray or forged request hit the loopback port), or
+// browserSignInTimeout elapses — matching the ~2 minute TTL the site puts on
+// its sign-in codes, plus headroom for the user to actually complete sign-in.
+func (b *BrowserSignIn) Await() (Status, error) {
+	defer b.listener.Close()
+
+	codeCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query()
+		if query.Get("state") != b.state {
+			http.Error(w, "This sign-in link doesn't match the request Winglet made. Close this tab and try again from the app.", http.StatusBadRequest)
+			select {
+			case errCh <- fmt.Errorf("sign-in state did not match"):
+			default:
+			}
+			return
+		}
+		code := strings.TrimSpace(query.Get("code"))
+		if code == "" {
+			http.Error(w, "Winglet did not receive a sign-in code from this link.", http.StatusBadRequest)
+			select {
+			case errCh <- fmt.Errorf("site did not return a sign-in code"):
+			default:
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, `<!doctype html><html><body style="font:16px system-ui;padding:2rem">You're signed in. You can close this tab and return to Winglet.</body></html>`)
+		select {
+		case codeCh <- code:
+		default:
+		}
+	})
+	server := &http.Server{Handler: mux}
+	go func() { _ = server.Serve(b.listener) }()
+	defer server.Close()
+
+	select {
+	case code := <-codeCh:
+		return b.client.completeBrowserSignIn(code, b.device)
+	case err := <-errCh:
+		return Status{}, err
+	case <-time.After(browserSignInTimeout):
+		return Status{}, fmt.Errorf("sign-in timed out waiting for the browser")
+	}
+}
+
+func (c *Client) completeBrowserSignIn(code string, info DeviceInfo) (Status, error) {
+	deviceID, err := existingOrNewDeviceID()
+	if err != nil {
+		return Status{}, err
+	}
 	payload := map[string]string{
+		"code":       code,
 		"deviceId":   deviceID,
 		"deviceName": info.DeviceName,
 		"platform":   info.Platform,
 		"appVersion": info.AppVersion,
 	}
 	var out issueResponse
-	if err := c.postJSON(SiteBaseURL()+"/api/app/entitlements/issue", payload, idToken, &out); err != nil {
+	if err := c.postJSON(SiteBaseURL()+"/api/app/auth/exchange", payload, "", &out); err != nil {
 		return Status{}, err
 	}
 	if out.RefreshToken == "" || out.Entitlement == "" {
@@ -179,26 +277,6 @@ func (c *Client) CompleteFirebaseSignIn(idToken string, info DeviceInfo) (Status
 		return Status{}, err
 	}
 	return c.AccountStatus(), nil
-}
-
-func (c *Client) SignInWithEmailPassword(email, password string, info DeviceInfo) (Status, error) {
-	apiKey := strings.TrimSpace(os.Getenv(firebaseAPIKeyEnv))
-	if apiKey == "" {
-		return Status{}, fmt.Errorf("%s is required for in-app email/password sign-in", firebaseAPIKeyEnv)
-	}
-	payload := map[string]interface{}{
-		"email":             strings.TrimSpace(email),
-		"password":          password,
-		"returnSecureToken": true,
-	}
-	var out struct {
-		IDToken string `json:"idToken"`
-	}
-	url := identityToolkitBase + "/accounts:signInWithPassword?key=" + apiKey
-	if err := c.postJSON(url, payload, "", &out); err != nil {
-		return Status{}, err
-	}
-	return c.CompleteFirebaseSignIn(out.IDToken, info)
 }
 
 func (c *Client) Refresh() (Status, error) {
@@ -232,7 +310,16 @@ func (c *Client) Refresh() (Status, error) {
 	return c.AccountStatus(), nil
 }
 
+// Logout always clears local state, even if the site can't be reached —
+// signing out must work offline (see SPEC.md's "must not gate" list). The
+// server-side revoke is attempted first, best-effort, so a stolen refresh
+// token from a wiped device stops working; a failure there doesn't stop the
+// local sign-out.
 func Logout() error {
+	if auth, err := LoadAuth(); err == nil {
+		revokeRemote(auth)
+	}
+
 	authPath, err := entitlement.AuthPath()
 	if err != nil {
 		return err
@@ -245,6 +332,19 @@ func Logout() error {
 		return err
 	}
 	return removeIfExists(entPath)
+}
+
+func revokeRemote(auth AuthFile) {
+	if strings.TrimSpace(auth.RefreshToken) == "" || strings.TrimSpace(auth.DeviceID) == "" {
+		return
+	}
+	payload := map[string]string{
+		"refreshToken": auth.RefreshToken,
+		"deviceId":     auth.DeviceID,
+	}
+	client := &Client{HTTPClient: &http.Client{Timeout: revokeRequestTimeout}}
+	var out struct{}
+	_ = client.postJSON(SiteBaseURL()+"/api/app/entitlements/revoke", payload, "", &out)
 }
 
 func LoadAuth() (AuthFile, error) {
@@ -324,6 +424,14 @@ func existingOrNewDeviceID() (string, error) {
 		return "", err
 	}
 	return "dev_" + hex.EncodeToString(b[:]), nil
+}
+
+func randomHex(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 func writeJSON0600(path string, value interface{}) error {

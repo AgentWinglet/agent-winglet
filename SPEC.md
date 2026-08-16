@@ -4,11 +4,13 @@ Status: draft
 Date: 2026-08-16
 Related repo: `~/workplace/agent-winglet-site`
 
-Site-side scope landed on the site repo's `add-app-verification` branch
-(not yet merged to `main`): app entitlement issue/refresh endpoints and
-signing. This spec has been updated to match that implementation rather
-than the original device-code design. See `Site API Contract` and
-`Known Gaps` below.
+Site-side work has merged to the site repo's `main` (PR #13,
+`add-app-verification`): app entitlement issue/refresh/revoke, JWS signing,
+and the browser-handoff sign-in flow (`/app-signin` +
+`/api/app/auth/start-code` + `/api/app/auth/exchange`). This repo's
+`internal/appauth`, `cmd/agent-winglet-app`, and this spec have been updated
+to match. See `Site API Contract`, `Desktop App Work`, and `Known Gaps`
+below.
 
 ## Purpose
 
@@ -37,9 +39,10 @@ embeds public entitlement verification keys in `internal/entitlement/keys.go`.
 - There is no auth, billing, account identity, or networked service today.
 - Site side (agent-winglet-site): Firebase client auth, Firebase Admin
   ID-token verification, and Paddle checkout/customer portal/webhook
-  subscription sync already exist and are unrelated to this work. The
-  `add-app-verification` branch adds the app-facing entitlement
-  issue/refresh endpoints and JWS signing this spec depends on.
+  subscription sync already exist and are unrelated to this work. `main`
+  (via the `add-app-verification` merge) adds the app-facing entitlement
+  issue/refresh/revoke endpoints, the `/app-signin` browser-handoff sign-in
+  page, and JWS signing this spec depends on.
 
 ## Product Decision
 
@@ -90,11 +93,11 @@ Paddle customer portal links, webhooks, and entitlement issuance.
 
 2. Local app
 
-The Wails app owns sign-in UX (in-webview Firebase auth, not a browser
-handoff), account status display, subscription refresh, and local
-entitlement persistence. It is the only local component that calls the site.
-Before hooks can work, the app must call the site entitlement API and persist
-the server response locally.
+The Wails app owns sign-in UX (a system-browser handoff, not an in-webview
+Firebase flow — see `Site API Contract`), account status display,
+subscription refresh, and local entitlement persistence. It is the only
+local component that calls the site. Before hooks can work, the app must
+call the site entitlement API and persist the server response locally.
 
 3. Hooks
 
@@ -136,12 +139,9 @@ Add a dedicated local auth package, separate from existing stats/config files:
 `siteBaseURL` is always `https://agentwinglet.com` — it is stored for display
 and for forward compatibility, not because it's configurable. There is no env
 var or build flag that points the app at anything else. All app-created URLs
-and API calls use this fixed value:
-
-- login and in-app Firebase auth: `https://agentwinglet.com`
-- pricing/checkout entry point: `https://agentwinglet.com/#pricing`
-- entitlement issue: `https://agentwinglet.com/api/app/entitlements/issue`
-- entitlement refresh: `https://agentwinglet.com/api/app/entitlements/refresh`
+and API calls use this fixed value; see `Site API Contract` for the full
+endpoint list (`/app-signin`, `auth/start-code`, `auth/exchange`,
+`entitlements/issue`, `entitlements/refresh`, `entitlements/revoke`).
 
 `entitlement.jws` is a compact JWS signed by the site with a private key. This
 repo embeds only the public verification key.
@@ -210,41 +210,86 @@ File permissions:
 
 ## Site API Contract
 
-There is no browser device-code/polling flow. The Wails frontend signs in
-directly inside the app's own webview using Firebase client auth, then
-exchanges the resulting Firebase ID token with the site. This is
-significantly simpler than the originally planned flow and is what's
-actually implemented on `add-app-verification`.
+There is no in-webview Firebase sign-in and no device-code/polling flow.
+Google OAuth is blocked from running inside any embedded webview (Google's
+`disallowed_useragent` policy — this applies to the embedded engine itself,
+not to a specific auth method, so it also rules out running the site's
+magic-link flow inside the app's webview). Sign-in instead happens in the
+user's system browser, on a dedicated `/app-signin` page, and hands a
+completed session back to the app over a one-time code delivered via a
+loopback HTTP redirect — the same pattern `gh auth login`/`gcloud auth login`
+use. This is what's actually implemented on `main` as of the
+`add-app-verification` merge (PR #13); see `Desktop App Work` for the app
+side.
 
 Base URL: `https://agentwinglet.com`, hardcoded. There is no dev/prod
 dichotomy, no env var, and no local dotenv override — the app and hooks only
-ever call the production site for Firebase auth pages, pricing, and
-entitlement API calls. Point a local site dev server at production data if
-you need to test against it; don't add a code path for an alternate base URL.
+ever call the production site for the sign-in page, pricing, and entitlement
+API calls. Point a local site dev server at production data if you need to
+test against it; don't add a code path for an alternate base URL.
+
+- `GET /app-signin?redirect_uri=<url>&state=<value>`
+  - The page the app opens in the system browser. Presents Google and magic
+    link (same UI/logic as the main site's sign-in, reused via
+    `components/app-signin-panel.tsx`).
+  - `redirect_uri` **must** be `http://127.0.0.1:*` or `http://[::1]:*`
+    (`lib/app-signin-redirect.ts`'s `isAllowedAppSignInRedirectUri`) — the
+    page refuses to render for anything else. This is the one open-redirect
+    risk in the whole flow; it must stay enforced server-side, not just
+    trusted from the app.
+  - `state` is opaque to the site — generated by the app, passed straight
+    through in the final redirect, and checked by the app itself. The site
+    does not validate it.
+  - On completion (Google popup or the magic-link continue-URL, which is
+    built to point back at this same page with `redirect_uri`/`state`
+    preserved — see `lib/auth.ts`'s `sendMagicLink(email, continueUrl)`),
+    the page calls `start-code` below, then redirects the browser to
+    `${redirect_uri}?code=<code>&state=<state>`.
+
+- `POST /api/app/auth/start-code`
+  - Called by the browser page, not the app. Header:
+    `Authorization: Bearer <firebase_id_token>`.
+  - Mints a random opaque code (stored server-side as
+    `appSignInCodes/{sha256(code)}`, ~2 minute TTL, single-use), tied to the
+    uid that just completed Firebase sign-in in the browser.
+  - Returns `{ code, expiresAt }`. Does not create an app session or touch
+    entitlements — that happens at `exchange`.
+
+- `POST /api/app/auth/exchange`
+  - Called by the app's loopback server after it receives the redirect.
+  - Body: `{ code, deviceId, deviceName?, platform?, appVersion? }`. No
+    Authorization header — the code is the credential.
+  - Looks up and consumes the code inside a Firestore transaction (rejects
+    missing/expired/already-used), resolves the uid, then does exactly what
+    `issue` below does for that uid: creates the `appSessions/{sessionId}`
+    record and signs the entitlement.
+  - Returns the same shape as `issue`:
+    `{ refreshToken, entitlement, account: { accountId, email, subscription: { product, tier, status, active } } }`.
 
 - `POST /api/app/entitlements/issue`
-  - Called once, right after in-webview Firebase sign-in.
-  - Header: `Authorization: Bearer <firebase_id_token>`.
-  - Body: `{ deviceId, deviceName?, platform?, appVersion? }`.
-  - The site verifies the ID token with Firebase Admin, syncs the existing
-    `users/{uid}` doc, creates an `appSessions/{sessionId}` record, and
-    returns:
-    `{ refreshToken, entitlement, account: { accountId, email, subscription: { product, tier, status, active } } }`.
-  - `refreshToken` is opaque (`war_<sessionId>.<secret>`); the site stores
-    only its SHA-256 hash.
+  - Still exists, unchanged, for any future direct-ID-token path — the
+    browser-handoff flow above uses `exchange`, not this. Header:
+    `Authorization: Bearer <firebase_id_token>`. Body/response shape as
+    `exchange`.
 
 - `POST /api/app/entitlements/refresh`
   - Body: `{ deviceId, refreshToken }`.
   - Validates the refresh token hash, device id match, and that the session
     isn't revoked, then returns a fresh `{ entitlement, account }` (same
-    shapes as `issue`).
+    shapes as `issue`/`exchange`).
   - No Authorization header / Firebase ID token needed — the opaque refresh
     token is the credential.
 
-There is currently **no revoke endpoint**, even though `refreshAppEntitlement`
-already checks `session.revokedAt` and will honor a revoked session once one
-exists. `Logout()` in the app has nothing server-side to call yet — see
-`Known Gaps`.
+- `POST /api/app/entitlements/revoke`
+  - Body: `{ deviceId, refreshToken }` — same credential as `refresh`.
+  - Marks the matching `appSessions` record `revokedAt`; a later `refresh`
+    or `revoke` with that refresh token then fails. Only revokes the one
+    session the caller already holds a refresh token for — this is
+    self-service sign-out, not remote-wipe-other-devices (see
+    `Known Gaps`).
+  - `Logout()` in the app calls this best-effort before deleting local
+    files, so a stolen refresh token from a wiped machine stops working —
+    but local sign-out never blocks on it succeeding.
 
 Pricing/subscription entry:
 
@@ -257,7 +302,8 @@ Pricing/subscription entry:
 
 Login entry:
 
-- The primary login path is inside the Wails app using the Firebase client SDK.
+- The only login path is `StartBrowserSignIn()` — the system-browser handoff
+  described above. There is no Firebase client SDK in the app.
 - If the app also offers an "Open Winglet account" link, it opens
   `https://agentwinglet.com`.
 
@@ -267,45 +313,50 @@ version, OS/arch, device id, auth token, and coarse entitlement metadata.
 
 ## Desktop App Work
 
-Sign-in happens inside the app's own webview, not a browser handoff: the
-Vite frontend gets the Firebase client SDK and signs in with the same two
-methods the site already uses (`lib/auth.ts`) — there is no third
-email/password method to build:
+Implemented (see `internal/appauth/appauth.go`, `cmd/agent-winglet-app/app.go`,
+`cmd/agent-winglet-app/frontend/src/main.js`). The app never runs Firebase
+sign-in itself — no Firebase JS SDK in the Wails frontend, no ID token ever
+reaches the Go backend. Sign-in is: open the system browser to
+`/app-signin`, wait on a local loopback listener, exchange the code that
+comes back.
 
-- **Google, via `signInWithPopup(auth, new GoogleAuthProvider())`** — same
-  call the site's `auth-menu.tsx` makes. This is the primary path and
-  works entirely inside the webview if popups are supported there.
-- **Email magic link, via `sendSignInLinkToEmail`/`signInWithEmailLink`** —
-  same as the site's magic-link form. On the site this completes when the
-  user opens the mailed link on a `/auth/action` page, normally in the
-  system browser. For the app, the user must open that link back inside
-  the Wails webview (not the OS default browser) for the app to end up
-  holding the resulting ID token — see `Known Gaps`.
+`appauth.BrowserSignIn` is one in-flight attempt:
+
+1. `PrepareBrowserSignIn` opens a TCP listener on `127.0.0.1:0` (OS-assigned
+   port), generates a random `state`, and builds
+   `https://agentwinglet.com/app-signin?redirect_uri=http://127.0.0.1:<port>/callback&state=<state>`.
+2. The caller (`app.go`, which holds the Wails context) opens that URL via
+   `wailsruntime.BrowserOpenURL`.
+3. `Await` serves exactly one request on `/callback`: rejects it if `state`
+   doesn't match or `code` is missing, otherwise takes the `code`, calls
+   `POST /api/app/auth/exchange`, and on success persists `auth.json` +
+   `entitlement.jws` via the existing `SaveAuthAndEntitlement`. Times out
+   after 3 minutes (the site's code TTL is ~2 minutes, plus headroom for the
+   user to actually click through sign-in).
 
 `agentwinglet.com` is live today and is the only site the app talks to,
-including during development — there's no env var or dotenv override to point
-it elsewhere, and none should be added.
-
-There is no device code, no `loginUrl`, and no polling loop.
+including during development — there's no env var or dotenv override to
+point it elsewhere, and none should be added.
 
 Backend:
 
-- Add `internal/authstate` for reading/writing `auth.json`.
-- Add `internal/entitlement` for parsing and verifying `entitlement.jws`
-  (must handle both `RS256` and `Ed25519`/`EdDSA` per the `kid`/`alg` in
-  the JWS header — see `Local Files`).
-- Add `internal/siteapi` for the issue/refresh calls.
-- Add Wails methods:
+- `internal/appauth` owns `auth.json`/`entitlement.jws` persistence, the
+  loopback sign-in flow above, refresh, and logout (with best-effort
+  server-side revoke — see `Site API Contract`).
+- `internal/entitlement` parses and verifies `entitlement.jws` (must handle
+  both `RS256` and `Ed25519`/`EdDSA` per the `kid`/`alg` in the JWS header —
+  see `Local Files`).
+- Wails methods on `App` (`cmd/agent-winglet-app/app.go`):
   - `GetAccountStatus()`
   - `GetSiteBaseURL()` — returns the fixed `https://agentwinglet.com`, so the
     frontend never hardcodes it separately from the backend.
-  - `CompleteFirebaseSignIn(idToken string)` — frontend calls this right
-    after `user.getIdToken()` succeeds; backend calls
-    `POST /api/app/entitlements/issue` and persists `auth.json` +
-    `entitlement.jws`.
+  - `StartBrowserSignIn()` — opens the browser and blocks (as a JS Promise)
+    until sign-in completes, times out, or fails. There is no separate
+    "start" and "poll" pair of methods; one call does the whole round trip.
   - `RefreshEntitlement()`
-  - `Logout()` — clears local `auth.json`/`entitlement.jws`; there is no
-    server-side session revoke to call yet (see `Known Gaps`).
+  - `Logout()` — best-effort server-side revoke, then always clears local
+    `auth.json`/`entitlement.jws` regardless of whether the revoke call
+    succeeded.
   - `OpenBillingPortal()`
   - `OpenPricing()` — opens `https://agentwinglet.com/#pricing`.
 - Keep current stats methods local-only. Do not mix stats payloads into auth
@@ -313,21 +364,24 @@ Backend:
 
 Frontend:
 
-- Add an account gate before the existing dashboard shell.
-- States: signed out, signing in, subscribed, past due (denied, shown the
-  same as expired/unsubscribed — no grace state in the UI), expired,
-  network unavailable, and server error. (`trialing` exists in the UI
-  design but the site can't produce it yet — see `Known Gaps`.)
-- Add account area in settings with email hint, plan, next renewal/expiry, sync
+- Account gate before the existing dashboard shell, driven by
+  `appauth.Status.State`: `signed_out`, `subscribed`, `expired`,
+  `server_error` today. (`trialing`/`past_due`-specific states aren't
+  distinguished from `expired` yet, since the site doesn't emit those
+  statuses — see `Known Gaps`; the app already treats any non-`active`
+  status as denied, so this is a cosmetic gap, not a gating one.)
+- Account area in settings with email hint, plan, next renewal/expiry, sync
   button, manage billing, and sign out.
 - Existing overview/projects views require `desktop_dashboard` entitlement.
-- Install toggles should be disabled when entitlement is missing, with a clear
+- Install toggles disabled when entitlement is missing, with a clear
   account action.
-- Add a login action inside the app. It signs in with Firebase in the app
-  webview, calls `CompleteFirebaseSignIn(idToken)`, and shows the returned
-  account/subscription state.
-- Add a pricing action. It opens `https://agentwinglet.com/#pricing` so a
-  signed-in user can subscribe through the site/Paddle flow.
+- Sign-in is a single "Sign in with browser" button that calls
+  `StartBrowserSignIn()` and shows a waiting state while it's in flight —
+  there is no in-app email/password form and no separate Google/magic-link
+  choice inside the app; that choice lives entirely on the `/app-signin`
+  page in the browser.
+- Pricing action opens `https://agentwinglet.com/#pricing` so a signed-in
+  user can subscribe through the site/Paddle flow.
 
 Refresh behavior:
 
@@ -466,27 +520,28 @@ stats. Hooks do not make network requests."
 
 ## Known Gaps
 
-Things the `add-app-verification` implementation leaves open, tracked here
-so app/hook work doesn't silently assume they're done:
+Things the shipped implementation leaves open, tracked here so app/hook work
+doesn't silently assume they're done:
 
-- **No revoke endpoint.** `refreshAppEntitlement` already checks
-  `session.revokedAt`, but nothing sets it — `Logout()` can only delete
-  local files today. Add `POST /api/app/entitlements/revoke` before
-  shipping a "sign out everywhere" or "remote wipe a lost laptop" story.
+- **Revoke is self-service only.** `POST /api/app/entitlements/revoke` takes
+  `{ deviceId, refreshToken }` — the same credential `refresh` uses — so it
+  can only revoke the session the caller already holds a refresh token for.
+  There's no uid-keyed "list my devices and revoke any of them" endpoint, so
+  "remote wipe a lost laptop from another device" isn't possible yet, only
+  "this device signs itself out."
 - **Status mapping is binary.** `createEntitlementClaims` only produces
   `active` or `canceled`; Paddle's `trialing`/`past_due`/`paused` states
   aren't wired to the entitlement yet. Until the site adds that mapping,
   a trialing or past-due user will look `canceled` to the app and hooks.
-- **Magic-link sign-in isn't necessarily completable inside the webview.**
-  The site's magic-link flow (`lib/auth.ts`, `components/auth-action-panel.tsx`)
-  expects the emailed link to be opened wherever `sendSignInLinkToEmail`
-  was called from — normally the system browser — and finishes on the
-  site's own `/auth/action` page. If the OS opens that link in the default
-  browser instead of the Wails webview, the app never sees the resulting
-  ID token, since this spec's non-goals rule out a browser/device-linking
-  handoff. Needs either: the OS routing that specific link back into the
-  app's webview, or dropping magic link from the app and shipping
-  Google-only for V1 app sign-in (the site keeps both, this is app-specific).
+- **Magic link across devices silently fails to reconnect the app.** The
+  loopback handoff only works if the link is opened on the same machine
+  running the app (127.0.0.1 doesn't reach across devices). The
+  `/app-signin` page already tells the user "Open it on this device to
+  finish signing in," but there's no detection/error path if they open it
+  on a phone anyway — the browser tab completes Firebase sign-in fine, then
+  the redirect to `http://127.0.0.1:<port>/callback` just fails silently in
+  that browser, and the app's loopback listener eventually times out with a
+  generic "sign-in timed out" rather than an actionable message.
 - **Site currently grants features to `past_due`.** `createEntitlementClaims`
   includes `past_due` among the statuses that get `hook_savings`/
   `desktop_dashboard` and a 3-day expiry — i.e. exactly the grace window
@@ -511,33 +566,36 @@ so app/hook work doesn't silently assume they're done:
 
 ## Implementation Phases
 
-1. Site auth/billing base — mostly landed on `add-app-verification`
-   (not yet merged to `main`)
+1. Site auth/billing base — done, on `main`
    - Firebase client/admin config, user doc schema, Paddle client/server,
      checkout, webhooks, and customer portal already existed before this
-     branch.
-   - This branch adds `POST /api/app/entitlements/issue`,
-     `POST /api/app/entitlements/refresh`, the `appSessions` collection,
-     and JWS entitlement signing (`lib/entitlements.ts`,
-     `lib/app-entitlements.ts`).
-   - Still open on the site side: the revoke endpoint and the
-     `trialing`/`past_due`/`paused` status mapping — see `Known Gaps`.
+     work.
+   - Added: `POST /api/app/entitlements/issue`,
+     `POST /api/app/entitlements/refresh`,
+     `POST /api/app/entitlements/revoke`,
+     `POST /api/app/auth/start-code`, `POST /api/app/auth/exchange`, the
+     `/app-signin` browser page, the `appSessions` and `appSignInCodes`
+     collections, and JWS entitlement signing (`lib/entitlements.ts`,
+     `lib/app-entitlements.ts`, `lib/app-signin-codes.ts`,
+     `lib/app-signin-redirect.ts`).
+   - Still open on the site side: the `trialing`/`past_due`/`paused` status
+     mapping, and revoke is self-service-only — see `Known Gaps`.
 
-2. App auth shell
-   - Add the account gate, in-webview Firebase sign-in (no device-code
-     flow), entitlement storage, and account settings, per the updated
-     `Desktop App Work` section above.
+2. App auth shell — done
+   - Account gate, browser-handoff sign-in (`StartBrowserSignIn`), local
+     entitlement storage, refresh, and best-effort revoke on logout, per
+     `Desktop App Work` above (`internal/appauth`, `cmd/agent-winglet-app`).
 
-3. Hook offline gate
-   - Add entitlement verifier and wire it into both hooks as an early
-     decision. Support both `RS256` and `Ed25519` signatures from the
-     start.
+3. Hook offline gate — done
+   - `internal/entitlement` verifies `entitlement.jws` and is wired into
+     both `cmd/claude-hook` and `cmd/codex-hook` as an early decision.
+     Supports both `RS256` and `Ed25519` signatures.
 
-4. Paid distribution
+4. Paid distribution — not started
    - Replace public download placeholders with signed, entitlement-gated
      release downloads.
 
-5. Proof package
+5. Proof package — not started
    - Add tests, docs, release signing, and privacy/security audit artifacts.
 
 ## References

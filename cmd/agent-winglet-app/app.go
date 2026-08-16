@@ -68,16 +68,22 @@ func (a *App) GetAccountStatus() appauth.Status {
 	return (&appauth.Client{}).AccountStatus()
 }
 
-func (a *App) CompleteFirebaseSignIn(idToken string) (appauth.Status, error) {
-	return (&appauth.Client{}).CompleteFirebaseSignIn(idToken, appauth.DeviceInfo{
+// StartBrowserSignIn opens the system browser to agentwinglet.com/app-signin
+// (Google or magic link, the user's choice there) and blocks until that
+// completes and hands a signed-in session back over a loopback redirect, or
+// until it times out. See appauth.BrowserSignIn's doc comment for why this
+// can't happen inside the app's own webview.
+func (a *App) StartBrowserSignIn() (appauth.Status, error) {
+	signIn, err := (&appauth.Client{}).PrepareBrowserSignIn(appauth.DeviceInfo{
 		Platform: goruntime.GOOS,
 	})
-}
-
-func (a *App) SignInWithEmailPassword(email, password string) (appauth.Status, error) {
-	return (&appauth.Client{}).SignInWithEmailPassword(email, password, appauth.DeviceInfo{
-		Platform: goruntime.GOOS,
-	})
+	if err != nil {
+		return appauth.Status{}, err
+	}
+	if a.ctx != nil {
+		wailsruntime.BrowserOpenURL(a.ctx, signIn.URL)
+	}
+	return signIn.Await()
 }
 
 func (a *App) RefreshEntitlement() (appauth.Status, error) {

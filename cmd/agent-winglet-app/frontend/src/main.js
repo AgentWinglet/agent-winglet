@@ -15,7 +15,7 @@ import {
   SetCompactNudgesEnabled,
   SetClaudeHookEnabled,
   SetCodexHookEnabled,
-  SignInWithEmailPassword,
+  StartBrowserSignIn,
 } from '../wailsjs/go/main/App';
 
 const state = {
@@ -694,12 +694,8 @@ function accountSubscribedMarkup(status) {
 
 function accountSignInMarkup(status) {
   return `
-    <form class="account-form" data-account-login>
-      <input name="email" type="email" autocomplete="email" placeholder="email@example.com" required />
-      <input name="password" type="password" autocomplete="current-password" placeholder="Password" required />
-      <button class="hook-action-button enable" type="submit">Sign in</button>
-    </form>
     <div class="account-actions">
+      <button class="hook-action-button enable" type="button" data-account-action="signin">Sign in with browser</button>
       <button class="hook-action-button" type="button" data-account-action="pricing">Pricing</button>
       ${status.emailHint ? `<button class="hook-action-button" type="button" data-account-action="sync">Sync</button>` : ''}
       ${status.emailHint ? `<button class="hook-action-button disable" type="button" data-account-action="logout">Sign out</button>` : ''}
@@ -714,22 +710,25 @@ function accountLabel(status) {
 }
 
 function wireAccountActions(container) {
-  const form = container.querySelector('[data-account-login]');
-  if (form) {
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const data = new FormData(form);
-      await runAccountAction(async () => {
-        state.accountStatus = await SignInWithEmailPassword(String(data.get('email') || ''), String(data.get('password') || ''));
-      });
-    });
-  }
   container.querySelectorAll('[data-account-action]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const action = btn.getAttribute('data-account-action');
       if (action === 'pricing') {
         OpenPricing();
         return;
+      }
+      if (action === 'signin') {
+        const originalLabel = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = 'Waiting for browser…';
+        try {
+          await runAccountAction(async () => {
+            state.accountStatus = await StartBrowserSignIn();
+          });
+        } finally {
+          btn.disabled = false;
+          btn.textContent = originalLabel;
+        }
       }
       if (action === 'sync') {
         await runAccountAction(async () => {

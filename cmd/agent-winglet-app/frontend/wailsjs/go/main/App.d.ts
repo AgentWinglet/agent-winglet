@@ -3,8 +3,6 @@
 import {appauth} from '../models';
 import {main} from '../models';
 
-export function CompleteFirebaseSignIn(arg1:string):Promise<appauth.Status>;
-
 export function GetAccountStatus():Promise<appauth.Status>;
 
 export function GetCompactNudgesEnabled():Promise<boolean>;
@@ -35,4 +33,4 @@ export function SetCodexHookEnabled(arg1:boolean):Promise<main.HookHealth>;
 
 export function SetCompactNudgesEnabled(arg1:boolean):Promise<void>;
 
-export function SignInWithEmailPassword(arg1:string,arg2:string):Promise<appauth.Status>;
+export function StartBrowserSignIn():Promise<appauth.Status>;
