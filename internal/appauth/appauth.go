@@ -112,13 +112,13 @@ func (c *Client) AccountStatus() Status {
 	if err != nil {
 		return Status{
 			State:       "signed_out",
-			Message:     "Sign in to Winglet to enable hook savings.",
+			Message:     "Sign in to Winglet to unlock the dashboard and your free trial.",
 			SiteBaseURL: baseURL,
 		}
 	}
 	status := Status{
 		State:         "signed_out",
-		Message:       "Sign in to Winglet to enable hook savings.",
+		Message:       "Sign in to Winglet to unlock the dashboard and your free trial.",
 		SiteBaseURL:   auth.SiteBaseURL,
 		EmailHint:     auth.EmailHint,
 		LastRefreshAt: auth.LastRefreshAt,
@@ -141,17 +141,23 @@ func (c *Client) AccountStatus() Status {
 			return status
 		}
 		status.State = "subscribed"
-		status.Message = "Winglet Pro is active."
+		status.Message = "Winglet is active."
 		return status
 	}
 	if hook.Reason == entitlement.ReasonInactive || hook.Reason == entitlement.ReasonExpired || hook.Reason == entitlement.ReasonWrongFeature {
 		if status.TrialEligible {
 			status.State = "trial_available"
-			status.Message = "Start your 3-day free trial to unlock Winglet Pro."
+			status.Message = "Start your 3-day free trial to unlock Winglet."
 			return status
 		}
+		// Reaching here after a trial has run its course (rather than never
+		// having signed in) is the common case — see TrialEligible's doc
+		// comment: it's false both before any trial and forever after one has
+		// been used, so a lapsed real subscription looks the same as a lapsed
+		// trial here, and the message leads with the trial framing since
+		// that's who most often lands on this state.
 		status.State = "expired"
-		status.Message = "Subscribe to Winglet Pro to enable hook savings."
+		status.Message = "Your free trial has ended. Subscribe to keep using Winglet."
 		return status
 	}
 	if hook.Reason == entitlement.ReasonMissingKey || hook.Reason == entitlement.ReasonInvalid {
@@ -160,7 +166,7 @@ func (c *Client) AccountStatus() Status {
 		return status
 	}
 	status.State = "signed_out"
-	status.Message = "Sign in to Winglet to enable hook savings."
+	status.Message = "Sign in to Winglet to unlock the dashboard and your free trial."
 	return status
 }
 
@@ -297,7 +303,7 @@ func (c *Client) completeBrowserSignIn(code string, info DeviceInfo) (Status, er
 	}
 	if out.Account != nil {
 		auth.UIDHash = out.Account.AccountID
-		auth.EmailHint = maskEmail(out.Account.Email)
+		auth.EmailHint = out.Account.Email
 	}
 	if err := SaveAuthAndEntitlement(auth, out.Entitlement); err != nil {
 		return Status{}, err
@@ -328,7 +334,7 @@ func (c *Client) Refresh() (Status, error) {
 	auth.Account = out.Account
 	if out.Account != nil {
 		auth.UIDHash = out.Account.AccountID
-		auth.EmailHint = maskEmail(out.Account.Email)
+		auth.EmailHint = out.Account.Email
 	}
 	if err := SaveAuthAndEntitlement(auth, out.Entitlement); err != nil {
 		return c.AccountStatus(), err
@@ -368,7 +374,7 @@ func (c *Client) StartTrial() (Status, error) {
 	auth.Account = out.Account
 	if out.Account != nil {
 		auth.UIDHash = out.Account.AccountID
-		auth.EmailHint = maskEmail(out.Account.Email)
+		auth.EmailHint = out.Account.Email
 	}
 	if err := SaveAuthAndEntitlement(auth, out.Entitlement); err != nil {
 		return c.AccountStatus(), err
@@ -538,15 +544,3 @@ func removeIfExists(path string) error {
 	return nil
 }
 
-func maskEmail(email string) string {
-	email = strings.TrimSpace(email)
-	parts := strings.Split(email, "@")
-	if len(parts) != 2 || parts[0] == "" {
-		return email
-	}
-	local := []rune(parts[0])
-	if len(local) <= 1 {
-		return "*@" + parts[1]
-	}
-	return string(local[0]) + "***@" + parts[1]
-}

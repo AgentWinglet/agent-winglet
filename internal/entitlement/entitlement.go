@@ -28,8 +28,8 @@ const (
 	FeatureHookSavings      = "hook_savings"
 	FeatureDesktopDashboard = "desktop_dashboard"
 
-	AuthNoticeSignedOut = "Winglet is installed but is not signed in. Open Winglet and sign in to enable hook savings."
-	AuthNoticeInactive  = "Winglet is installed but your subscription is not active. Open Winglet pricing to subscribe and enable hook savings."
+	AuthNoticeSignedOut = "Winglet is installed but is not signed in. Open Winglet and sign in to activate it."
+	AuthNoticeInactive  = "Winglet is installed but not active. Open Winglet to subscribe or start your free trial."
 )
 
 type Claims struct {

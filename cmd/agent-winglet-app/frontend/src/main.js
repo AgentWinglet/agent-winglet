@@ -562,18 +562,37 @@ async function renderSessionsSection(container, projectPath) {
 // only in this preference. Reading its state needs a round-trip
 // (GetCompactNudgesEnabled), so this is async like the other screens, not
 // fetched synchronously.
+// installationsGateMessage explains, in terms specific to the signed-in
+// account's actual state, why these integrations can't be turned on yet —
+// replacing a single generic "sign in and subscribe" line that was equally
+// wrong for someone who'd never signed in, someone with an unclaimed trial,
+// and someone whose trial had just ended.
+function installationsGateMessage(status) {
+  switch (status?.state) {
+    case 'trial_available':
+      return 'Start your free trial (or subscribe) from the Account tab to enable these integrations.';
+    case 'expired':
+      return 'Your free trial has ended. Subscribe from the Account tab to enable these integrations.';
+    case 'server_error':
+      return status.message || 'Winglet could not verify your account.';
+    default:
+      return 'Sign in to Winglet, then subscribe or start your free trial, to enable these integrations.';
+  }
+}
+
 async function loadInstallations(container) {
   if (!state.accountStatus) await loadAccountStatus();
   const hookHealth = await GetHookHealth();
   if (state.screen !== 'installations') return;
   const hookAllowed = Boolean(state.accountStatus?.hookAllowed);
+  const accountState = state.accountStatus?.state;
 
-  renderIfChanged('installations', { hookHealth, hookAllowed, settingsError: state.settingsError }, () => {
+  renderIfChanged('installations', { hookHealth, hookAllowed, accountState, settingsError: state.settingsError }, () => {
     container.innerHTML = `
       <h1 class="screen-title">Installations</h1>
       <div class="settings-stack">
         ${state.settingsError ? `<div class="settings-error">${escapeHtml(state.settingsError)}</div>` : ''}
-        ${hookAllowed ? '' : `<div class="settings-error">Sign in and subscribe before enabling hooks from the app. Installed hooks remain disabled until Winglet has a valid entitlement.</div>`}
+        ${hookAllowed ? '' : `<div class="settings-error">${escapeHtml(installationsGateMessage(state.accountStatus))}</div>`}
         <section class="settings-panel">
           <div class="hook-agent-list">
             ${hookAgentMarkup({
@@ -667,7 +686,7 @@ async function renderAccountScreen(container) {
         <div class="account-status ${subscribed ? 'ok' : 'missing'}">
           <div>
             <div class="settings-row-label">${escapeHtml(status.emailHint || 'Winglet account')}</div>
-            <div class="settings-row-desc">${escapeHtml(status.message || 'Sign in to Winglet to enable hook savings.')}</div>
+            <div class="settings-row-desc">${escapeHtml(status.message || 'Sign in to Winglet to unlock the dashboard and your free trial.')}</div>
           </div>
           <span class="hook-status-badge">${escapeHtml(accountLabel(status))}</span>
         </div>
@@ -702,7 +721,7 @@ function accountSubscribedMarkup(status) {
       ${trialing
         ? `<div class="trial-pill">${icons.sparkle}Free trial${countdown ? ` · ${countdown}` : ''}</div>`
         : status.subscription
-          ? `<div>${escapeHtml(status.subscription.tier || 'Winglet Pro')} · ${escapeHtml(status.subscription.status || 'active')}</div>`
+          ? `<div>${escapeHtml(status.subscription.tier || 'Winglet')} · ${escapeHtml(status.subscription.status || 'active')}</div>`
           : ''}
       ${!trialing && status.expiresAt ? `<div>Entitlement refreshes before ${escapeHtml(status.expiresAt)}</div>` : ''}
       ${status.lastRefreshAt ? `<div>Last checked ${escapeHtml(status.lastRefreshAt)}</div>` : ''}
@@ -710,19 +729,25 @@ function accountSubscribedMarkup(status) {
     <div class="account-actions">
       ${trialing ? `<button class="hook-action-button enable" type="button" data-account-action="pricing">Subscribe now</button>` : ''}
       <button class="hook-action-button ${trialing ? '' : 'enable'}" type="button" data-account-action="sync">Sync</button>
-      ${trialing ? '' : `<button class="hook-action-button" type="button" data-account-action="pricing">Pricing</button>`}
       <button class="hook-action-button disable" type="button" data-account-action="logout">Sign out</button>
     </div>
   `;
 }
 
+// accountSignInMarkup covers every non-subscribed state the compact
+// Settings > Account panel can show. "Sign in with browser" only appears
+// when there's no emailHint — an already-signed-in account (trial_available,
+// expired) has no business being offered a second sign-in, and doing so
+// buried the actual next step (start the trial, or subscribe) behind a
+// redundant button.
 function accountSignInMarkup(status) {
   const trialAvailable = status.state === 'trial_available';
+  const needsSubscribe = status.state === 'expired';
   return `
     <div class="account-actions">
       ${trialAvailable ? `<button class="hook-action-button enable" type="button" data-account-action="start-trial">${icons.sparkle}Start 3-day free trial</button>` : ''}
-      <button class="hook-action-button ${trialAvailable ? '' : 'enable'}" type="button" data-account-action="signin">Sign in with browser</button>
-      <button class="hook-action-button" type="button" data-account-action="pricing">Pricing</button>
+      ${needsSubscribe ? `<button class="hook-action-button enable" type="button" data-account-action="pricing">Subscribe</button>` : ''}
+      ${status.emailHint ? '' : `<button class="hook-action-button enable" type="button" data-account-action="signin">Sign in with browser</button>`}
       ${status.emailHint ? `<button class="hook-action-button" type="button" data-account-action="sync">Sync</button>` : ''}
       ${status.emailHint ? `<button class="hook-action-button disable" type="button" data-account-action="logout">Sign out</button>` : ''}
     </div>
@@ -809,10 +834,15 @@ function needsAccountGate() {
 // already past the point it would have sold them on signing in.
 function gateContent(status) {
   switch (status.state) {
+    // Reached almost exclusively after a claimed trial has run out (see
+    // AccountStatus's doc comment in appauth.go) — the copy leads with that,
+    // not a generic "subscribe to get started" pitch aimed at someone who
+    // never had a trial.
     case 'expired':
       return {
-        title: 'Subscribe to Winglet Pro',
-        subtitle: status.message || 'Subscribe to keep the dashboard and hook savings active.',
+        badge: { text: 'Trial ended', muted: true },
+        title: 'Subscribe to keep using Winglet',
+        subtitle: 'Your free trial has ended. Subscribing keeps the dashboard and everything else unlocked.',
         primaryAction: 'pricing',
         primaryLabel: 'See plans',
         secondaryAction: 'sync',
@@ -829,8 +859,9 @@ function gateContent(status) {
       };
     default:
       return {
+        badge: { text: '3-Day Free Trial', icon: icons.sparkle },
         title: 'Sign in to Winglet',
-        subtitle: 'Connect your account to turn on hook savings, the live dashboard, and your 3-day free trial.',
+        subtitle: 'Connect your account to unlock the dashboard and your 3-day free trial.',
         primaryAction: 'signin',
         primaryLabel: 'Sign in with browser',
         secondaryAction: 'pricing',
@@ -844,6 +875,7 @@ function gateScreenMarkup(status) {
   return `
     <div class="gate-screen">
       <div class="gate-card">
+        ${c.badge ? `<div class="gate-badge${c.badge.muted ? ' muted' : ''}">${c.badge.icon || ''}${escapeHtml(c.badge.text)}</div>` : ''}
         <div class="gate-brand">${renderBrand()}</div>
         <h1 class="gate-title">${escapeHtml(c.title)}</h1>
         <p class="gate-subtitle">${escapeHtml(c.subtitle)}</p>
@@ -867,7 +899,7 @@ function trialWelcomeMarkup() {
         <div class="gate-badge">${icons.sparkle}3-Day Free Trial</div>
         <div class="gate-brand">${renderBrand()}</div>
         <h1 class="gate-title">Welcome to Winglet</h1>
-        <p class="gate-subtitle">You're signed in. Get started with a free 3-day trial of Winglet Pro — the live dashboard and hook savings, unlocked instantly.</p>
+        <p class="gate-subtitle">You're signed in. Start your free 3-day trial to unlock the full dashboard and everything else Winglet does, instantly.</p>
         <div class="gate-timeline">
           <div class="gate-day active">
             <span class="gate-day-dot"></span>

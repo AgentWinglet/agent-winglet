@@ -145,7 +145,7 @@ func requireEntitlement(feature string) error {
 	}
 	switch result.Reason {
 	case entitlement.ReasonInactive, entitlement.ReasonExpired, entitlement.ReasonWrongFeature:
-		return fmt.Errorf("subscribe to Winglet Pro to use this feature")
+		return fmt.Errorf("subscribe to Winglet to use this feature")
 	default:
 		return fmt.Errorf("sign in to Winglet to use this feature")
 	}
