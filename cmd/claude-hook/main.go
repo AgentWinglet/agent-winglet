@@ -262,6 +262,16 @@ func handle(in hookInput) (*hookOutput, error) {
 // same nil/non-nil return) was the bug — only the first blocked call in a
 // session actually skipped the suppression logic below, and every later
 // call ran it in full because ShouldEmitNotice's second call returned false.
+//
+// The one notice a session gets is deliberately louder than a line the model
+// might fold silently into whatever else it's doing: additionalContext
+// reaches the model (unlike systemMessage, which the user already sees on
+// its own — same split this file's compact nudge uses), so it explicitly
+// instructs Claude to check in with the user via AskUserQuestion before
+// continuing, rather than just mentioning Winglet is inactive and hoping
+// that lands. This only fires once per session, not on every blocked call —
+// interrupting every single tool call to nag about signing in would make
+// Winglet feel predatory rather than just gated.
 func entitlementBlockedOutput(result entitlement.CheckResult, agent, sessionID, eventName string) *hookOutput {
 	out := &hookOutput{HookSpecificOutput: hookSpecificOutput{HookEventName: eventName}}
 	if !entitlement.ShouldEmitNotice(agent, sessionID) {
@@ -269,7 +279,9 @@ func entitlementBlockedOutput(result entitlement.CheckResult, agent, sessionID, 
 	}
 	msg := entitlement.NoticeFor(result.Reason)
 	out.SystemMessage = msg
-	out.HookSpecificOutput.AdditionalContext = msg
+	out.HookSpecificOutput.AdditionalContext = msg + " Before continuing with any further " +
+		"work, ask the user now via the AskUserQuestion tool whether they'd like to take " +
+		"care of that now or continue this session without Winglet active."
 	return out
 }
 

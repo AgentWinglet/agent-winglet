@@ -46,6 +46,12 @@ func TestEntitlementGateTellsCodexWhenSignedOut(t *testing.T) {
 	if out.HookSpecificOutput == nil || out.HookSpecificOutput.AdditionalContext == "" {
 		t.Fatalf("AdditionalContext should tell Codex the hook is gated")
 	}
+	if !strings.Contains(out.HookSpecificOutput.AdditionalContext, "ask the user") {
+		t.Fatalf("AdditionalContext = %q, want an instruction to ask the user directly", out.HookSpecificOutput.AdditionalContext)
+	}
+	if strings.Contains(out.HookSpecificOutput.AdditionalContext, "AskUserQuestion") {
+		t.Fatalf("AdditionalContext should not mention Claude-specific AskUserQuestion: %q", out.HookSpecificOutput.AdditionalContext)
+	}
 }
 
 // TestEntitlementGateStaysBlockedAfterFirstNoticeInSameSession guards against
@@ -77,6 +83,9 @@ func TestEntitlementGateStaysBlockedAfterFirstNoticeInSameSession(t *testing.T) 
 	}
 	if strings.Contains(first.SystemMessage, "unchanged since turn") {
 		t.Fatalf("blocked session should never produce a dedup substitution, got %+v", first)
+	}
+	if first.SystemMessage != "" || first.HookSpecificOutput != nil {
+		t.Fatalf("blocked call after the session's first notice shouldn't repeat it or the nudge, got %+v", first)
 	}
 
 	second, err := handle(in)

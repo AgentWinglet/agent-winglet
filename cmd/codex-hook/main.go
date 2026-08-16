@@ -117,6 +117,11 @@ func handle(in hookInput) (*hookOutput, error) {
 // same nil/non-nil return) was the bug — only the first blocked call in a
 // session actually skipped the suppression logic below, and every later
 // call ran it in full because ShouldEmitNotice's second call returned false.
+// Codex has no reliable AskUserQuestion equivalent available outside Plan
+// mode, so unlike claude-hook's version of this function, the instruction
+// below asks the model to raise this with the user directly (same "tell the
+// user" phrasing this file's compact nudge already uses for Codex) rather
+// than naming a specific tool that may not exist in the current session.
 func entitlementBlockedOutput(result entitlement.CheckResult, agent, sessionID, eventName string) *hookOutput {
 	if !entitlement.ShouldEmitNotice(agent, sessionID) {
 		return &hookOutput{}
@@ -125,8 +130,10 @@ func entitlementBlockedOutput(result entitlement.CheckResult, agent, sessionID, 
 	return &hookOutput{
 		SystemMessage: msg,
 		HookSpecificOutput: &hookSpecificOutput{
-			HookEventName:     eventName,
-			AdditionalContext: msg,
+			HookEventName: eventName,
+			AdditionalContext: msg + " Before continuing with any further work, ask the " +
+				"user directly whether they'd like to take care of that now or continue " +
+				"this session without Winglet active.",
 		},
 	}
 }

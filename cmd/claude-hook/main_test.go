@@ -71,6 +71,9 @@ func TestEntitlementGateTellsClaudeWhenSignedOut(t *testing.T) {
 	if out.HookSpecificOutput.AdditionalContext == "" {
 		t.Fatalf("AdditionalContext should tell Claude the hook is gated")
 	}
+	if !strings.Contains(out.HookSpecificOutput.AdditionalContext, "AskUserQuestion") {
+		t.Fatalf("AdditionalContext = %q, want an instruction to ask via AskUserQuestion", out.HookSpecificOutput.AdditionalContext)
+	}
 }
 
 // TestEntitlementGateStaysBlockedAfterFirstNoticeInSameSession guards against
@@ -100,6 +103,9 @@ func TestEntitlementGateStaysBlockedAfterFirstNoticeInSameSession(t *testing.T) 
 	}
 	if first.SystemMessage != "" {
 		t.Fatalf("blocked call after the session's first notice shouldn't repeat it, got %q", first.SystemMessage)
+	}
+	if first.HookSpecificOutput.AdditionalContext != "" {
+		t.Fatalf("blocked call after the session's first notice shouldn't re-nudge AskUserQuestion either, got %q", first.HookSpecificOutput.AdditionalContext)
 	}
 	if _, ok := first.HookSpecificOutput.UpdatedToolOutput.(bashOutput); ok {
 		t.Fatalf("blocked session should never produce a dedup substitution, got %+v", first)
