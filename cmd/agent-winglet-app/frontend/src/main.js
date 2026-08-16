@@ -697,6 +697,16 @@ async function renderAccountScreen(container) {
   wireAccountActions(container);
 }
 
+// formatLocalTime renders a UTC ISO timestamp (everything the Go side
+// hands back — lastRefreshAt, expiresAt — is UTC, see appauth.go) in the
+// reader's own local time/timezone rather than the raw UTC string.
+function formatLocalTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+}
+
 // formatTrialCountdown turns status.expiresAt (only meaningful while
 // state === 'trialing', where it's the trial's own end time — the signed
 // entitlement's ExpiresAt, see appauth.Client.StartTrial's doc comment) into
@@ -713,6 +723,19 @@ function formatTrialCountdown(expiresAt) {
   return `ends in ${days}d${hours ? ` ${hours}h` : ''}`;
 }
 
+// formatTrialDaysHours is formatTrialCountdown's always-both-units sibling,
+// for the top-of-page trial banner ("ends in 2d 14h" rather than the
+// account screen's terser, unit-dropping "ends in 6h"/"ends in 2d").
+function formatTrialDaysHours(expiresAt) {
+  if (!expiresAt) return '';
+  const ms = new Date(expiresAt).getTime() - Date.now();
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  const totalHours = Math.ceil(ms / 3_600_000);
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  return `${days}d ${hours}h`;
+}
+
 function accountSubscribedMarkup(status) {
   const trialing = status.state === 'trialing';
   const countdown = trialing ? formatTrialCountdown(status.expiresAt) : '';
@@ -723,8 +746,8 @@ function accountSubscribedMarkup(status) {
         : status.subscription
           ? `<div>${escapeHtml(status.subscription.tier || 'Winglet')} · ${escapeHtml(status.subscription.status || 'active')}</div>`
           : ''}
-      ${!trialing && status.expiresAt ? `<div>Entitlement refreshes before ${escapeHtml(status.expiresAt)}</div>` : ''}
-      ${status.lastRefreshAt ? `<div>Last checked ${escapeHtml(status.lastRefreshAt)}</div>` : ''}
+      ${!trialing && status.expiresAt ? `<div>Refreshes automatically before ${escapeHtml(formatLocalTime(status.expiresAt))}</div>` : ''}
+      ${status.lastRefreshAt ? `<div>Last checked ${escapeHtml(formatLocalTime(status.lastRefreshAt))}</div>` : ''}
     </div>
     <div class="account-actions">
       ${trialing ? `<button class="hook-action-button enable" type="button" data-account-action="pricing">Subscribe now</button>` : ''}
@@ -858,7 +881,6 @@ function gateContent(status) {
       };
     default:
       return {
-        badge: { text: '3-Day Free Trial', icon: icons.sparkle },
         title: 'Sign in to Winglet',
         subtitle: 'Sign in to activate Winglet.',
         primaryAction: 'signin',
@@ -874,7 +896,6 @@ function gateScreenMarkup(status) {
   return `
     <div class="gate-screen">
       <div class="gate-card">
-        ${c.badge ? `<div class="gate-badge${c.badge.muted ? ' muted' : ''}">${c.badge.icon || ''}${escapeHtml(c.badge.text)}</div>` : ''}
         <div class="gate-brand">${renderBrand()}</div>
         <h1 class="gate-title">${escapeHtml(c.title)}</h1>
         <p class="gate-subtitle">${escapeHtml(c.subtitle)}</p>
@@ -1027,7 +1048,10 @@ function render() {
         </div>
       </nav>
     </div>
-    <div class="main" id="main"></div>
+    <div class="main">
+      <div id="trial-banner"></div>
+      <div class="main-scroll" id="main"></div>
+    </div>
   `;
 
   app.querySelectorAll('[data-nav]').forEach((btn) => {
@@ -1035,7 +1059,40 @@ function render() {
   });
 
   renderMain(app.querySelector('#main'));
+  renderTrialBanner();
 }
+
+// renderTrialBanner keeps the "you're on a free trial" strip visible above
+// every screen (Overview, Projects, every Settings tab — anywhere other than
+// the gate/welcome screens, which already make the trial the whole point of
+// the page) for as long as state.accountStatus.state === 'trialing'. It
+// targets #trial-banner, a sibling of #main set once in render()'s own
+// markup — never touched by the per-screen renderOverviewScreen/
+// renderProjectsScreen/etc. innerHTML swaps or their 1s polling — so it
+// survives screen navigation and poll ticks without being wired into any of
+// them individually. TRIAL_BANNER_REFRESH_MS re-renders it periodically so
+// the countdown stays honest even while parked on a screen that doesn't poll
+// on its own (e.g. Preferences).
+function trialBannerMarkup(status) {
+  if (!status || status.state !== 'trialing') return '';
+  const countdown = formatTrialDaysHours(status.expiresAt);
+  const text = countdown ? `Your Winglet free trial ends in ${countdown}` : 'Your Winglet free trial has ended';
+  return `
+    <div class="trial-banner">
+      <span class="trial-banner-text">${icons.sparkle}${text}</span>
+      <button class="trial-banner-cta" type="button" data-account-action="pricing">Subscribe</button>
+    </div>`;
+}
+
+function renderTrialBanner() {
+  const slot = document.querySelector('#trial-banner');
+  if (!slot) return;
+  slot.innerHTML = trialBannerMarkup(state.accountStatus);
+  wireAccountActions(slot);
+}
+
+const TRIAL_BANNER_REFRESH_MS = 60_000;
 
 initPlatform();
 render();
+setInterval(renderTrialBanner, TRIAL_BANNER_REFRESH_MS);
