@@ -6,7 +6,7 @@ Ship first-class downloadable desktop installers from `agentwinglet.com` so user
 
 The download page should offer:
 
-- macOS: signed and notarized universal `.dmg`
+- macOS: universal `.dmg` (unsigned, not notarized for v1 — see Non-Goals)
 - Windows: signed `.exe` installer
 - Ubuntu: `.deb` package, with an `.AppImage` as a portable fallback only if the `.deb` path proves too brittle
 
@@ -39,7 +39,7 @@ The source installer is useful for development, but it is not the public packagi
 
 | Platform | Primary Artifact | Architectures | Install Scope | Notes |
 | --- | --- | --- | --- | --- |
-| macOS | `Winglet-${version}-macOS-universal.dmg` | `amd64` + `arm64` | `/Applications/Winglet.app` | Must be Developer ID signed and notarized. Includes nested signed tray login item. |
+| macOS | `Winglet-${version}-macOS-universal.dmg` | `amd64` + `arm64` | `/Applications/Winglet.app` | v1 ships unsigned and not notarized (see Non-Goals). Includes nested universal tray login item, also unsigned. |
 | Windows | `Winglet-${version}-windows-x64-setup.exe` | `amd64` first | per-user | NSIS installer from Wails. Code signing required before broad distribution. |
 | Ubuntu | `winglet_${version}_amd64.deb` | `amd64` first | system package | Target Ubuntu 24.04 LTS and newer first. Add `arm64` after amd64 release flow is stable. |
 | Ubuntu fallback | `Winglet-${version}-x86_64.AppImage` | `amd64` first | portable | Optional. Use only if `.deb` support creates too much friction. |
@@ -58,6 +58,8 @@ Every public artifact must be built from an immutable git tag:
 Before packaging work starts, add release metadata to `cmd/agent-winglet-app/wails.json` so Wails and platform installers have product name, company name, version, copyright, and comments.
 
 ## macOS Package
+
+**v1 decision: no Developer ID signing or notarization.** Winglet does not have an Apple Developer ID account provisioned yet, and setting one up is not a blocker for shipping the first downloadable build. Users installing the v1 `.dmg` will see Gatekeeper's "Apple could not verify this app" warning and must right-click → Open (or clear the quarantine attribute) to launch it. The download page's install note per OS should explain this step for macOS. Signing and notarization are tracked as a fast-follow once a Developer ID is set up; the steps below are kept as reference for that later pass and marked accordingly.
 
 ### Build Output
 
@@ -81,10 +83,15 @@ Use a macOS runner or a local Mac builder with:
 - Node version matching CI
 - Wails CLI pinned to the repo's current version
 - Xcode command line tools
+
+Not needed for v1 (post-v1, once signing/notarization is added):
+
 - Apple Developer ID Application certificate
 - App Store Connect API key or notarytool credentials
 
-### Notarization
+### Notarization (Post-v1)
+
+Not part of v1 (see decision above). Kept here as reference for when a Developer ID is provisioned.
 
 Notarization is Apple's automated security check for Mac software distributed outside the Mac App Store. It is not App Review: Apple is not manually approving Winglet's product behavior, UI, business model, or usefulness. The notary service scans the signed artifact for known malware and common code-signing problems. If it passes, Apple issues a ticket that Gatekeeper can use to trust the download.
 
@@ -113,7 +120,15 @@ GOOS=darwin GOARCH=arm64 go build -o /tmp/winglet-tray-arm64 ./cmd/agent-winglet
 lipo -create -output cmd/agent-winglet-app/build/bin/Winglet.app/Contents/Library/LoginItems/Tray.app/Contents/MacOS/agent-winglet-tray /tmp/winglet-tray-amd64 /tmp/winglet-tray-arm64
 ```
 
-The final order matters:
+The v1 order (no signing or notarization):
+
+1. Build universal `Winglet.app`.
+2. Create and populate `Contents/Library/LoginItems/Tray.app`.
+3. Build the tray helper as universal.
+4. Create the DMG.
+5. Gatekeeper-test on a clean Mac to confirm the expected "unidentified developer" warning appears and the app still opens via right-click → Open.
+
+Post-v1, once signing/notarization is added, insert these steps between building the app bundle and creating the DMG, then add DMG signing/notarization/stapling after DMG creation:
 
 1. Build universal `Winglet.app`.
 2. Create and populate `Contents/Library/LoginItems/Tray.app`.
@@ -131,11 +146,11 @@ The final order matters:
 
 - `file Winglet.app/Contents/MacOS/Winglet` reports both `x86_64` and `arm64`.
 - `file Winglet.app/Contents/Library/LoginItems/Tray.app/Contents/MacOS/agent-winglet-tray` reports both `x86_64` and `arm64`.
-- `codesign --verify --deep --strict --verbose=2 Winglet.app` passes.
-- `spctl --assess --type execute --verbose Winglet.app` passes.
 - DMG opens cleanly on a fresh Apple Silicon Mac.
 - DMG opens cleanly on a fresh Intel Mac.
+- Gatekeeper shows the expected "unidentified developer" warning on first launch, and the app opens via right-click → Open.
 - Login item registers and launches the tray helper after reboot.
+- Post-v1 only: `codesign --verify --deep --strict --verbose=2 Winglet.app` and `spctl --assess --type execute --verbose Winglet.app` pass once signing/notarization is added.
 
 ## Windows Package
 
@@ -316,17 +331,18 @@ Keep `.github/workflows/app-build.yml` as the PR smoke test. The release workflo
 
 Public downloads must satisfy:
 
-- Signed macOS app and DMG
-- Apple notarization and stapling
 - Signed Windows binaries and installer
 - SHA-256 checksums in the download manifest
 - Reproducible release inputs: tag, commit SHA, pinned Go/Node/Wails versions
 - No unsigned auto-update path until a signed updater design exists
 
+macOS app and DMG signing/notarization are deferred past v1 (see Non-Goals). The v1 macOS `.dmg` is unsigned and unnotarized; users rely on the download page's SHA-256 checksum and the documented right-click → Open step instead of Gatekeeper's automated trust check.
+
 Do not add silent background network behavior as part of packaging. Installation should only install Winglet and its tray helper.
 
 ## Non-Goals For The First Packaging Pass
 
+- macOS Developer ID signing and notarization (v1 ships unsigned and unnotarized; Gatekeeper's "unidentified developer" warning is expected and documented for users)
 - Microsoft Store package
 - Mac App Store package
 - Homebrew cask
@@ -343,7 +359,8 @@ These can come later after the direct downloads are stable.
 
 - Add release metadata to `wails.json`.
 - Add `make package-macos` that builds universal main app and universal nested tray helper.
-- Add macOS signing, DMG creation, notarization, stapling, and verification scripts.
+- Add macOS DMG creation and verification scripts (unsigned, not notarized for v1).
+- Add a macOS install note to the download page explaining the right-click → Open Gatekeeper workaround.
 - Update Windows NSIS template to include tray helper and startup registration.
 - Add `make package-windows` for signed NSIS installer output.
 - Add Debian packaging files or an `nfpm` config for Ubuntu `.deb`.
