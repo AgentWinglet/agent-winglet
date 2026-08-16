@@ -1264,6 +1264,19 @@ body {
   max-width: 320px;
 }
 
+.gate-card-wide {
+  max-width: 480px;
+}
+
+.gate-card-wide .gate-subtitle {
+  max-width: 420px;
+}
+
+.gate-card-wide .hook-agent-list {
+  width: 100%;
+  text-align: left;
+}
+
 /* --- Motion --- */
 
 @media (prefers-reduced-motion: reduce) {

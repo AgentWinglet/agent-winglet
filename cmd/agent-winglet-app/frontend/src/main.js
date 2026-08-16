@@ -27,6 +27,7 @@ const state = {
   settingsError: '',
   accountStatus: null,
   accountError: '',
+  hookHealth: null,
 };
 
 const NAV_ITEMS = [
@@ -582,8 +583,9 @@ function installationsGateMessage(status) {
 
 async function loadInstallations(container) {
   if (!state.accountStatus) await loadAccountStatus();
-  const hookHealth = await GetHookHealth();
+  state.hookHealth = await GetHookHealth();
   if (state.screen !== 'installations') return;
+  const hookHealth = state.hookHealth;
   const hookAllowed = Boolean(state.accountStatus?.hookAllowed);
   const accountState = state.accountStatus?.state;
 
@@ -935,6 +937,106 @@ async function renderGateScreen(container) {
   wireAccountActions(container);
 }
 
+// hasAnyIntegration is the exit condition for the install-pick gate below —
+// Winglet does nothing for an account with neither integration enabled, so
+// "at least one" (not "both") is what actually unblocks the dashboard.
+function hasAnyIntegration(hookHealth) {
+  return Boolean(hookHealth?.claudeConfigured || hookHealth?.codexConfigured);
+}
+
+// needsInstallPick fires once dashboardAllowed is true (right after
+// trialWelcomeMarkup's "Start my 3-day trial", or for anyone already
+// subscribed) but before either integration is on — a fresh trial ticking
+// away with Winglet wired into neither Claude Code nor Codex would silently
+// waste it. state.hookHealth being null (not yet fetched) also reads as
+// "needs the gate" so renderInstallPickScreen's loading branch runs first;
+// it re-renders once the real value is in, same pattern as renderGateScreen.
+function needsInstallPick() {
+  return (state.screen === 'overview' || state.screen === 'projects') &&
+    Boolean(state.accountStatus?.dashboardAllowed) &&
+    !hasAnyIntegration(state.hookHealth);
+}
+
+// installPickMarkup reuses hookAgentMarkup verbatim (same cards the
+// Installations settings screen shows) so enabling here and enabling there
+// can never drift into two different pictures of the same toggle — just
+// framed as a required first step instead of a settings row.
+function installPickMarkup(hookHealth, hookAllowed) {
+  return `
+    <div class="gate-screen">
+      <div class="gate-card gate-card-wide">
+        <div class="gate-brand">${renderBrand()}</div>
+        <h1 class="gate-title">Choose what to install Winglet for</h1>
+        <p class="gate-subtitle">Enable at least one integration to start seeing savings. You can turn on both, and change this anytime from Installations.</p>
+        <div class="hook-agent-list">
+          ${hookAgentMarkup({
+            name: 'Claude Code Integration',
+            configured: hookHealth.claudeConfigured,
+            reviewLikely: hookHealth.claudeReviewLikely,
+            status: hookHealth.claudeStatus,
+            detail: hookHealth.claudeDetail,
+            action: hookHealth.claudeAction,
+            key: 'claude',
+            hookAllowed,
+          })}
+          ${hookAgentMarkup({
+            name: 'Codex Integration',
+            configured: hookHealth.codexConfigured,
+            reviewLikely: hookHealth.codexReviewLikely,
+            status: hookHealth.codexStatus,
+            detail: hookHealth.codexDetail,
+            action: hookHealth.codexAction,
+            key: 'codex',
+            hookAllowed,
+          })}
+        </div>
+        ${state.settingsError ? `<p class="gate-error">${escapeHtml(state.settingsError)}</p>` : ''}
+      </div>
+    </div>`;
+}
+
+async function renderInstallPickScreen(container) {
+  if (!state.hookHealth) {
+    container.innerHTML = `<div class="empty-state">Loading…</div>`;
+    try {
+      state.hookHealth = await GetHookHealth();
+    } catch (err) {
+      state.settingsError = err?.message || String(err);
+      state.hookHealth = { claudeConfigured: false, codexConfigured: false };
+    }
+    // Re-enters renderMain from scratch: if the fetch above turned up an
+    // already-configured integration, needsInstallPick now reads false and
+    // this whole screen is skipped in favor of Overview/Projects.
+    render();
+    return;
+  }
+  container.innerHTML = installPickMarkup(state.hookHealth, Boolean(state.accountStatus?.hookAllowed));
+  container.querySelectorAll('[data-hook-action]').forEach((btn) => {
+    btn.addEventListener('click', () => runInstallPickHookAction(btn));
+  });
+}
+
+async function runInstallPickHookAction(btn) {
+  const agent = btn.getAttribute('data-hook-agent');
+  const action = btn.getAttribute('data-hook-action');
+  const method = hookActionMethod(agent, action);
+  if (!method) return;
+
+  btn.disabled = true;
+  btn.textContent = 'Working...';
+  state.settingsError = '';
+  try {
+    await method();
+    state.hookHealth = await GetHookHealth();
+  } catch (err) {
+    state.settingsError = err?.message || String(err);
+  }
+  // A full render() (not just this screen) so a successful enable falls
+  // straight through needsInstallPick into Overview/Projects instead of
+  // requiring a second click to "continue".
+  render();
+}
+
 function hookAgentMarkup(agent) {
   const tone = agent.reviewLikely ? 'needs-action' : agent.configured ? 'ok' : 'missing';
   const primaryAction = agent.configured ? 'disable' : 'enable';
@@ -1008,6 +1110,7 @@ function renderMain(container) {
     return renderGateScreen(container);
   }
   if (needsAccountGate()) return renderGateScreen(container);
+  if (needsInstallPick()) return renderInstallPickScreen(container);
   if (state.screen === 'overview') return renderOverviewScreen(container);
   if (state.screen === 'projects') return renderProjectsScreen(container);
   if (state.screen === 'installations') return renderInstallationsScreen(container);
