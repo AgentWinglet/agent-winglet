@@ -14,8 +14,10 @@ import (
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"github.com/umitkaanusta/agent-winglet/internal/appauth"
 	"github.com/umitkaanusta/agent-winglet/internal/appipc"
 	"github.com/umitkaanusta/agent-winglet/internal/config"
+	"github.com/umitkaanusta/agent-winglet/internal/entitlement"
 	"github.com/umitkaanusta/agent-winglet/internal/registry"
 	"github.com/umitkaanusta/agent-winglet/internal/stats"
 )
@@ -58,7 +60,161 @@ func (a *App) SetCompactNudgesEnabled(enabled bool) error {
 	return config.Save(cfg)
 }
 
+func (a *App) GetSiteBaseURL() string {
+	return appauth.SiteBaseURL()
+}
+
+func (a *App) GetAccountStatus() appauth.Status {
+	return (&appauth.Client{}).AccountStatus()
+}
+
+// StartBrowserSignIn opens the system browser to agentwinglet.com/app-signin
+// (Google or magic link, the user's choice there) and blocks until that
+// completes and hands a signed-in session back over a loopback redirect, or
+// until it times out. See appauth.BrowserSignIn's doc comment for why this
+// can't happen inside the app's own webview.
+func (a *App) StartBrowserSignIn() (appauth.Status, error) {
+	signIn, err := (&appauth.Client{}).PrepareBrowserSignIn(appauth.DeviceInfo{
+		Platform: goruntime.GOOS,
+	})
+	if err != nil {
+		return appauth.Status{}, err
+	}
+	if a.ctx != nil {
+		wailsruntime.BrowserOpenURL(a.ctx, signIn.URL)
+	}
+	return signIn.Await()
+}
+
+func (a *App) RefreshEntitlement() (appauth.Status, error) {
+	return (&appauth.Client{}).Refresh()
+}
+
+// StartFreeTrial claims the signed-in account's one-time 3-day cardless
+// trial — see appauth.Client.StartTrial's doc comment for why this never
+// touches Subscription.
+func (a *App) StartFreeTrial() (appauth.Status, error) {
+	return (&appauth.Client{}).StartTrial()
+}
+
+func (a *App) Logout() (appauth.Status, error) {
+	if err := appauth.Logout(); err != nil {
+		return appauth.Status{}, err
+	}
+	return (&appauth.Client{}).AccountStatus(), nil
+}
+
+func (a *App) OpenPricing() {
+	if a.ctx != nil {
+		wailsruntime.BrowserOpenURL(a.ctx, appauth.SiteBaseURL()+"/#pricing")
+	}
+}
+
+// OpenBillingPortal opens the bare site — agentwinglet.com, not
+// agentwinglet.com/#pricing (OpenPricing's target) — since invoices, payment
+// method, and plan changes live in the signed-in account area there, not on
+// the pricing page a not-yet-subscribed visitor would land on.
+func (a *App) OpenBillingPortal() {
+	if a.ctx != nil {
+		wailsruntime.BrowserOpenURL(a.ctx, appauth.SiteBaseURL())
+	}
+}
+
+// UninstallWinglet reverses what install.sh does — the same two things
+// uninstall.sh's default (no-flags) invocation removes: hook wiring and the
+// installed app — leaving the same thing it deliberately leaves alone:
+// ~/.agent-winglet (saved usage stats, project registry, preferences). Never
+// gated by requireEntitlement: uninstalling has to work whether or not the
+// account is currently entitled to anything.
+//
+// Reimplemented natively here instead of shelling out to uninstall.sh: a
+// distributed .app has no guarantee the checkout it was built from is still
+// on disk by the time someone clicks this button, so uninstall_paths.go
+// duplicates the relevant bits of scripts/lib.sh by hand (see its own doc
+// comment) rather than depending on the script surviving alongside it.
+//
+// Confirms via a native OS dialog first, not a JS confirm() in the webview —
+// this is destructive enough to want the OS's own chrome around it — then
+// quits once removal finishes, since there's nothing installed left for it
+// to keep running as.
+//
+// The bool return tells the frontend whether removal actually ran, distinct
+// from a nil error: the dialog's Cancel button carries the Return-key
+// equivalent and macOS renders it in the primary/rightmost position (correct
+// per HIG — a destructive action shouldn't be one Enter-press away), so
+// cancelling is the easy, unremarkable-looking path here, not an edge case.
+// Returning proceeded=false lets the caller say so explicitly instead of the
+// cancel and the already-nothing-to-do cases both reading as identical,
+// silent no-ops indistinguishable from a bug that quietly did nothing.
+func (a *App) UninstallWinglet() (bool, error) {
+	if a.ctx != nil {
+		result, err := wailsruntime.MessageDialog(a.ctx, wailsruntime.MessageDialogOptions{
+			Type:          wailsruntime.QuestionDialog,
+			Title:         "Uninstall Winglet?",
+			Message:       "This removes the Winglet app and disconnects the Claude Code and Codex hooks. Your saved usage stats and preferences in ~/.agent-winglet are kept.",
+			Buttons:       []string{"Cancel", "Uninstall"},
+			DefaultButton: "Cancel",
+			CancelButton:  "Cancel",
+		})
+		if err != nil {
+			return false, err
+		}
+		if result != "Uninstall" {
+			return false, nil
+		}
+	}
+
+	if err := setGlobalHookEnabled("claude-hook", false); err != nil {
+		return false, fmt.Errorf("removing Claude Code hook: %w", err)
+	}
+	if err := setGlobalHookEnabled("codex-hook", false); err != nil {
+		return false, fmt.Errorf("removing Codex hook: %w", err)
+	}
+
+	if err := UnregisterLoginItem(); err != nil {
+		fmt.Println("agent-winglet-app: login item unregistration failed:", err)
+	}
+	stopTrayHelper()
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false, err
+	}
+	removeTrayAutostart(home)
+	removeAppShortcut(home)
+	if goruntime.GOOS == "linux" {
+		_ = os.Remove(linuxDesktopEntryPath(home))
+		_ = os.RemoveAll(linuxIconDir(home))
+	}
+
+	paths, err := appInstallPaths()
+	if err != nil {
+		return false, err
+	}
+	for _, p := range paths {
+		if _, statErr := os.Stat(p); statErr != nil {
+			continue
+		}
+		if err := os.RemoveAll(p); err != nil {
+			return false, fmt.Errorf("removing %s: %w", p, err)
+		}
+	}
+
+	if a.ctx != nil {
+		go func() {
+			time.Sleep(300 * time.Millisecond)
+			wailsruntime.Quit(a.ctx)
+		}()
+	}
+	return true, nil
+}
+
 func (a *App) SetClaudeHookEnabled(enabled bool) (HookHealth, error) {
+	if enabled {
+		if err := requireEntitlement(entitlement.FeatureHookSavings); err != nil {
+			return HookHealth{}, err
+		}
+	}
 	if err := setGlobalHookEnabled("claude-hook", enabled); err != nil {
 		return HookHealth{}, err
 	}
@@ -66,10 +222,28 @@ func (a *App) SetClaudeHookEnabled(enabled bool) (HookHealth, error) {
 }
 
 func (a *App) SetCodexHookEnabled(enabled bool) (HookHealth, error) {
+	if enabled {
+		if err := requireEntitlement(entitlement.FeatureHookSavings); err != nil {
+			return HookHealth{}, err
+		}
+	}
 	if err := setGlobalHookEnabled("codex-hook", enabled); err != nil {
 		return HookHealth{}, err
 	}
 	return a.GetHookHealth()
+}
+
+func requireEntitlement(feature string) error {
+	result := entitlement.Check(feature, time.Now())
+	if result.Allowed {
+		return nil
+	}
+	switch result.Reason {
+	case entitlement.ReasonInactive, entitlement.ReasonExpired, entitlement.ReasonWrongFeature:
+		return fmt.Errorf("subscribe to Winglet to use this feature")
+	default:
+		return fmt.Errorf("sign in to Winglet to use this feature")
+	}
 }
 
 // HookHealth is a dashboard-facing install/status check for hook setup. Codex
@@ -701,6 +875,9 @@ type Overview struct {
 // disk, so it can't drift from what GetProjects/GetSessionStats show for the
 // same projects.
 func (a *App) GetOverview() (Overview, error) {
+	if err := requireEntitlement(entitlement.FeatureDesktopDashboard); err != nil {
+		return Overview{}, err
+	}
 	dirs, err := registry.Load()
 	if err != nil {
 		return Overview{}, err
@@ -1055,6 +1232,9 @@ type ProjectRow struct {
 // stats.SumProject) — the same rollup GetOverview sums across projects, so a
 // project row and its slice of Overview can never disagree.
 func (a *App) GetProjects() ([]ProjectRow, error) {
+	if err := requireEntitlement(entitlement.FeatureDesktopDashboard); err != nil {
+		return nil, err
+	}
 	dirs, err := registry.Load()
 	if err != nil {
 		return nil, err
@@ -1095,6 +1275,9 @@ type SessionRow struct {
 // GetSessionStats returns one row per session-stats file still on disk for
 // projectDir, newest first (see stats.ListSessions).
 func (a *App) GetSessionStats(projectDir string) ([]SessionRow, error) {
+	if err := requireEntitlement(entitlement.FeatureDesktopDashboard); err != nil {
+		return nil, err
+	}
 	files, err := stats.ListSessions(projectDir)
 	if err != nil {
 		return nil, err

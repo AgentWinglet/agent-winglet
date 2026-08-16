@@ -12,10 +12,12 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/umitkaanusta/agent-winglet/internal/cmdclass"
 	"github.com/umitkaanusta/agent-winglet/internal/codexrollout"
 	"github.com/umitkaanusta/agent-winglet/internal/config"
+	"github.com/umitkaanusta/agent-winglet/internal/entitlement"
 	"github.com/umitkaanusta/agent-winglet/internal/ledger"
 	"github.com/umitkaanusta/agent-winglet/internal/outputbudget"
 	"github.com/umitkaanusta/agent-winglet/internal/phase"
@@ -88,6 +90,9 @@ func run() error {
 }
 
 func handle(in hookInput) (*hookOutput, error) {
+	if result := entitlement.Check(entitlement.FeatureHookSavings, time.Now()); !result.Allowed {
+		return entitlementBlockedOutput(result, "codex", in.SessionID, in.HookEventName), nil
+	}
 	switch in.HookEventName {
 	case "SessionStart", "PostCompact":
 		return nil, resetSession(in)
@@ -102,6 +107,36 @@ func handle(in hookInput) (*hookOutput, error) {
 		return handleSessionEnd(in)
 	}
 	return nil, nil
+}
+
+// entitlementBlockedOutput always short-circuits handle's business logic for
+// a session that isn't entitled — every hook event takes this path, not just
+// the first one. entitlement.ShouldEmitNotice separately throttles the
+// *visible* notice to once per session so it doesn't repeat on every tool
+// call; conflating that throttle with the gate itself (both driven off the
+// same nil/non-nil return) was the bug — only the first blocked call in a
+// session actually skipped the suppression logic below, and every later
+// call ran it in full because ShouldEmitNotice's second call returned false.
+// Codex has no reliable AskUserQuestion equivalent available outside Plan
+// mode, so unlike claude-hook's version of this function, the instruction
+// below asks the model to raise this with the user directly (same "tell the
+// user" phrasing this file's compact nudge already uses for Codex) rather
+// than naming a specific tool that may not exist in the current session.
+func entitlementBlockedOutput(result entitlement.CheckResult, agent, sessionID, eventName string) *hookOutput {
+	if !entitlement.ShouldEmitNotice(agent, sessionID) {
+		return &hookOutput{}
+	}
+	msg := entitlement.NoticeFor(result.Reason)
+	action := entitlement.ActionFor(result.Reason)
+	return &hookOutput{
+		SystemMessage: msg,
+		HookSpecificOutput: &hookSpecificOutput{
+			HookEventName: eventName,
+			AdditionalContext: msg + " Before continuing with any further work, ask the " +
+				"user directly whether they'd like to " + action + " now or continue " +
+				"this session without Winglet active.",
+		},
+	}
 }
 
 func handlePostToolUse(in hookInput) (*hookOutput, error) {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,19 @@ import (
 	"github.com/umitkaanusta/agent-winglet/internal/statedir"
 	"github.com/umitkaanusta/agent-winglet/internal/stats"
 )
+
+func TestMain(m *testing.M) {
+	home, err := os.MkdirTemp("", "agent-winglet-app-test-home")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "TestMain: MkdirTemp failed:", err)
+		os.Exit(1)
+	}
+	os.Setenv("HOME", home)
+	os.Setenv("AGENT_WINGLET_TEST_ALLOW_UNGATED_HOOKS", "1")
+	code := m.Run()
+	os.RemoveAll(home)
+	os.Exit(code)
+}
 
 func TestBuildOverviewNoDataYetWhenNothingProcessed(t *testing.T) {
 	o := buildOverview(overviewTotals{}, 1, 0)

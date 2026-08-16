@@ -2,15 +2,23 @@ import './style.css';
 import { icons } from './icons.js';
 import { renderBrand } from './brand.js';
 import {
+  GetAccountStatus,
   GetCompactNudgesEnabled,
   GetHookHealth,
   GetOverview,
   GetPlatform,
   GetProjects,
   GetSessionStats,
+  Logout,
+  OpenBillingPortal,
+  OpenPricing,
+  RefreshEntitlement,
   SetCompactNudgesEnabled,
   SetClaudeHookEnabled,
   SetCodexHookEnabled,
+  StartBrowserSignIn,
+  StartFreeTrial,
+  UninstallWinglet,
 } from '../wailsjs/go/main/App';
 
 const state = {
@@ -19,6 +27,9 @@ const state = {
   expandedSessions: new Set(),
   sessionsByProject: new Map(),
   settingsError: '',
+  accountStatus: null,
+  accountError: '',
+  hookHealth: null,
 };
 
 const NAV_ITEMS = [
@@ -27,6 +38,7 @@ const NAV_ITEMS = [
 ];
 
 const SETTINGS_ITEMS = [
+  { id: 'account', label: 'Account' },
   { id: 'preferences', label: 'Preferences' },
   { id: 'installations', label: 'Installations' },
 ];
@@ -74,6 +86,22 @@ function navigate(screen) {
   stopPolling();
   state.screen = screen === 'settings' ? 'preferences' : screen;
   render();
+}
+
+async function loadAccountStatus() {
+  try {
+    state.accountStatus = await GetAccountStatus();
+    state.accountError = '';
+  } catch (err) {
+    state.accountError = err?.message || String(err);
+    state.accountStatus = {
+      state: 'server_error',
+      message: 'Winglet could not read account status.',
+      siteBaseURL: '',
+      hookAllowed: false,
+      dashboardAllowed: false,
+    };
+  }
 }
 
 // Stamps data-os on <body> so CSS can scope the sidebar's title-bar inset
@@ -537,15 +565,38 @@ async function renderSessionsSection(container, projectPath) {
 // only in this preference. Reading its state needs a round-trip
 // (GetCompactNudgesEnabled), so this is async like the other screens, not
 // fetched synchronously.
-async function loadInstallations(container) {
-  const hookHealth = await GetHookHealth();
-  if (state.screen !== 'installations') return;
+// installationsGateMessage explains, in terms specific to the signed-in
+// account's actual state, why these integrations can't be turned on yet —
+// replacing a single generic "sign in and subscribe" line that was equally
+// wrong for someone who'd never signed in, someone with an unclaimed trial,
+// and someone whose trial had just ended.
+function installationsGateMessage(status) {
+  switch (status?.state) {
+    case 'trial_available':
+      return "Start your free trial from the Account tab — until then, these won't do anything, even installed.";
+    case 'expired':
+      return "Your trial has ended. Subscribe from the Account tab — these won't do anything until you do.";
+    case 'server_error':
+      return status.message || 'Winglet could not verify your account.';
+    default:
+      return "Sign in and subscribe (or start your free trial) from the Account tab — these won't do anything until you do.";
+  }
+}
 
-  renderIfChanged('installations', { hookHealth, settingsError: state.settingsError }, () => {
+async function loadInstallations(container) {
+  if (!state.accountStatus) await loadAccountStatus();
+  state.hookHealth = await GetHookHealth();
+  if (state.screen !== 'installations') return;
+  const hookHealth = state.hookHealth;
+  const hookAllowed = Boolean(state.accountStatus?.hookAllowed);
+  const accountState = state.accountStatus?.state;
+
+  renderIfChanged('installations', { hookHealth, hookAllowed, accountState, settingsError: state.settingsError }, () => {
     container.innerHTML = `
       <h1 class="screen-title">Installations</h1>
       <div class="settings-stack">
         ${state.settingsError ? `<div class="settings-error">${escapeHtml(state.settingsError)}</div>` : ''}
+        ${hookAllowed ? '' : `<div class="settings-error">${escapeHtml(installationsGateMessage(state.accountStatus))}</div>`}
         <section class="settings-panel">
           <div class="hook-agent-list">
             ${hookAgentMarkup({
@@ -556,6 +607,7 @@ async function loadInstallations(container) {
               detail: hookHealth.claudeDetail,
               action: hookHealth.claudeAction,
               key: 'claude',
+              hookAllowed,
             })}
             ${hookAgentMarkup({
               name: 'Codex Integration',
@@ -565,6 +617,7 @@ async function loadInstallations(container) {
               detail: hookHealth.codexDetail,
               action: hookHealth.codexAction,
               key: 'codex',
+              hookAllowed,
             })}
           </div>
           <div class="settings-info">
@@ -572,12 +625,55 @@ async function loadInstallations(container) {
             <p>After enabling, disabling, or updating an integration, restart your terminal or IDE and start a new session so Winglet can pick up the change.</p>
           </div>
         </section>
+        <section class="settings-panel settings-panel-danger">
+          <div class="settings-panel-header">
+            <div>
+              <h2>Uninstall Winglet</h2>
+              <p>Removes the app and disconnects the Claude Code and Codex hooks. Your saved usage stats and preferences in ~/.agent-winglet are kept.</p>
+            </div>
+            <button class="hook-action-button disable" type="button" data-uninstall>Uninstall</button>
+          </div>
+        </section>
       </div>
     `;
     container.querySelectorAll('[data-hook-action]').forEach((btn) => {
       btn.addEventListener('click', () => runHookAction(container, btn));
     });
+    container.querySelectorAll('[data-uninstall]').forEach((btn) => {
+      btn.addEventListener('click', () => runUninstall(container, btn));
+    });
   });
+}
+
+// runUninstall calls the Go side's native confirm dialog + removal (see
+// App.UninstallWinglet's doc comment for why it isn't a JS confirm() here).
+// A successful uninstall quits the whole app shortly after on the Go side —
+// there's nothing left to render at that point. The other two cases where
+// the window is still around afterward both need to be visible, not silent:
+// removal failing partway through (surfaced like any other settings error),
+// and the user hitting Cancel in the native dialog — easy to land on by
+// habit, since Cancel carries the Return-key equivalent there (see
+// UninstallWinglet's doc comment) — which without an explicit message here
+// would look identical to a click that silently did nothing.
+async function runUninstall(container, btn) {
+  const original = btn.textContent;
+  state.settingsError = '';
+  btn.disabled = true;
+  btn.textContent = 'Uninstalling...';
+  try {
+    const proceeded = await UninstallWinglet();
+    btn.disabled = false;
+    btn.textContent = original;
+    if (!proceeded) {
+      state.settingsError = 'Uninstall cancelled — nothing was changed.';
+      await renderInstallationsScreen(container);
+    }
+  } catch (err) {
+    state.settingsError = err?.message || String(err);
+    btn.disabled = false;
+    btn.textContent = original;
+    await renderInstallationsScreen(container);
+  }
 }
 
 async function renderInstallationsScreen(container) {
@@ -619,10 +715,386 @@ async function renderPreferencesScreen(container) {
   });
 }
 
+async function renderAccountScreen(container) {
+  if (!state.accountStatus) {
+    container.innerHTML = `<div class="empty-state">Loading...</div>`;
+    await loadAccountStatus();
+    render();
+    return;
+  }
+
+  const status = state.accountStatus;
+  const subscribed = status.dashboardAllowed && status.hookAllowed;
+  container.innerHTML = `
+    <h1 class="screen-title">Account</h1>
+    <div class="settings-stack">
+      ${state.accountError ? `<div class="settings-error">${escapeHtml(state.accountError)}</div>` : ''}
+      <section class="settings-panel account-panel">
+        <div class="account-status ${subscribed ? 'ok' : 'missing'}">
+          <div>
+            <div class="settings-row-label">${escapeHtml(status.emailHint || 'Winglet account')}</div>
+            <div class="settings-row-desc">${escapeHtml(status.message || 'Sign in to Winglet to activate it.')}</div>
+          </div>
+          <span class="hook-status-badge">${escapeHtml(accountLabel(status))}</span>
+        </div>
+        ${subscribed ? accountSubscribedMarkup(status) : accountSignInMarkup(status)}
+      </section>
+      <div class="settings-info">
+        ${icons.info}
+        <p>For billing information — invoices, payment method, plan changes — head to <button class="settings-info-link" type="button" data-account-action="billing">agentwinglet.com</button>.</p>
+      </div>
+    </div>
+  `;
+  wireAccountActions(container);
+}
+
+// formatLocalTime renders a UTC ISO timestamp (everything the Go side
+// hands back — lastRefreshAt, expiresAt — is UTC, see appauth.go) in the
+// reader's own local time/timezone rather than the raw UTC string.
+function formatLocalTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+// formatTrialCountdown turns status.expiresAt (only meaningful while
+// state === 'trialing', where it's the trial's own end time — the signed
+// entitlement's ExpiresAt, see appauth.Client.StartTrial's doc comment) into
+// a short "ends in Xh"/"ends in Xd Yh" string. Returns '' once the trial has
+// already lapsed so a stale re-render never claims time that's gone.
+function formatTrialCountdown(expiresAt) {
+  if (!expiresAt) return '';
+  const ms = new Date(expiresAt).getTime() - Date.now();
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  const totalHours = Math.ceil(ms / 3_600_000);
+  if (totalHours < 24) return `ends in ${totalHours}h`;
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  return `ends in ${days}d${hours ? ` ${hours}h` : ''}`;
+}
+
+// formatTrialDaysHours is formatTrialCountdown's always-both-units sibling,
+// for the top-of-page trial banner ("ends in 2d 14h" rather than the
+// account screen's terser, unit-dropping "ends in 6h"/"ends in 2d").
+function formatTrialDaysHours(expiresAt) {
+  if (!expiresAt) return '';
+  const ms = new Date(expiresAt).getTime() - Date.now();
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  const totalHours = Math.ceil(ms / 3_600_000);
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  return `${days}d ${hours}h`;
+}
+
+function accountSubscribedMarkup(status) {
+  const trialing = status.state === 'trialing';
+  const countdown = trialing ? formatTrialCountdown(status.expiresAt) : '';
+  return `
+    <div class="account-meta">
+      ${trialing
+        ? `<div class="trial-pill">${icons.sparkle}Free trial${countdown ? ` · ${countdown}` : ''}</div>`
+        : status.subscription
+          ? `<div>${escapeHtml(status.subscription.tier || 'Winglet')} · ${escapeHtml(status.subscription.status || 'active')}</div>`
+          : ''}
+      ${!trialing && status.expiresAt ? `<div>Refreshes automatically before ${escapeHtml(formatLocalTime(status.expiresAt))}</div>` : ''}
+      ${status.lastRefreshAt ? `<div>Last checked ${escapeHtml(formatLocalTime(status.lastRefreshAt))}</div>` : ''}
+    </div>
+    <div class="account-actions">
+      ${trialing ? `<button class="hook-action-button enable" type="button" data-account-action="pricing">Subscribe now</button>` : ''}
+      <button class="hook-action-button ${trialing ? '' : 'enable'}" type="button" data-account-action="sync">Sync</button>
+      <button class="hook-action-button disable" type="button" data-account-action="logout">Sign out</button>
+    </div>
+  `;
+}
+
+// accountSignInMarkup covers every non-subscribed state the compact
+// Settings > Account panel can show. "Sign in with browser" only appears
+// when there's no emailHint — an already-signed-in account (trial_available,
+// expired) has no business being offered a second sign-in, and doing so
+// buried the actual next step (start the trial, or subscribe) behind a
+// redundant button.
+function accountSignInMarkup(status) {
+  const trialAvailable = status.state === 'trial_available';
+  const needsSubscribe = status.state === 'expired';
+  return `
+    <div class="account-actions">
+      ${trialAvailable ? `<button class="hook-action-button enable" type="button" data-account-action="start-trial">${icons.sparkle}Start 3-day free trial</button>` : ''}
+      ${needsSubscribe ? `<button class="hook-action-button enable" type="button" data-account-action="pricing">Subscribe</button>` : ''}
+      ${status.emailHint ? '' : `<button class="hook-action-button enable" type="button" data-account-action="signin">Sign in with browser</button>`}
+      ${status.emailHint ? `<button class="hook-action-button" type="button" data-account-action="sync">Sync</button>` : ''}
+      ${status.emailHint ? `<button class="hook-action-button disable" type="button" data-account-action="logout">Sign out</button>` : ''}
+    </div>
+  `;
+}
+
+function accountLabel(status) {
+  if (status.dashboardAllowed && status.hookAllowed) return status.state === 'trialing' ? 'Trial active' : 'Active';
+  if (status.state === 'trial_available') return 'Trial available';
+  if (status.emailHint) return 'Subscription needed';
+  return 'Signed out';
+}
+
+function wireAccountActions(container) {
+  container.querySelectorAll('[data-account-action]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const action = btn.getAttribute('data-account-action');
+      if (action === 'pricing') {
+        OpenPricing();
+        return;
+      }
+      if (action === 'billing') {
+        OpenBillingPortal();
+        return;
+      }
+      if (action === 'signin') {
+        const originalLabel = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = 'Waiting for browser…';
+        try {
+          await runAccountAction(async () => {
+            state.accountStatus = await StartBrowserSignIn();
+          });
+        } finally {
+          btn.disabled = false;
+          btn.textContent = originalLabel;
+        }
+      }
+      if (action === 'start-trial') {
+        const originalLabel = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = 'Starting trial…';
+        try {
+          await runAccountAction(async () => {
+            state.accountStatus = await StartFreeTrial();
+          });
+        } finally {
+          btn.disabled = false;
+          btn.textContent = originalLabel;
+        }
+      }
+      if (action === 'sync') {
+        await runAccountAction(async () => {
+          state.accountStatus = await RefreshEntitlement();
+        });
+      }
+      if (action === 'logout') {
+        await runAccountAction(async () => {
+          state.accountStatus = await Logout();
+        });
+      }
+    });
+  });
+}
+
+async function runAccountAction(fn) {
+  state.accountError = '';
+  try {
+    await fn();
+  } catch (err) {
+    state.accountError = err?.message || String(err);
+    await loadAccountStatus();
+  }
+  render();
+}
+
+function needsAccountGate() {
+  return (state.screen === 'overview' || state.screen === 'projects') &&
+    (!state.accountStatus || !state.accountStatus.dashboardAllowed);
+}
+
+// gateContent picks the copy and actions for every non-trial gate state.
+// signed_out and expired share the same shell (gateScreenMarkup) as the
+// trial welcome screen (trialWelcomeMarkup) — one centered card, swapped
+// content — so a brand-new user landing on 'signed_out' sees the same
+// 3-day-trial pitch the 'trial_available' screen makes right after they
+// actually sign in, instead of the trial only being mentioned once they're
+// already past the point it would have sold them on signing in.
+function gateContent(status) {
+  switch (status.state) {
+    // Reached almost exclusively after a claimed trial has run out (see
+    // AccountStatus's doc comment in appauth.go) — the copy leads with that,
+    // not a generic "subscribe to get started" pitch aimed at someone who
+    // never had a trial.
+    case 'expired':
+      return {
+        title: 'Subscribe to keep using Winglet',
+        subtitle: 'Your trial has ended. Subscribe to keep Winglet running.',
+        primaryAction: 'pricing',
+        primaryLabel: 'See plans',
+        secondaryAction: 'sync',
+        secondaryLabel: 'I just subscribed — refresh',
+      };
+    case 'server_error':
+      return {
+        title: "Winglet couldn't verify your account",
+        subtitle: status.message || 'Something went wrong. Try again in a moment.',
+        primaryAction: 'sync',
+        primaryLabel: 'Try again',
+        secondaryAction: 'signin',
+        secondaryLabel: 'Sign in again',
+      };
+    default:
+      return {
+        title: 'Sign in to Winglet',
+        subtitle: 'Sign in to activate Winglet.',
+        primaryAction: 'signin',
+        primaryLabel: 'Sign in with browser',
+        secondaryAction: 'pricing',
+        secondaryLabel: 'View pricing',
+      };
+  }
+}
+
+function gateScreenMarkup(status) {
+  const c = gateContent(status);
+  return `
+    <div class="gate-screen">
+      <div class="gate-card">
+        <div class="gate-brand">${renderBrand()}</div>
+        <h1 class="gate-title">${escapeHtml(c.title)}</h1>
+        <p class="gate-subtitle">${escapeHtml(c.subtitle)}</p>
+        <button class="gate-cta" type="button" data-account-action="${c.primaryAction}">${escapeHtml(c.primaryLabel)}</button>
+        <button class="gate-secondary" type="button" data-account-action="${c.secondaryAction}">${escapeHtml(c.secondaryLabel)}</button>
+        ${state.accountError ? `<p class="gate-error">${escapeHtml(state.accountError)}</p>` : ''}
+      </div>
+    </div>`;
+}
+
+// trialWelcomeMarkup is the first-run screen a newly signed-in account with
+// an unclaimed trial lands on (status.state === 'trial_available' — see
+// appauth.Status.TrialEligible's doc comment).
+function trialWelcomeMarkup() {
+  return `
+    <div class="gate-screen">
+      <div class="gate-card">
+        <div class="gate-brand">${renderBrand()}</div>
+        <h1 class="gate-title">Welcome to Winglet</h1>
+        <p class="gate-subtitle">Start your free 3-day trial. No credit card required.</p>
+        <button class="gate-cta" type="button" data-account-action="start-trial">Start my 3-day trial</button>
+        <button class="gate-secondary" type="button" data-account-action="pricing">See pricing instead</button>
+        ${state.accountError ? `<p class="gate-error">${escapeHtml(state.accountError)}</p>` : ''}
+      </div>
+    </div>`;
+}
+
+async function renderGateScreen(container) {
+  if (!state.accountStatus) {
+    container.innerHTML = `<div class="empty-state">Loading…</div>`;
+    await loadAccountStatus();
+    render();
+    return;
+  }
+  const status = state.accountStatus;
+  container.innerHTML = status.state === 'trial_available' ? trialWelcomeMarkup() : gateScreenMarkup(status);
+  wireAccountActions(container);
+}
+
+// hasAnyIntegration is the exit condition for the install-pick gate below —
+// Winglet does nothing for an account with neither integration enabled, so
+// "at least one" (not "both") is what actually unblocks the dashboard.
+function hasAnyIntegration(hookHealth) {
+  return Boolean(hookHealth?.claudeConfigured || hookHealth?.codexConfigured);
+}
+
+// needsInstallPick fires once dashboardAllowed is true (right after
+// trialWelcomeMarkup's "Start my 3-day trial", or for anyone already
+// subscribed) but before either integration is on — a fresh trial ticking
+// away with Winglet wired into neither Claude Code nor Codex would silently
+// waste it. state.hookHealth being null (not yet fetched) also reads as
+// "needs the gate" so renderInstallPickScreen's loading branch runs first;
+// it re-renders once the real value is in, same pattern as renderGateScreen.
+function needsInstallPick() {
+  return (state.screen === 'overview' || state.screen === 'projects') &&
+    Boolean(state.accountStatus?.dashboardAllowed) &&
+    !hasAnyIntegration(state.hookHealth);
+}
+
+// installPickMarkup reuses hookAgentMarkup verbatim (same cards the
+// Installations settings screen shows) so enabling here and enabling there
+// can never drift into two different pictures of the same toggle — just
+// framed as a required first step instead of a settings row.
+function installPickMarkup(hookHealth, hookAllowed) {
+  return `
+    <div class="gate-screen">
+      <div class="gate-card gate-card-wide">
+        <div class="gate-brand">${renderBrand()}</div>
+        <h1 class="gate-title">Choose what to install Winglet for</h1>
+        <p class="gate-subtitle">Enable at least one integration to start seeing savings. You can turn on both, and change this anytime from Installations.</p>
+        <div class="hook-agent-list">
+          ${hookAgentMarkup({
+            name: 'Claude Code Integration',
+            configured: hookHealth.claudeConfigured,
+            reviewLikely: hookHealth.claudeReviewLikely,
+            status: hookHealth.claudeStatus,
+            detail: hookHealth.claudeDetail,
+            action: hookHealth.claudeAction,
+            key: 'claude',
+            hookAllowed,
+          })}
+          ${hookAgentMarkup({
+            name: 'Codex Integration',
+            configured: hookHealth.codexConfigured,
+            reviewLikely: hookHealth.codexReviewLikely,
+            status: hookHealth.codexStatus,
+            detail: hookHealth.codexDetail,
+            action: hookHealth.codexAction,
+            key: 'codex',
+            hookAllowed,
+          })}
+        </div>
+        ${state.settingsError ? `<p class="gate-error">${escapeHtml(state.settingsError)}</p>` : ''}
+      </div>
+    </div>`;
+}
+
+async function renderInstallPickScreen(container) {
+  if (!state.hookHealth) {
+    container.innerHTML = `<div class="empty-state">Loading…</div>`;
+    try {
+      state.hookHealth = await GetHookHealth();
+    } catch (err) {
+      state.settingsError = err?.message || String(err);
+      state.hookHealth = { claudeConfigured: false, codexConfigured: false };
+    }
+    // Re-enters renderMain from scratch: if the fetch above turned up an
+    // already-configured integration, needsInstallPick now reads false and
+    // this whole screen is skipped in favor of Overview/Projects.
+    render();
+    return;
+  }
+  container.innerHTML = installPickMarkup(state.hookHealth, Boolean(state.accountStatus?.hookAllowed));
+  container.querySelectorAll('[data-hook-action]').forEach((btn) => {
+    btn.addEventListener('click', () => runInstallPickHookAction(btn));
+  });
+}
+
+async function runInstallPickHookAction(btn) {
+  const agent = btn.getAttribute('data-hook-agent');
+  const action = btn.getAttribute('data-hook-action');
+  const method = hookActionMethod(agent, action);
+  if (!method) return;
+
+  btn.disabled = true;
+  btn.textContent = 'Working...';
+  state.settingsError = '';
+  try {
+    await method();
+    state.hookHealth = await GetHookHealth();
+  } catch (err) {
+    state.settingsError = err?.message || String(err);
+  }
+  // A full render() (not just this screen) so a successful enable falls
+  // straight through needsInstallPick into Overview/Projects instead of
+  // requiring a second click to "continue".
+  render();
+}
+
 function hookAgentMarkup(agent) {
   const tone = agent.reviewLikely ? 'needs-action' : agent.configured ? 'ok' : 'missing';
   const primaryAction = agent.configured ? 'disable' : 'enable';
   const primaryLabel = agent.configured ? 'Disable' : 'Enable';
+  const disabled = primaryAction === 'enable' && !agent.hookAllowed;
   return `
     <article class="hook-agent ${tone}">
       <div class="hook-agent-main">
@@ -638,7 +1110,7 @@ function hookAgentMarkup(agent) {
           : ''
       }
       <div class="hook-agent-actions">
-        <button class="hook-action-button ${primaryAction}" type="button" data-hook-agent="${escapeHtml(agent.key)}" data-hook-action="${primaryAction}">
+        <button class="hook-action-button ${primaryAction}" type="button" data-hook-agent="${escapeHtml(agent.key)}" data-hook-action="${primaryAction}" ${disabled ? 'disabled' : ''}>
           ${escapeHtml(primaryLabel)}
         </button>
       </div>
@@ -686,6 +1158,12 @@ function escapeHtml(value) {
 }
 
 function renderMain(container) {
+  if (state.screen === 'account') return renderAccountScreen(container);
+  if (!state.accountStatus && (state.screen === 'overview' || state.screen === 'projects')) {
+    return renderGateScreen(container);
+  }
+  if (needsAccountGate()) return renderGateScreen(container);
+  if (needsInstallPick()) return renderInstallPickScreen(container);
   if (state.screen === 'overview') return renderOverviewScreen(container);
   if (state.screen === 'projects') return renderProjectsScreen(container);
   if (state.screen === 'installations') return renderInstallationsScreen(container);
@@ -726,7 +1204,10 @@ function render() {
         </div>
       </nav>
     </div>
-    <div class="main" id="main"></div>
+    <div class="main">
+      <div id="trial-banner"></div>
+      <div class="main-scroll" id="main"></div>
+    </div>
   `;
 
   app.querySelectorAll('[data-nav]').forEach((btn) => {
@@ -734,7 +1215,40 @@ function render() {
   });
 
   renderMain(app.querySelector('#main'));
+  renderTrialBanner();
 }
+
+// renderTrialBanner keeps the "you're on a free trial" strip visible above
+// every screen (Overview, Projects, every Settings tab — anywhere other than
+// the gate/welcome screens, which already make the trial the whole point of
+// the page) for as long as state.accountStatus.state === 'trialing'. It
+// targets #trial-banner, a sibling of #main set once in render()'s own
+// markup — never touched by the per-screen renderOverviewScreen/
+// renderProjectsScreen/etc. innerHTML swaps or their 1s polling — so it
+// survives screen navigation and poll ticks without being wired into any of
+// them individually. TRIAL_BANNER_REFRESH_MS re-renders it periodically so
+// the countdown stays honest even while parked on a screen that doesn't poll
+// on its own (e.g. Preferences).
+function trialBannerMarkup(status) {
+  if (!status || status.state !== 'trialing') return '';
+  const countdown = formatTrialDaysHours(status.expiresAt);
+  const text = countdown ? `Your Winglet free trial ends in ${countdown}` : 'Your Winglet free trial has ended';
+  return `
+    <div class="trial-banner">
+      <span class="trial-banner-text">${icons.sparkle}${text}</span>
+      <button class="trial-banner-cta" type="button" data-account-action="pricing">Subscribe</button>
+    </div>`;
+}
+
+function renderTrialBanner() {
+  const slot = document.querySelector('#trial-banner');
+  if (!slot) return;
+  slot.innerHTML = trialBannerMarkup(state.accountStatus);
+  wireAccountActions(slot);
+}
+
+const TRIAL_BANNER_REFRESH_MS = 60_000;
 
 initPlatform();
 render();
+setInterval(renderTrialBanner, TRIAL_BANNER_REFRESH_MS);

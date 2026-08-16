@@ -22,9 +22,79 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	os.Setenv("HOME", home)
+	os.Setenv("AGENT_WINGLET_TEST_ALLOW_UNGATED_HOOKS", "1")
 	code := m.Run()
 	os.RemoveAll(home)
 	os.Exit(code)
+}
+
+func TestEntitlementGateTellsCodexWhenSignedOut(t *testing.T) {
+	t.Setenv("AGENT_WINGLET_TEST_ALLOW_UNGATED_HOOKS", "0")
+	t.Setenv("HOME", t.TempDir())
+
+	out, err := handle(hookInput{
+		SessionID:     "session-1",
+		Cwd:           t.TempDir(),
+		HookEventName: "SessionStart",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out == nil || !strings.Contains(out.SystemMessage, "not signed in") {
+		t.Fatalf("SystemMessage = %+v, want signed-in notice", out)
+	}
+	if out.HookSpecificOutput == nil || out.HookSpecificOutput.AdditionalContext == "" {
+		t.Fatalf("AdditionalContext should tell Codex the hook is gated")
+	}
+	if !strings.Contains(out.HookSpecificOutput.AdditionalContext, "ask the user") {
+		t.Fatalf("AdditionalContext = %q, want an instruction to ask the user directly", out.HookSpecificOutput.AdditionalContext)
+	}
+	if strings.Contains(out.HookSpecificOutput.AdditionalContext, "AskUserQuestion") {
+		t.Fatalf("AdditionalContext should not mention Claude-specific AskUserQuestion: %q", out.HookSpecificOutput.AdditionalContext)
+	}
+}
+
+// TestEntitlementGateStaysBlockedAfterFirstNoticeInSameSession guards against
+// a bug where the gate only actually blocked the first hook call of a
+// session: entitlement.ShouldEmitNotice throttles the *visible* notice to
+// once per session, but handle() used to treat "no notice to show" and
+// "allowed" identically, so every call after the first quietly ran the full
+// suppression logic — including recording state that later calls could then
+// dedup-match against.
+func TestEntitlementGateStaysBlockedAfterFirstNoticeInSameSession(t *testing.T) {
+	t.Setenv("AGENT_WINGLET_TEST_ALLOW_UNGATED_HOOKS", "0")
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	sessionID := "codex-gate-session"
+
+	if _, err := handle(hookInput{SessionID: sessionID, Cwd: dir, HookEventName: "SessionStart"}); err != nil {
+		t.Fatal(err)
+	}
+
+	in := codexBashPostInput(t, dir, sessionID, "echo hi", map[string]interface{}{
+		"stdout":    "hi\n",
+		"stderr":    "",
+		"exit_code": 0,
+	})
+
+	first, err := handle(in)
+	if err != nil {
+		t.Fatalf("first Bash call errored: %v", err)
+	}
+	if strings.Contains(first.SystemMessage, "unchanged since turn") {
+		t.Fatalf("blocked session should never produce a dedup substitution, got %+v", first)
+	}
+	if first.SystemMessage != "" || first.HookSpecificOutput != nil {
+		t.Fatalf("blocked call after the session's first notice shouldn't repeat it or the nudge, got %+v", first)
+	}
+
+	second, err := handle(in)
+	if err != nil {
+		t.Fatalf("second Bash call errored: %v", err)
+	}
+	if strings.Contains(second.SystemMessage, "unchanged since turn") {
+		t.Fatalf("still-blocked session substituted a repeat call — the gate stopped applying after the first blocked call: %+v", second)
+	}
 }
 
 func writeRollout(t *testing.T, lines []string) string {

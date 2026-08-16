@@ -66,8 +66,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/umitkaanusta/agent-winglet/internal/config"
+	"github.com/umitkaanusta/agent-winglet/internal/entitlement"
 	"github.com/umitkaanusta/agent-winglet/internal/ledger"
 	"github.com/umitkaanusta/agent-winglet/internal/outputbudget"
 	"github.com/umitkaanusta/agent-winglet/internal/phase"
@@ -212,6 +214,9 @@ func run() error {
 // file. It returns the hookOutput to encode to stdout, or nil if the hook
 // has nothing to report (equivalent to exit 0 with no output).
 func handle(in hookInput) (*hookOutput, error) {
+	if result := entitlement.Check(entitlement.FeatureHookSavings, time.Now()); !result.Allowed {
+		return entitlementBlockedOutput(result, "claude", in.SessionID, in.HookEventName), nil
+	}
 	switch in.HookEventName {
 	case "SessionStart", "PostCompact":
 		root := projectroot.Resolve(in.Cwd)
@@ -247,6 +252,38 @@ func handle(in hookInput) (*hookOutput, error) {
 		return handleSessionEnd(in)
 	}
 	return nil, nil
+}
+
+// entitlementBlockedOutput always short-circuits handle's business logic for
+// a session that isn't entitled — every hook event takes this path, not just
+// the first one. entitlement.ShouldEmitNotice separately throttles the
+// *visible* notice to once per session so it doesn't repeat on every tool
+// call; conflating that throttle with the gate itself (both driven off the
+// same nil/non-nil return) was the bug — only the first blocked call in a
+// session actually skipped the suppression logic below, and every later
+// call ran it in full because ShouldEmitNotice's second call returned false.
+//
+// The one notice a session gets is deliberately louder than a line the model
+// might fold silently into whatever else it's doing: additionalContext
+// reaches the model (unlike systemMessage, which the user already sees on
+// its own — same split this file's compact nudge uses), so it explicitly
+// instructs Claude to check in with the user via AskUserQuestion before
+// continuing, rather than just mentioning Winglet is inactive and hoping
+// that lands. This only fires once per session, not on every blocked call —
+// interrupting every single tool call to nag about signing in would make
+// Winglet feel predatory rather than just gated.
+func entitlementBlockedOutput(result entitlement.CheckResult, agent, sessionID, eventName string) *hookOutput {
+	out := &hookOutput{HookSpecificOutput: hookSpecificOutput{HookEventName: eventName}}
+	if !entitlement.ShouldEmitNotice(agent, sessionID) {
+		return out
+	}
+	msg := entitlement.NoticeFor(result.Reason)
+	out.SystemMessage = msg
+	action := entitlement.ActionFor(result.Reason)
+	out.HookSpecificOutput.AdditionalContext = msg + " Before continuing with any further " +
+		"work, ask the user now via the AskUserQuestion tool whether they'd like to " +
+		action + " now or continue this session without Winglet active."
+	return out
 }
 
 // legacyLifetime mirrors the JSON shape of a pre-Rollup lifetime.stats.json

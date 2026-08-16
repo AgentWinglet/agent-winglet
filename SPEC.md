@@ -1,0 +1,612 @@
+# Winglet App + Hook Auth/Billing Gate Spec
+
+Status: draft
+Date: 2026-08-16
+Related repo: `~/workplace/agent-winglet-site`
+
+Site-side work has merged to the site repo's `main` (PR #13,
+`add-app-verification`): app entitlement issue/refresh/revoke, JWS signing,
+and the browser-handoff sign-in flow (`/app-signin` +
+`/api/app/auth/start-code` + `/api/app/auth/exchange`). This repo's
+`internal/appauth`, `cmd/agent-winglet-app`, and this spec have been updated
+to match. See `Site API Contract`, `Desktop App Work`, and `Known Gaps`
+below.
+
+## Purpose
+
+Add Firebase auth gating and Paddle subscription gating to the Wails desktop app
+and the Claude/Codex hooks without weakening Winglet's core privacy claim:
+project files, prompts, transcripts, tool output, paths, and savings stats stay
+on the user's machine.
+
+The website is the billing/auth control plane. This repo is the local product.
+The local product should only need a server-issued, signed entitlement file to
+decide whether paid behavior is enabled.
+
+The app and hooks only ever talk to `https://agentwinglet.com`. There is no
+dev/prod dichotomy and no env var or local dotenv to point them elsewhere —
+`agentwinglet.com` is live and is the only site this product talks to, for
+login, pricing, entitlement issue, and entitlement refresh alike. The app
+embeds public entitlement verification keys in `internal/entitlement/keys.go`.
+
+## Current Shape
+
+- Desktop app: Go/Wails backend in `cmd/agent-winglet-app`, plain Vite frontend
+  in `cmd/agent-winglet-app/frontend`.
+- Hooks: `cmd/claude-hook` and `cmd/codex-hook`.
+- Global local config: `~/.agent-winglet/config.json`.
+- Project state/stats: `~/.agent-winglet/projects/<project>-<hash>/`.
+- There is no auth, billing, account identity, or networked service today.
+- Site side (agent-winglet-site): Firebase client auth, Firebase Admin
+  ID-token verification, and Paddle checkout/customer portal/webhook
+  subscription sync already exist and are unrelated to this work. `main`
+  (via the `add-app-verification` merge) adds the app-facing entitlement
+  issue/refresh/revoke endpoints, the `/app-signin` browser-handoff sign-in
+  page, and JWS signing this spec depends on.
+
+## Product Decision
+
+Auth and subscription checks must gate:
+
+- App dashboard access, settings, install toggles, and future account screens.
+- Hook savings behavior.
+
+Hook installation and hook authorization are separate. Users may install or
+enable the Claude/Codex hook entries before they are logged in or subscribed,
+but installed hooks must not perform any Winglet behavior until the app has
+successfully checked with the site and written a valid entitlement for this
+device. "Hook configured" only means the agent can invoke the binary; it is not
+proof that the hook is allowed to work.
+
+Auth and subscription checks must not gate:
+
+- Clean uninstall.
+- Viewing a clear "sign in / subscribe / expired" status.
+- Hook pass-through behavior. If unauthorized, hooks should no-op rather than
+  breaking Claude Code or Codex.
+- Direct account actions: sign in, open pricing, manage billing when the signed
+  in account has a Paddle customer, sync/refresh, and sign out.
+
+Active entitlement states:
+
+- `trialing`: allowed.
+- `active`: allowed.
+- `past_due`, `canceled`, `paused`, `expired`, missing, invalid signature:
+  denied. No grace period for `past_due` — it is denied the same as
+  `canceled`, not given extra time.
+
+The site's current `createEntitlementClaims` only computes `active` or
+`canceled` from `subscription.subscriptionActive`; it does not yet map
+Paddle's `trialing`/`past_due`/`paused` lifecycle states onto the
+entitlement. Hooks and the app must still implement the full state
+handling below so nothing changes on the local side once the site fills
+this in — see `Known Gaps`.
+
+## Architecture
+
+Use three layers.
+
+1. Site control plane
+
+The Next site owns Firebase auth, Firestore user records, Paddle checkout,
+Paddle customer portal links, webhooks, and entitlement issuance.
+
+2. Local app
+
+The Wails app owns sign-in UX (a system-browser handoff, not an in-webview
+Firebase flow — see `Site API Contract`), account status display,
+subscription refresh, and local entitlement persistence. It is the only
+local component that calls the site. Before hooks can work, the app must
+call the site entitlement API and persist the server response locally.
+
+3. Hooks
+
+The hooks never authenticate with Firebase or Paddle. They read a local signed
+entitlement, verify it offline, and decide whether to run paid transformations.
+That offline hot path is allowed only because the entitlement was created by a
+prior server check. If no server-issued entitlement exists, or if it is expired,
+invalid, missing `hook_savings`, or carries an inactive subscription status, the
+hooks must treat Winglet as unavailable.
+
+This split keeps hook startup fast and avoids network calls inside agent
+tool-use paths.
+
+## Local Files
+
+Add a dedicated local auth package, separate from existing stats/config files:
+
+```text
+~/.agent-winglet/
+  config.json
+  auth.json
+  entitlement.jws
+  projects/
+```
+
+`auth.json` should contain only account/session metadata:
+
+```json
+{
+  "siteBaseURL": "https://agentwinglet.com",
+  "uidHash": "sha256:...",
+  "emailHint": "u***@example.com",
+  "deviceId": "dev_...",
+  "refreshToken": "opaque_site_refresh_token",
+  "lastRefreshAt": "2026-08-14T12:00:00Z"
+}
+```
+
+`siteBaseURL` is always `https://agentwinglet.com` — it is stored for display
+and for forward compatibility, not because it's configurable. There is no env
+var or build flag that points the app at anything else. All app-created URLs
+and API calls use this fixed value; see `Site API Contract` for the full
+endpoint list (`/app-signin`, `auth/start-code`, `auth/exchange`,
+`entitlements/issue`, `entitlements/refresh`, `entitlements/revoke`).
+
+`entitlement.jws` is a compact JWS signed by the site with a private key. This
+repo embeds only the public verification key.
+
+Entitlement claims:
+
+```json
+{
+  "iss": "https://agentwinglet.com",
+  "aud": "agent-winglet-local",
+  "sub": "sha256:<firebase_uid>",
+  "device_id": "dev_...",
+  "plan": "winglet_pro",
+  "status": "active",
+  "features": ["hook_savings", "desktop_dashboard"],
+  "issued_at": 1786708800,
+  "expires_at": 1787313600,
+  "grace_until": 1787313600,
+  "entitlement_version": 1
+}
+```
+
+`grace_until` currently equals `expires_at` and, per the product decision
+above, there is no grace period for `past_due` to apply it to — status
+gating (`Hook Work`) must deny `past_due` outright rather than reading
+`grace_until`. Local verification should still parse the field rather than
+error on it, in case the site starts using it for something else, but
+nothing in this spec depends on its value today. Don't confuse this with
+the unrelated "offline grace" in `Refresh behavior`, which is about
+tolerating a failed network refresh against an entitlement already valid
+until `expires_at`.
+
+The site signs with whichever key type is configured, not a fixed
+algorithm: `RS256` (RSA-SHA256) if the configured private key is RSA, or
+`EdDSA` (Ed25519) if it's Ed25519. The compact JWS header includes `alg`,
+`typ: "JWT"`, and a `kid` matching `ENTITLEMENT_SIGNING_KEY_ID`. The Go
+verifier in this repo must:
+
+- Read `alg`/`kid` from the header and select the matching embedded public
+  key rather than assuming one fixed algorithm.
+- Support both `RS256` and `Ed25519` verification paths, since the site's
+  configured key type isn't pinned in this spec and could change per
+  environment.
+- Reject any other `alg` value.
+- Keep public keys in a checked-in constants file. Public key env vars may
+  override or add keys for local experiments, but normal local testing should
+  use the embedded dev public key.
+
+Do not use shared secrets in the app or hooks.
+
+Expiry policy (from the site's `lib/entitlements.ts`):
+
+- `active` / `trialing`: 7 days.
+- `past_due`: 3 days.
+- `canceled` / anything inactive: 1 hour.
+- Refresh is denied outright if the app session (`appSessions/{sessionId}`)
+  has been revoked.
+
+File permissions:
+
+- Create `~/.agent-winglet` as `0700`.
+- Write auth/token files as `0600`.
+- Use atomic writes and a small file lock around refreshes.
+- Never store Firebase service account keys, Paddle API keys, or webhook secrets
+  locally.
+
+## Site API Contract
+
+There is no in-webview Firebase sign-in and no device-code/polling flow.
+Google OAuth is blocked from running inside any embedded webview (Google's
+`disallowed_useragent` policy — this applies to the embedded engine itself,
+not to a specific auth method, so it also rules out running the site's
+magic-link flow inside the app's webview). Sign-in instead happens in the
+user's system browser, on a dedicated `/app-signin` page, and hands a
+completed session back to the app over a one-time code delivered via a
+loopback HTTP redirect — the same pattern `gh auth login`/`gcloud auth login`
+use. This is what's actually implemented on `main` as of the
+`add-app-verification` merge (PR #13); see `Desktop App Work` for the app
+side.
+
+Base URL: `https://agentwinglet.com`, hardcoded. There is no dev/prod
+dichotomy, no env var, and no local dotenv override — the app and hooks only
+ever call the production site for the sign-in page, pricing, and entitlement
+API calls. Point a local site dev server at production data if you need to
+test against it; don't add a code path for an alternate base URL.
+
+- `GET /app-signin?redirect_uri=<url>&state=<value>`
+  - The page the app opens in the system browser. Presents Google and magic
+    link (same UI/logic as the main site's sign-in, reused via
+    `components/app-signin-panel.tsx`).
+  - `redirect_uri` **must** be `http://127.0.0.1:*` or `http://[::1]:*`
+    (`lib/app-signin-redirect.ts`'s `isAllowedAppSignInRedirectUri`) — the
+    page refuses to render for anything else. This is the one open-redirect
+    risk in the whole flow; it must stay enforced server-side, not just
+    trusted from the app.
+  - `state` is opaque to the site — generated by the app, passed straight
+    through in the final redirect, and checked by the app itself. The site
+    does not validate it.
+  - On completion (Google popup or the magic-link continue-URL, which is
+    built to point back at this same page with `redirect_uri`/`state`
+    preserved — see `lib/auth.ts`'s `sendMagicLink(email, continueUrl)`),
+    the page calls `start-code` below, then redirects the browser to
+    `${redirect_uri}?code=<code>&state=<state>`.
+
+- `POST /api/app/auth/start-code`
+  - Called by the browser page, not the app. Header:
+    `Authorization: Bearer <firebase_id_token>`.
+  - Mints a random opaque code (stored server-side as
+    `appSignInCodes/{sha256(code)}`, ~2 minute TTL, single-use), tied to the
+    uid that just completed Firebase sign-in in the browser.
+  - Returns `{ code, expiresAt }`. Does not create an app session or touch
+    entitlements — that happens at `exchange`.
+
+- `POST /api/app/auth/exchange`
+  - Called by the app's loopback server after it receives the redirect.
+  - Body: `{ code, deviceId, deviceName?, platform?, appVersion? }`. No
+    Authorization header — the code is the credential.
+  - Looks up and consumes the code inside a Firestore transaction (rejects
+    missing/expired/already-used), resolves the uid, then does exactly what
+    `issue` below does for that uid: creates the `appSessions/{sessionId}`
+    record and signs the entitlement.
+  - Returns the same shape as `issue`:
+    `{ refreshToken, entitlement, account: { accountId, email, subscription: { product, tier, status, active } } }`.
+
+- `POST /api/app/entitlements/issue`
+  - Still exists, unchanged, for any future direct-ID-token path — the
+    browser-handoff flow above uses `exchange`, not this. Header:
+    `Authorization: Bearer <firebase_id_token>`. Body/response shape as
+    `exchange`.
+
+- `POST /api/app/entitlements/refresh`
+  - Body: `{ deviceId, refreshToken }`.
+  - Validates the refresh token hash, device id match, and that the session
+    isn't revoked, then returns a fresh `{ entitlement, account }` (same
+    shapes as `issue`/`exchange`).
+  - No Authorization header / Firebase ID token needed — the opaque refresh
+    token is the credential.
+
+- `POST /api/app/entitlements/revoke`
+  - Body: `{ deviceId, refreshToken }` — same credential as `refresh`.
+  - Marks the matching `appSessions` record `revokedAt`; a later `refresh`
+    or `revoke` with that refresh token then fails. Only revokes the one
+    session the caller already holds a refresh token for — this is
+    self-service sign-out, not remote-wipe-other-devices (see
+    `Known Gaps`).
+  - `Logout()` in the app calls this best-effort before deleting local
+    files, so a stolen refresh token from a wiped machine stops working —
+    but local sign-out never blocks on it succeeding.
+
+Pricing/subscription entry:
+
+- The app's pricing action opens `https://agentwinglet.com/#pricing`.
+- Checkout is owned by the site and Paddle. The app does not call Paddle
+  directly and does not store Paddle credentials.
+- After checkout, the app refreshes entitlement status through
+  `/api/app/entitlements/refresh` and keeps hooks disabled until the refreshed
+  entitlement includes `hook_savings`.
+
+Login entry:
+
+- The only login path is `StartBrowserSignIn()` — the system-browser handoff
+  described above. There is no Firebase client SDK in the app.
+- If the app also offers an "Open Winglet account" link, it opens
+  `https://agentwinglet.com`.
+
+The app must not upload paths, prompts, transcripts, command output, savings
+events, session ids, or project ids. Acceptable request fields are product
+version, OS/arch, device id, auth token, and coarse entitlement metadata.
+
+## Desktop App Work
+
+Implemented (see `internal/appauth/appauth.go`, `cmd/agent-winglet-app/app.go`,
+`cmd/agent-winglet-app/frontend/src/main.js`). The app never runs Firebase
+sign-in itself — no Firebase JS SDK in the Wails frontend, no ID token ever
+reaches the Go backend. Sign-in is: open the system browser to
+`/app-signin`, wait on a local loopback listener, exchange the code that
+comes back.
+
+`appauth.BrowserSignIn` is one in-flight attempt:
+
+1. `PrepareBrowserSignIn` opens a TCP listener on `127.0.0.1:0` (OS-assigned
+   port), generates a random `state`, and builds
+   `https://agentwinglet.com/app-signin?redirect_uri=http://127.0.0.1:<port>/callback&state=<state>`.
+2. The caller (`app.go`, which holds the Wails context) opens that URL via
+   `wailsruntime.BrowserOpenURL`.
+3. `Await` serves exactly one request on `/callback`: rejects it if `state`
+   doesn't match or `code` is missing, otherwise takes the `code`, calls
+   `POST /api/app/auth/exchange`, and on success persists `auth.json` +
+   `entitlement.jws` via the existing `SaveAuthAndEntitlement`. Times out
+   after 3 minutes (the site's code TTL is ~2 minutes, plus headroom for the
+   user to actually click through sign-in).
+
+`agentwinglet.com` is live today and is the only site the app talks to,
+including during development — there's no env var or dotenv override to
+point it elsewhere, and none should be added.
+
+Backend:
+
+- `internal/appauth` owns `auth.json`/`entitlement.jws` persistence, the
+  loopback sign-in flow above, refresh, and logout (with best-effort
+  server-side revoke — see `Site API Contract`).
+- `internal/entitlement` parses and verifies `entitlement.jws` (must handle
+  both `RS256` and `Ed25519`/`EdDSA` per the `kid`/`alg` in the JWS header —
+  see `Local Files`).
+- Wails methods on `App` (`cmd/agent-winglet-app/app.go`):
+  - `GetAccountStatus()`
+  - `GetSiteBaseURL()` — returns the fixed `https://agentwinglet.com`, so the
+    frontend never hardcodes it separately from the backend.
+  - `StartBrowserSignIn()` — opens the browser and blocks (as a JS Promise)
+    until sign-in completes, times out, or fails. There is no separate
+    "start" and "poll" pair of methods; one call does the whole round trip.
+  - `RefreshEntitlement()`
+  - `Logout()` — best-effort server-side revoke, then always clears local
+    `auth.json`/`entitlement.jws` regardless of whether the revoke call
+    succeeded.
+  - `OpenBillingPortal()`
+  - `OpenPricing()` — opens `https://agentwinglet.com/#pricing`.
+- Keep current stats methods local-only. Do not mix stats payloads into auth
+  refresh calls.
+
+Frontend:
+
+- Account gate before the existing dashboard shell, driven by
+  `appauth.Status.State`: `signed_out`, `subscribed`, `expired`,
+  `server_error` today. (`trialing`/`past_due`-specific states aren't
+  distinguished from `expired` yet, since the site doesn't emit those
+  statuses — see `Known Gaps`; the app already treats any non-`active`
+  status as denied, so this is a cosmetic gap, not a gating one.)
+- Account area in settings with email hint, plan, next renewal/expiry, sync
+  button, manage billing, and sign out.
+- Existing overview/projects views require `desktop_dashboard` entitlement.
+- Install toggles disabled when entitlement is missing, with a clear
+  account action.
+- Sign-in is a single "Sign in with browser" button that calls
+  `StartBrowserSignIn()` and shows a waiting state while it's in flight —
+  there is no in-app email/password form and no separate Google/magic-link
+  choice inside the app; that choice lives entirely on the `/app-signin`
+  page in the browser.
+- Pricing action opens `https://agentwinglet.com/#pricing` so a signed-in
+  user can subscribe through the site/Paddle flow.
+
+Refresh behavior:
+
+- Refresh at app startup.
+- Refresh immediately after login and after returning from pricing/checkout.
+- Refresh when the account/settings screen opens.
+- Refresh at most once per 24 hours automatically otherwise. Entitlements
+  now last 7 days (`active`/`trialing`) or 3 days (`past_due`), so the
+  original 12-hour cadence was tuned for a shorter-lived token than the
+  site actually issues.
+- If refresh fails but an existing entitlement's `expires_at` (and
+  `grace_until`, once the site sets it independently) hasn't passed, show
+  "offline grace" and keep hooks enabled. Don't assume a buffer beyond
+  `expires_at` exists today — see the `grace_until` note in `Local Files`.
+- If refresh fails and there is no still-valid entitlement, show a server/login
+  problem in the app and keep hooks disabled.
+
+## Hook Work
+
+Add one shared gate package used by both hook binaries:
+
+```text
+internal/entitlement/
+  entitlement.go
+  entitlement_test.go
+```
+
+Hook behavior:
+
+- Load and verify `~/.agent-winglet/entitlement.jws` before any existing hook
+  work runs. This check happens on every invocation and must run before
+  registering projects, mutating ledger/phase/retire state, recording stats,
+  deduping, budgeting, retiring output, compact nudges, or savings receipts.
+- Require `hook_savings` feature.
+- Permit only `active` or `trialing`. Deny `past_due` immediately — no
+  grace period.
+- On denied state, perform no savings transformations and do not write savings
+  stats. The underlying Claude Code/Codex action continues normally.
+- Emit at most one short auth/subscription notice per agent session per agent.
+- Do not call the network.
+- Do not block the underlying agent command.
+
+Agent-facing denied messages must be direct and consistent in both hooks:
+
+- Missing `auth.json`, missing `entitlement.jws`, invalid local session, or no
+  prior successful server check:
+  `Winglet is installed but is not signed in. Open Winglet and sign in to enable hook savings.`
+- Valid account but `canceled`, `paused`, `past_due`, expired, missing
+  `hook_savings`, or otherwise unsubscribed:
+  `Winglet is installed but your subscription is not active. Open Winglet pricing to subscribe and enable hook savings.`
+- Network/server refresh failures are not generated by hooks because hooks do
+  not call the network. The app surfaces those errors; hooks only report the
+  resulting local state.
+
+Use each agent's native hook response shape for the notice (`systemMessage` or
+`additionalContext` as appropriate), but keep the text recognizable and visible
+inside both Claude Code and Codex sessions.
+
+Tests:
+
+- Valid signed entitlement enables hook behavior.
+- Expired entitlement disables hook behavior.
+- Bad signature disables hook behavior.
+- Missing entitlement disables hook behavior.
+- Past-due always disables hook behavior, regardless of `expires_at` or
+  `grace_until` — no grace period.
+- Hook output remains valid JSON / valid hook response in every denied state.
+- No hook package imports `net/http`, `net`, or site API packages.
+- Cover `trialing`/`past_due`/`paused` even though the site only emits
+  `active`/`canceled` today (see `Known Gaps`) — the verifier shouldn't need
+  a hook-side change once the site fills those in.
+- Cover both `RS256` and `Ed25519` signatures, and reject an unrecognized
+  `alg`.
+
+## Installer / Distribution Work
+
+Open-source install from source creates a clone-resistance problem: anyone with
+the source can remove local gate checks. Treat this as a business/legal problem,
+not something the local code can fully solve.
+
+Preferred distribution model:
+
+- Public repo contains transparent UI, hook protocol adapters, tests, docs, and
+  privacy guarantees.
+- Paid releases are official signed binaries built by Winglet CI.
+- The site only serves signed release artifacts to entitled users.
+- The entitlement signing private key never enters the repo or local build.
+- The public key embedded in this repo can verify official entitlements but
+  cannot mint them.
+
+If the full hook logic is open source under MIT, clone resistance is weak. A
+coding agent can remove the checks. At most, the official service, official
+updates, signing keys, trademark, Paddle/Firebase backend, and distribution
+channel remain protected. Don't promise that open source code can't be
+cloned — say precisely what stays protected instead (matches the site
+spec's framing on `add-app-verification`).
+
+Stronger options:
+
+- Use a source-available noncommercial license instead of MIT for the product
+  repo.
+- Keep a small paid optimization engine closed-source and call it from open
+  hook adapters.
+- Keep only docs/site open source and distribute the app/hooks as signed
+  binaries.
+- Open-source the privacy-critical readers and tests, but keep entitlement and
+  paid transformation logic closed.
+
+## Privacy / Security Proof Plan
+
+If the product remains closed source, trust needs artifacts:
+
+- Publish a local-only threat model that lists every network request and proves
+  none contain project content.
+- Add CI tests that fail if hook packages import networking packages.
+- Add integration tests with a local fake site proving app auth refresh sends
+  only account/device fields.
+- Publish SBOMs and signed checksums for every release.
+- Code-sign and notarize releases where platform tooling supports it.
+- Publish a reproducible-build recipe or at least deterministic build logs.
+- Commission a third-party audit focused on:
+  - no prompt/transcript/path exfiltration,
+  - entitlement verification,
+  - update/download integrity,
+  - local file permissions,
+  - Firebase/Paddle webhook handling.
+- Publish a network transparency report with sample Little Snitch/mitmproxy
+  captures from login, refresh, checkout, and normal hook operation.
+
+The key privacy claim should be precise:
+
+"Winglet sends account, billing, device, and version metadata to
+agentwinglet.com for login and subscription checks. It does not send prompts,
+transcripts, tool output, command output, project paths, files, or savings
+stats. Hooks do not make network requests."
+
+## Known Gaps
+
+Things the shipped implementation leaves open, tracked here so app/hook work
+doesn't silently assume they're done:
+
+- **Revoke is self-service only.** `POST /api/app/entitlements/revoke` takes
+  `{ deviceId, refreshToken }` — the same credential `refresh` uses — so it
+  can only revoke the session the caller already holds a refresh token for.
+  There's no uid-keyed "list my devices and revoke any of them" endpoint, so
+  "remote wipe a lost laptop from another device" isn't possible yet, only
+  "this device signs itself out."
+- **Status mapping is binary.** `createEntitlementClaims` only produces
+  `active` or `canceled`; Paddle's `trialing`/`past_due`/`paused` states
+  aren't wired to the entitlement yet. Until the site adds that mapping,
+  a trialing or past-due user will look `canceled` to the app and hooks.
+- **Magic link across devices silently fails to reconnect the app.** The
+  loopback handoff only works if the link is opened on the same machine
+  running the app (127.0.0.1 doesn't reach across devices). The
+  `/app-signin` page already tells the user "Open it on this device to
+  finish signing in," but there's no detection/error path if they open it
+  on a phone anyway — the browser tab completes Firebase sign-in fine, then
+  the redirect to `http://127.0.0.1:<port>/callback` just fails silently in
+  that browser, and the app's loopback listener eventually times out with a
+  generic "sign-in timed out" rather than an actionable message.
+- **Site currently grants features to `past_due`.** `createEntitlementClaims`
+  includes `past_due` among the statuses that get `hook_savings`/
+  `desktop_dashboard` and a 3-day expiry — i.e. exactly the grace window
+  this spec now says shouldn't exist. Hooks are the enforcement point in
+  the meantime (deny `past_due` locally regardless of what the JWS
+  claims), but the site should stop granting features for `past_due` once
+  prioritized so the JWS itself reflects the real policy.
+- **`grace_until` has no remaining use for subscription-state gating.**
+  It's always set equal to `expires_at`, and with no grace period for
+  `past_due`, there's no case left in this spec where it matters for
+  status decisions. The "offline grace" in `Refresh behavior` is unrelated
+  — it's tolerance for the app failing to reach the network before an
+  already-issued, still-unexpired entitlement expires, not a subscription
+  grace period.
+- **Signing algorithm isn't pinned.** The site picks `RS256` or `EdDSA`
+  based on whatever key is configured in `ENTITLEMENT_SIGNING_PRIVATE_KEY`
+  per environment. The Go verifier needs to support both from day one
+  rather than hardcoding one.
+- **No device management UI or revocation list**, and no gated/signed
+  binary downloads yet — both are explicit non-goals on the site spec for
+  this pass, matching Phase 4 below.
+
+## Implementation Phases
+
+1. Site auth/billing base — done, on `main`
+   - Firebase client/admin config, user doc schema, Paddle client/server,
+     checkout, webhooks, and customer portal already existed before this
+     work.
+   - Added: `POST /api/app/entitlements/issue`,
+     `POST /api/app/entitlements/refresh`,
+     `POST /api/app/entitlements/revoke`,
+     `POST /api/app/auth/start-code`, `POST /api/app/auth/exchange`, the
+     `/app-signin` browser page, the `appSessions` and `appSignInCodes`
+     collections, and JWS entitlement signing (`lib/entitlements.ts`,
+     `lib/app-entitlements.ts`, `lib/app-signin-codes.ts`,
+     `lib/app-signin-redirect.ts`).
+   - Still open on the site side: the `trialing`/`past_due`/`paused` status
+     mapping, and revoke is self-service-only — see `Known Gaps`.
+
+2. App auth shell — done
+   - Account gate, browser-handoff sign-in (`StartBrowserSignIn`), local
+     entitlement storage, refresh, and best-effort revoke on logout, per
+     `Desktop App Work` above (`internal/appauth`, `cmd/agent-winglet-app`).
+
+3. Hook offline gate — done
+   - `internal/entitlement` verifies `entitlement.jws` and is wired into
+     both `cmd/claude-hook` and `cmd/codex-hook` as an early decision.
+     Supports both `RS256` and `Ed25519` signatures.
+
+4. Paid distribution — not started
+   - Replace public download placeholders with signed, entitlement-gated
+     release downloads.
+
+5. Proof package — not started
+   - Add tests, docs, release signing, and privacy/security audit artifacts.
+
+## References
+
+- Paddle webhook signature verification:
+  `https://developer.paddle.com/webhooks/about/signature-verification/`
+- Paddle checkout custom data:
+  `https://developer.paddle.com/build/transactions/custom-data/`
+- Paddle subscription lifecycle events:
+  `https://developer.paddle.com/webhooks/subscriptions/subscription-canceled/`
+- Firebase custom tokens:
+  `https://firebase.google.com/docs/auth/admin/create-custom-tokens`
+- Firebase session cookies:
+  `https://firebase.google.com/docs/auth/admin/manage-cookies`
