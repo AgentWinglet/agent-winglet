@@ -1179,6 +1179,22 @@ body {
   line-height: 1.5;
 }
 
+.settings-info-link {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 700;
+  color: var(--accent);
+  cursor: default;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.settings-info-link:hover {
+  color: color-mix(in srgb, var(--accent), var(--text-primary) 15%);
+}
+
 /* --- Sign-in / trial gate --- */
 /* Full takeover of .main for an account that can't reach the dashboard yet
    (see needsAccountGate() in main.js): centered on the same radial accent

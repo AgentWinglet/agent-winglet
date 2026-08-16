@@ -10,6 +10,7 @@ import {
   GetProjects,
   GetSessionStats,
   Logout,
+  OpenBillingPortal,
   OpenPricing,
   RefreshEntitlement,
   SetCompactNudgesEnabled,
@@ -738,6 +739,10 @@ async function renderAccountScreen(container) {
         </div>
         ${subscribed ? accountSubscribedMarkup(status) : accountSignInMarkup(status)}
       </section>
+      <div class="settings-info">
+        ${icons.info}
+        <p>For billing information — invoices, payment method, plan changes — head to <button class="settings-info-link" type="button" data-account-action="billing">agentwinglet.com</button>.</p>
+      </div>
     </div>
   `;
   wireAccountActions(container);
@@ -836,6 +841,10 @@ function wireAccountActions(container) {
       const action = btn.getAttribute('data-account-action');
       if (action === 'pricing') {
         OpenPricing();
+        return;
+      }
+      if (action === 'billing') {
+        OpenBillingPortal();
         return;
       }
       if (action === 'signin') {

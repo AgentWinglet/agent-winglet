@@ -110,8 +110,14 @@ func (a *App) OpenPricing() {
 	}
 }
 
+// OpenBillingPortal opens the bare site — agentwinglet.com, not
+// agentwinglet.com/#pricing (OpenPricing's target) — since invoices, payment
+// method, and plan changes live in the signed-in account area there, not on
+// the pricing page a not-yet-subscribed visitor would land on.
 func (a *App) OpenBillingPortal() {
-	a.OpenPricing()
+	if a.ctx != nil {
+		wailsruntime.BrowserOpenURL(a.ctx, appauth.SiteBaseURL())
+	}
 }
 
 // UninstallWinglet reverses what install.sh does — the same two things
