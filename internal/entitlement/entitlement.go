@@ -309,6 +309,22 @@ func NoticeFor(reason CheckReason) string {
 	}
 }
 
+// ActionFor names the specific action the user needs to take for reason, so
+// callers can phrase a targeted question ("sign in" vs "subscribe or start a
+// free trial") instead of a one-size-fits-all "take care of that". It mirrors
+// NoticeFor's grouping: subscription/trial reasons get the subscribe action,
+// everything else (signed out, invalid/missing entitlement) gets sign in,
+// since none of those can be resolved without a valid signed-in session
+// first.
+func ActionFor(reason CheckReason) string {
+	switch reason {
+	case ReasonInactive, ReasonExpired, ReasonWrongFeature:
+		return "subscribe or start a free trial"
+	default:
+		return "sign in"
+	}
+}
+
 func ShouldEmitNotice(agent, sessionID string) bool {
 	if strings.TrimSpace(sessionID) == "" {
 		return true

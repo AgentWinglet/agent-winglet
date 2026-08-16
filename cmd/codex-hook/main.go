@@ -127,12 +127,13 @@ func entitlementBlockedOutput(result entitlement.CheckResult, agent, sessionID, 
 		return &hookOutput{}
 	}
 	msg := entitlement.NoticeFor(result.Reason)
+	action := entitlement.ActionFor(result.Reason)
 	return &hookOutput{
 		SystemMessage: msg,
 		HookSpecificOutput: &hookSpecificOutput{
 			HookEventName: eventName,
 			AdditionalContext: msg + " Before continuing with any further work, ask the " +
-				"user directly whether they'd like to take care of that now or continue " +
+				"user directly whether they'd like to " + action + " now or continue " +
 				"this session without Winglet active.",
 		},
 	}
