@@ -570,13 +570,13 @@ async function renderSessionsSection(container, projectPath) {
 function installationsGateMessage(status) {
   switch (status?.state) {
     case 'trial_available':
-      return 'Start your free trial (or subscribe) from the Account tab to enable these integrations.';
+      return "Start your free trial from the Account tab — until then, these won't do anything, even installed.";
     case 'expired':
-      return 'Your free trial has ended. Subscribe from the Account tab to enable these integrations.';
+      return "Your trial has ended. Subscribe from the Account tab — these won't do anything until you do.";
     case 'server_error':
       return status.message || 'Winglet could not verify your account.';
     default:
-      return 'Sign in to Winglet, then subscribe or start your free trial, to enable these integrations.';
+      return "Sign in and subscribe (or start your free trial) from the Account tab — these won't do anything until you do.";
   }
 }
 
@@ -686,7 +686,7 @@ async function renderAccountScreen(container) {
         <div class="account-status ${subscribed ? 'ok' : 'missing'}">
           <div>
             <div class="settings-row-label">${escapeHtml(status.emailHint || 'Winglet account')}</div>
-            <div class="settings-row-desc">${escapeHtml(status.message || 'Sign in to Winglet to unlock the dashboard and your free trial.')}</div>
+            <div class="settings-row-desc">${escapeHtml(status.message || 'Sign in to Winglet to activate it.')}</div>
           </div>
           <span class="hook-status-badge">${escapeHtml(accountLabel(status))}</span>
         </div>
@@ -842,7 +842,7 @@ function gateContent(status) {
       return {
         badge: { text: 'Trial ended', muted: true },
         title: 'Subscribe to keep using Winglet',
-        subtitle: 'Your free trial has ended. Subscribing keeps the dashboard and everything else unlocked.',
+        subtitle: 'Your trial has ended. Subscribe to keep Winglet running.',
         primaryAction: 'pricing',
         primaryLabel: 'See plans',
         secondaryAction: 'sync',
@@ -851,7 +851,7 @@ function gateContent(status) {
     case 'server_error':
       return {
         title: "Winglet couldn't verify your account",
-        subtitle: status.message || 'Something went wrong reaching Winglet. Try again in a moment.',
+        subtitle: status.message || 'Something went wrong. Try again in a moment.',
         primaryAction: 'sync',
         primaryLabel: 'Try again',
         secondaryAction: 'signin',
@@ -861,7 +861,7 @@ function gateContent(status) {
       return {
         badge: { text: '3-Day Free Trial', icon: icons.sparkle },
         title: 'Sign in to Winglet',
-        subtitle: 'Connect your account to unlock the dashboard and your 3-day free trial.',
+        subtitle: 'Sign in to activate Winglet.',
         primaryAction: 'signin',
         primaryLabel: 'Sign in with browser',
         secondaryAction: 'pricing',
@@ -899,7 +899,7 @@ function trialWelcomeMarkup() {
         <div class="gate-badge">${icons.sparkle}3-Day Free Trial</div>
         <div class="gate-brand">${renderBrand()}</div>
         <h1 class="gate-title">Welcome to Winglet</h1>
-        <p class="gate-subtitle">You're signed in. Start your free 3-day trial to unlock the full dashboard and everything else Winglet does, instantly.</p>
+        <p class="gate-subtitle">Start your free 3-day trial — full access, instantly.</p>
         <div class="gate-timeline">
           <div class="gate-day active">
             <span class="gate-day-dot"></span>

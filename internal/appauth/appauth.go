@@ -112,13 +112,13 @@ func (c *Client) AccountStatus() Status {
 	if err != nil {
 		return Status{
 			State:       "signed_out",
-			Message:     "Sign in to Winglet to unlock the dashboard and your free trial.",
+			Message:     "Sign in to Winglet to activate it.",
 			SiteBaseURL: baseURL,
 		}
 	}
 	status := Status{
 		State:         "signed_out",
-		Message:       "Sign in to Winglet to unlock the dashboard and your free trial.",
+		Message:       "Sign in to Winglet to activate it.",
 		SiteBaseURL:   auth.SiteBaseURL,
 		EmailHint:     auth.EmailHint,
 		LastRefreshAt: auth.LastRefreshAt,
@@ -157,16 +157,16 @@ func (c *Client) AccountStatus() Status {
 		// trial here, and the message leads with the trial framing since
 		// that's who most often lands on this state.
 		status.State = "expired"
-		status.Message = "Your free trial has ended. Subscribe to keep using Winglet."
+		status.Message = "Your trial has ended. Subscribe to keep Winglet running."
 		return status
 	}
 	if hook.Reason == entitlement.ReasonMissingKey || hook.Reason == entitlement.ReasonInvalid {
 		status.State = "server_error"
-		status.Message = "Winglet could not verify the local entitlement. Sync again after configuring the entitlement public key."
+		status.Message = "Winglet couldn't verify your account. Try syncing, or sign in again."
 		return status
 	}
 	status.State = "signed_out"
-	status.Message = "Sign in to Winglet to unlock the dashboard and your free trial."
+	status.Message = "Sign in to Winglet to activate it."
 	return status
 }
 
@@ -292,7 +292,7 @@ func (c *Client) completeBrowserSignIn(code string, info DeviceInfo) (Status, er
 		return Status{}, err
 	}
 	if out.RefreshToken == "" || out.Entitlement == "" {
-		return Status{}, fmt.Errorf("site returned an incomplete entitlement response")
+		return Status{}, fmt.Errorf("sign-in didn't fully complete, try again")
 	}
 	auth := AuthFile{
 		SiteBaseURL:   SiteBaseURL(),
@@ -328,7 +328,7 @@ func (c *Client) Refresh() (Status, error) {
 		return c.AccountStatus(), err
 	}
 	if out.Entitlement == "" {
-		return c.AccountStatus(), fmt.Errorf("site returned an incomplete refresh response")
+		return c.AccountStatus(), fmt.Errorf("couldn't refresh your account, try again")
 	}
 	auth.LastRefreshAt = time.Now().UTC().Format(time.RFC3339)
 	auth.Account = out.Account
@@ -368,7 +368,7 @@ func (c *Client) StartTrial() (Status, error) {
 		return c.AccountStatus(), err
 	}
 	if out.Entitlement == "" {
-		return c.AccountStatus(), fmt.Errorf("site returned an incomplete trial response")
+		return c.AccountStatus(), fmt.Errorf("couldn't start your trial, try again")
 	}
 	auth.LastRefreshAt = time.Now().UTC().Format(time.RFC3339)
 	auth.Account = out.Account
