@@ -14,8 +14,10 @@ import (
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"github.com/umitkaanusta/agent-winglet/internal/appauth"
 	"github.com/umitkaanusta/agent-winglet/internal/appipc"
 	"github.com/umitkaanusta/agent-winglet/internal/config"
+	"github.com/umitkaanusta/agent-winglet/internal/entitlement"
 	"github.com/umitkaanusta/agent-winglet/internal/registry"
 	"github.com/umitkaanusta/agent-winglet/internal/stats"
 )
@@ -58,7 +60,53 @@ func (a *App) SetCompactNudgesEnabled(enabled bool) error {
 	return config.Save(cfg)
 }
 
+func (a *App) GetSiteBaseURL() string {
+	return appauth.SiteBaseURL()
+}
+
+func (a *App) GetAccountStatus() appauth.Status {
+	return (&appauth.Client{}).AccountStatus()
+}
+
+func (a *App) CompleteFirebaseSignIn(idToken string) (appauth.Status, error) {
+	return (&appauth.Client{}).CompleteFirebaseSignIn(idToken, appauth.DeviceInfo{
+		Platform: goruntime.GOOS,
+	})
+}
+
+func (a *App) SignInWithEmailPassword(email, password string) (appauth.Status, error) {
+	return (&appauth.Client{}).SignInWithEmailPassword(email, password, appauth.DeviceInfo{
+		Platform: goruntime.GOOS,
+	})
+}
+
+func (a *App) RefreshEntitlement() (appauth.Status, error) {
+	return (&appauth.Client{}).Refresh()
+}
+
+func (a *App) Logout() (appauth.Status, error) {
+	if err := appauth.Logout(); err != nil {
+		return appauth.Status{}, err
+	}
+	return (&appauth.Client{}).AccountStatus(), nil
+}
+
+func (a *App) OpenPricing() {
+	if a.ctx != nil {
+		wailsruntime.BrowserOpenURL(a.ctx, appauth.SiteBaseURL()+"/#pricing")
+	}
+}
+
+func (a *App) OpenBillingPortal() {
+	a.OpenPricing()
+}
+
 func (a *App) SetClaudeHookEnabled(enabled bool) (HookHealth, error) {
+	if enabled {
+		if err := requireEntitlement(entitlement.FeatureHookSavings); err != nil {
+			return HookHealth{}, err
+		}
+	}
 	if err := setGlobalHookEnabled("claude-hook", enabled); err != nil {
 		return HookHealth{}, err
 	}
@@ -66,10 +114,28 @@ func (a *App) SetClaudeHookEnabled(enabled bool) (HookHealth, error) {
 }
 
 func (a *App) SetCodexHookEnabled(enabled bool) (HookHealth, error) {
+	if enabled {
+		if err := requireEntitlement(entitlement.FeatureHookSavings); err != nil {
+			return HookHealth{}, err
+		}
+	}
 	if err := setGlobalHookEnabled("codex-hook", enabled); err != nil {
 		return HookHealth{}, err
 	}
 	return a.GetHookHealth()
+}
+
+func requireEntitlement(feature string) error {
+	result := entitlement.Check(feature, time.Now())
+	if result.Allowed {
+		return nil
+	}
+	switch result.Reason {
+	case entitlement.ReasonInactive, entitlement.ReasonExpired, entitlement.ReasonWrongFeature:
+		return fmt.Errorf("subscribe to Winglet Pro to use this feature")
+	default:
+		return fmt.Errorf("sign in to Winglet to use this feature")
+	}
 }
 
 // HookHealth is a dashboard-facing install/status check for hook setup. Codex
@@ -701,6 +767,9 @@ type Overview struct {
 // disk, so it can't drift from what GetProjects/GetSessionStats show for the
 // same projects.
 func (a *App) GetOverview() (Overview, error) {
+	if err := requireEntitlement(entitlement.FeatureDesktopDashboard); err != nil {
+		return Overview{}, err
+	}
 	dirs, err := registry.Load()
 	if err != nil {
 		return Overview{}, err
@@ -1055,6 +1124,9 @@ type ProjectRow struct {
 // stats.SumProject) — the same rollup GetOverview sums across projects, so a
 // project row and its slice of Overview can never disagree.
 func (a *App) GetProjects() ([]ProjectRow, error) {
+	if err := requireEntitlement(entitlement.FeatureDesktopDashboard); err != nil {
+		return nil, err
+	}
 	dirs, err := registry.Load()
 	if err != nil {
 		return nil, err
@@ -1095,6 +1167,9 @@ type SessionRow struct {
 // GetSessionStats returns one row per session-stats file still on disk for
 // projectDir, newest first (see stats.ListSessions).
 func (a *App) GetSessionStats(projectDir string) ([]SessionRow, error) {
+	if err := requireEntitlement(entitlement.FeatureDesktopDashboard); err != nil {
+		return nil, err
+	}
 	files, err := stats.ListSessions(projectDir)
 	if err != nil {
 		return nil, err

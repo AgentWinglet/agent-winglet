@@ -2,15 +2,20 @@ import './style.css';
 import { icons } from './icons.js';
 import { renderBrand } from './brand.js';
 import {
+  GetAccountStatus,
   GetCompactNudgesEnabled,
   GetHookHealth,
   GetOverview,
   GetPlatform,
   GetProjects,
   GetSessionStats,
+  Logout,
+  OpenPricing,
+  RefreshEntitlement,
   SetCompactNudgesEnabled,
   SetClaudeHookEnabled,
   SetCodexHookEnabled,
+  SignInWithEmailPassword,
 } from '../wailsjs/go/main/App';
 
 const state = {
@@ -19,6 +24,8 @@ const state = {
   expandedSessions: new Set(),
   sessionsByProject: new Map(),
   settingsError: '',
+  accountStatus: null,
+  accountError: '',
 };
 
 const NAV_ITEMS = [
@@ -27,6 +34,7 @@ const NAV_ITEMS = [
 ];
 
 const SETTINGS_ITEMS = [
+  { id: 'account', label: 'Account' },
   { id: 'preferences', label: 'Preferences' },
   { id: 'installations', label: 'Installations' },
 ];
@@ -74,6 +82,22 @@ function navigate(screen) {
   stopPolling();
   state.screen = screen === 'settings' ? 'preferences' : screen;
   render();
+}
+
+async function loadAccountStatus() {
+  try {
+    state.accountStatus = await GetAccountStatus();
+    state.accountError = '';
+  } catch (err) {
+    state.accountError = err?.message || String(err);
+    state.accountStatus = {
+      state: 'server_error',
+      message: 'Winglet could not read account status.',
+      siteBaseURL: '',
+      hookAllowed: false,
+      dashboardAllowed: false,
+    };
+  }
 }
 
 // Stamps data-os on <body> so CSS can scope the sidebar's title-bar inset
@@ -538,14 +562,17 @@ async function renderSessionsSection(container, projectPath) {
 // (GetCompactNudgesEnabled), so this is async like the other screens, not
 // fetched synchronously.
 async function loadInstallations(container) {
+  if (!state.accountStatus) await loadAccountStatus();
   const hookHealth = await GetHookHealth();
   if (state.screen !== 'installations') return;
+  const hookAllowed = Boolean(state.accountStatus?.hookAllowed);
 
-  renderIfChanged('installations', { hookHealth, settingsError: state.settingsError }, () => {
+  renderIfChanged('installations', { hookHealth, hookAllowed, settingsError: state.settingsError }, () => {
     container.innerHTML = `
       <h1 class="screen-title">Installations</h1>
       <div class="settings-stack">
         ${state.settingsError ? `<div class="settings-error">${escapeHtml(state.settingsError)}</div>` : ''}
+        ${hookAllowed ? '' : `<div class="settings-error">Sign in and subscribe before enabling hooks from the app. Installed hooks remain disabled until Winglet has a valid entitlement.</div>`}
         <section class="settings-panel">
           <div class="hook-agent-list">
             ${hookAgentMarkup({
@@ -556,6 +583,7 @@ async function loadInstallations(container) {
               detail: hookHealth.claudeDetail,
               action: hookHealth.claudeAction,
               key: 'claude',
+              hookAllowed,
             })}
             ${hookAgentMarkup({
               name: 'Codex Integration',
@@ -565,6 +593,7 @@ async function loadInstallations(container) {
               detail: hookHealth.codexDetail,
               action: hookHealth.codexAction,
               key: 'codex',
+              hookAllowed,
             })}
           </div>
           <div class="settings-info">
@@ -619,10 +648,124 @@ async function renderPreferencesScreen(container) {
   });
 }
 
+async function renderAccountScreen(container) {
+  if (!state.accountStatus) {
+    container.innerHTML = `<div class="empty-state">Loading...</div>`;
+    await loadAccountStatus();
+    render();
+    return;
+  }
+
+  const status = state.accountStatus;
+  const subscribed = status.dashboardAllowed && status.hookAllowed;
+  container.innerHTML = `
+    <h1 class="screen-title">Account</h1>
+    <div class="settings-stack">
+      ${state.accountError ? `<div class="settings-error">${escapeHtml(state.accountError)}</div>` : ''}
+      <section class="settings-panel account-panel">
+        <div class="account-status ${subscribed ? 'ok' : 'missing'}">
+          <div>
+            <div class="settings-row-label">${escapeHtml(status.emailHint || 'Winglet account')}</div>
+            <div class="settings-row-desc">${escapeHtml(status.message || 'Sign in to Winglet to enable hook savings.')}</div>
+          </div>
+          <span class="hook-status-badge">${escapeHtml(accountLabel(status))}</span>
+        </div>
+        ${subscribed ? accountSubscribedMarkup(status) : accountSignInMarkup(status)}
+      </section>
+    </div>
+  `;
+  wireAccountActions(container);
+}
+
+function accountSubscribedMarkup(status) {
+  return `
+    <div class="account-meta">
+      ${status.subscription ? `<div>${escapeHtml(status.subscription.tier || 'Winglet Pro')} · ${escapeHtml(status.subscription.status || 'active')}</div>` : ''}
+      ${status.expiresAt ? `<div>Entitlement refreshes before ${escapeHtml(status.expiresAt)}</div>` : ''}
+      ${status.lastRefreshAt ? `<div>Last checked ${escapeHtml(status.lastRefreshAt)}</div>` : ''}
+    </div>
+    <div class="account-actions">
+      <button class="hook-action-button enable" type="button" data-account-action="sync">Sync</button>
+      <button class="hook-action-button" type="button" data-account-action="pricing">Pricing</button>
+      <button class="hook-action-button disable" type="button" data-account-action="logout">Sign out</button>
+    </div>
+  `;
+}
+
+function accountSignInMarkup(status) {
+  return `
+    <form class="account-form" data-account-login>
+      <input name="email" type="email" autocomplete="email" placeholder="email@example.com" required />
+      <input name="password" type="password" autocomplete="current-password" placeholder="Password" required />
+      <button class="hook-action-button enable" type="submit">Sign in</button>
+    </form>
+    <div class="account-actions">
+      <button class="hook-action-button" type="button" data-account-action="pricing">Pricing</button>
+      ${status.emailHint ? `<button class="hook-action-button" type="button" data-account-action="sync">Sync</button>` : ''}
+      ${status.emailHint ? `<button class="hook-action-button disable" type="button" data-account-action="logout">Sign out</button>` : ''}
+    </div>
+  `;
+}
+
+function accountLabel(status) {
+  if (status.dashboardAllowed && status.hookAllowed) return 'Active';
+  if (status.emailHint) return 'Subscription needed';
+  return 'Signed out';
+}
+
+function wireAccountActions(container) {
+  const form = container.querySelector('[data-account-login]');
+  if (form) {
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const data = new FormData(form);
+      await runAccountAction(async () => {
+        state.accountStatus = await SignInWithEmailPassword(String(data.get('email') || ''), String(data.get('password') || ''));
+      });
+    });
+  }
+  container.querySelectorAll('[data-account-action]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const action = btn.getAttribute('data-account-action');
+      if (action === 'pricing') {
+        OpenPricing();
+        return;
+      }
+      if (action === 'sync') {
+        await runAccountAction(async () => {
+          state.accountStatus = await RefreshEntitlement();
+        });
+      }
+      if (action === 'logout') {
+        await runAccountAction(async () => {
+          state.accountStatus = await Logout();
+        });
+      }
+    });
+  });
+}
+
+async function runAccountAction(fn) {
+  state.accountError = '';
+  try {
+    await fn();
+  } catch (err) {
+    state.accountError = err?.message || String(err);
+    await loadAccountStatus();
+  }
+  render();
+}
+
+function needsAccountGate() {
+  return (state.screen === 'overview' || state.screen === 'projects') &&
+    (!state.accountStatus || !state.accountStatus.dashboardAllowed);
+}
+
 function hookAgentMarkup(agent) {
   const tone = agent.reviewLikely ? 'needs-action' : agent.configured ? 'ok' : 'missing';
   const primaryAction = agent.configured ? 'disable' : 'enable';
   const primaryLabel = agent.configured ? 'Disable' : 'Enable';
+  const disabled = primaryAction === 'enable' && !agent.hookAllowed;
   return `
     <article class="hook-agent ${tone}">
       <div class="hook-agent-main">
@@ -638,7 +781,7 @@ function hookAgentMarkup(agent) {
           : ''
       }
       <div class="hook-agent-actions">
-        <button class="hook-action-button ${primaryAction}" type="button" data-hook-agent="${escapeHtml(agent.key)}" data-hook-action="${primaryAction}">
+        <button class="hook-action-button ${primaryAction}" type="button" data-hook-agent="${escapeHtml(agent.key)}" data-hook-action="${primaryAction}" ${disabled ? 'disabled' : ''}>
           ${escapeHtml(primaryLabel)}
         </button>
       </div>
@@ -686,6 +829,11 @@ function escapeHtml(value) {
 }
 
 function renderMain(container) {
+  if (state.screen === 'account') return renderAccountScreen(container);
+  if (!state.accountStatus && (state.screen === 'overview' || state.screen === 'projects')) {
+    return renderAccountScreen(container);
+  }
+  if (needsAccountGate()) return renderAccountScreen(container);
   if (state.screen === 'overview') return renderOverviewScreen(container);
   if (state.screen === 'projects') return renderProjectsScreen(container);
   if (state.screen === 'installations') return renderInstallationsScreen(container);

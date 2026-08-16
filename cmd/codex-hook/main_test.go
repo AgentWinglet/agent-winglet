@@ -22,9 +22,30 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	os.Setenv("HOME", home)
+	os.Setenv("AGENT_WINGLET_TEST_ALLOW_UNGATED_HOOKS", "1")
 	code := m.Run()
 	os.RemoveAll(home)
 	os.Exit(code)
+}
+
+func TestEntitlementGateTellsCodexWhenSignedOut(t *testing.T) {
+	t.Setenv("AGENT_WINGLET_TEST_ALLOW_UNGATED_HOOKS", "0")
+	t.Setenv("HOME", t.TempDir())
+
+	out, err := handle(hookInput{
+		SessionID:     "session-1",
+		Cwd:           t.TempDir(),
+		HookEventName: "SessionStart",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out == nil || !strings.Contains(out.SystemMessage, "not signed in") {
+		t.Fatalf("SystemMessage = %+v, want signed-in notice", out)
+	}
+	if out.HookSpecificOutput == nil || out.HookSpecificOutput.AdditionalContext == "" {
+		t.Fatalf("AdditionalContext should tell Codex the hook is gated")
+	}
 }
 
 func writeRollout(t *testing.T, lines []string) string {

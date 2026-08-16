@@ -12,10 +12,12 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/umitkaanusta/agent-winglet/internal/cmdclass"
 	"github.com/umitkaanusta/agent-winglet/internal/codexrollout"
 	"github.com/umitkaanusta/agent-winglet/internal/config"
+	"github.com/umitkaanusta/agent-winglet/internal/entitlement"
 	"github.com/umitkaanusta/agent-winglet/internal/ledger"
 	"github.com/umitkaanusta/agent-winglet/internal/outputbudget"
 	"github.com/umitkaanusta/agent-winglet/internal/phase"
@@ -88,6 +90,9 @@ func run() error {
 }
 
 func handle(in hookInput) (*hookOutput, error) {
+	if out := entitlementGateOutput("codex", in.SessionID, in.HookEventName); out != nil {
+		return out, nil
+	}
 	switch in.HookEventName {
 	case "SessionStart", "PostCompact":
 		return nil, resetSession(in)
@@ -102,6 +107,24 @@ func handle(in hookInput) (*hookOutput, error) {
 		return handleSessionEnd(in)
 	}
 	return nil, nil
+}
+
+func entitlementGateOutput(agent, sessionID, eventName string) *hookOutput {
+	result := entitlement.Check(entitlement.FeatureHookSavings, time.Now())
+	if result.Allowed {
+		return nil
+	}
+	if !entitlement.ShouldEmitNotice(agent, sessionID) {
+		return nil
+	}
+	msg := entitlement.NoticeFor(result.Reason)
+	return &hookOutput{
+		SystemMessage: msg,
+		HookSpecificOutput: &hookSpecificOutput{
+			HookEventName:     eventName,
+			AdditionalContext: msg,
+		},
+	}
 }
 
 func handlePostToolUse(in hookInput) (*hookOutput, error) {

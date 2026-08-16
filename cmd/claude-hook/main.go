@@ -66,8 +66,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/umitkaanusta/agent-winglet/internal/config"
+	"github.com/umitkaanusta/agent-winglet/internal/entitlement"
 	"github.com/umitkaanusta/agent-winglet/internal/ledger"
 	"github.com/umitkaanusta/agent-winglet/internal/outputbudget"
 	"github.com/umitkaanusta/agent-winglet/internal/phase"
@@ -212,6 +214,9 @@ func run() error {
 // file. It returns the hookOutput to encode to stdout, or nil if the hook
 // has nothing to report (equivalent to exit 0 with no output).
 func handle(in hookInput) (*hookOutput, error) {
+	if out := entitlementGateOutput("claude", in.SessionID, in.HookEventName); out != nil {
+		return out, nil
+	}
 	switch in.HookEventName {
 	case "SessionStart", "PostCompact":
 		root := projectroot.Resolve(in.Cwd)
@@ -247,6 +252,24 @@ func handle(in hookInput) (*hookOutput, error) {
 		return handleSessionEnd(in)
 	}
 	return nil, nil
+}
+
+func entitlementGateOutput(agent, sessionID, eventName string) *hookOutput {
+	result := entitlement.Check(entitlement.FeatureHookSavings, time.Now())
+	if result.Allowed {
+		return nil
+	}
+	if !entitlement.ShouldEmitNotice(agent, sessionID) {
+		return nil
+	}
+	msg := entitlement.NoticeFor(result.Reason)
+	return &hookOutput{
+		SystemMessage: msg,
+		HookSpecificOutput: hookSpecificOutput{
+			HookEventName:     eventName,
+			AdditionalContext: msg,
+		},
+	}
 }
 
 // legacyLifetime mirrors the JSON shape of a pre-Rollup lifetime.stats.json

@@ -30,6 +30,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	os.Setenv("HOME", home)
+	os.Setenv("AGENT_WINGLET_TEST_ALLOW_UNGATED_HOOKS", "1")
 	code := m.Run()
 	os.RemoveAll(home)
 	os.Exit(code)
@@ -50,6 +51,26 @@ func linesOfApproxTokens(tokens int) string {
 		lines[i] = "x"
 	}
 	return strings.Join(lines, "\n") + "\n"
+}
+
+func TestEntitlementGateTellsClaudeWhenSignedOut(t *testing.T) {
+	t.Setenv("AGENT_WINGLET_TEST_ALLOW_UNGATED_HOOKS", "0")
+	t.Setenv("HOME", t.TempDir())
+
+	out, err := handle(hookInput{
+		SessionID:     "session-1",
+		Cwd:           t.TempDir(),
+		HookEventName: "SessionStart",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out == nil || !strings.Contains(out.SystemMessage, "not signed in") {
+		t.Fatalf("SystemMessage = %+v, want signed-in notice", out)
+	}
+	if out.HookSpecificOutput.AdditionalContext == "" {
+		t.Fatalf("AdditionalContext should tell Claude the hook is gated")
+	}
 }
 
 func bashInput(t *testing.T, dir, sessionID, command string, response bashOutput) hookInput {

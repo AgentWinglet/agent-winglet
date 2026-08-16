@@ -26,7 +26,9 @@ For local testing against the companion site branch, the app must be able to use
 issue, and entitlement refresh.
 
 Use `AGENT_WINGLET_SITE_BASE_URL=http://localhost:3000` as the local testing
-override. When unset, default to `https://agentwinglet.com`.
+site override. When unset, default to `https://agentwinglet.com`. The app
+embeds public entitlement verification keys in `internal/entitlement/keys.go`;
+public-key env vars are only for testing alternate signing keys.
 
 ## Current Shape
 
@@ -188,6 +190,9 @@ verifier in this repo must:
   configured key type isn't pinned in this spec and could change per
   environment.
 - Reject any other `alg` value.
+- Keep public keys in a checked-in constants file. Public key env vars may
+  override or add keys for local experiments, but normal local testing should
+  use the embedded dev public key.
 
 Do not use shared secrets in the app or hooks.
 
@@ -270,9 +275,25 @@ version, OS/arch, device id, auth token, and coarse entitlement metadata.
 ## Desktop App Work
 
 Sign-in happens inside the app's own webview, not a browser handoff: the
-Vite frontend gets the Firebase client SDK and signs in directly (Google,
-or email magic link / email+password if Google sign-in is unreliable in
-the Wails webview), then the Go backend takes over for the token exchange.
+Vite frontend gets the Firebase client SDK and signs in with the same two
+methods the site already uses (`lib/auth.ts`) — there is no third
+email/password method to build:
+
+- **Google, via `signInWithPopup(auth, new GoogleAuthProvider())`** — same
+  call the site's `auth-menu.tsx` makes. This is the primary path and
+  works entirely inside the webview if popups are supported there.
+- **Email magic link, via `sendSignInLinkToEmail`/`signInWithEmailLink`** —
+  same as the site's magic-link form. On the site this completes when the
+  user opens the mailed link on a `/auth/action` page, normally in the
+  system browser. For the app, the user must open that link back inside
+  the Wails webview (not the OS default browser) for the app to end up
+  holding the resulting ID token — see `Known Gaps`.
+
+`agentwinglet.com` is live today and can be used directly for sign-in
+during app development, not just as a future production target; the
+`AGENT_WINGLET_SITE_BASE_URL` override exists for testing against local
+site changes, not because production isn't usable yet.
+
 There is no device code, no `loginUrl`, and no polling loop.
 
 Backend:
@@ -467,6 +488,16 @@ so app/hook work doesn't silently assume they're done:
   `active` or `canceled`; Paddle's `trialing`/`past_due`/`paused` states
   aren't wired to the entitlement yet. Until the site adds that mapping,
   a trialing or past-due user will look `canceled` to the app and hooks.
+- **Magic-link sign-in isn't necessarily completable inside the webview.**
+  The site's magic-link flow (`lib/auth.ts`, `components/auth-action-panel.tsx`)
+  expects the emailed link to be opened wherever `sendSignInLinkToEmail`
+  was called from — normally the system browser — and finishes on the
+  site's own `/auth/action` page. If the OS opens that link in the default
+  browser instead of the Wails webview, the app never sees the resulting
+  ID token, since this spec's non-goals rule out a browser/device-linking
+  handoff. Needs either: the OS routing that specific link back into the
+  app's webview, or dropping magic link from the app and shipping
+  Google-only for V1 app sign-in (the site keeps both, this is app-specific).
 - **Site currently grants features to `past_due`.** `createEntitlementClaims`
   includes `past_due` among the statuses that get `hook_savings`/
   `desktop_dashboard` and a 3-day expiry — i.e. exactly the grace window
