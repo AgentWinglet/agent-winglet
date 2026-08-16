@@ -16,6 +16,7 @@ import {
   SetClaudeHookEnabled,
   SetCodexHookEnabled,
   StartBrowserSignIn,
+  StartFreeTrial,
 } from '../wailsjs/go/main/App';
 
 const state = {
@@ -677,25 +678,50 @@ async function renderAccountScreen(container) {
   wireAccountActions(container);
 }
 
+// formatTrialCountdown turns status.expiresAt (only meaningful while
+// state === 'trialing', where it's the trial's own end time — the signed
+// entitlement's ExpiresAt, see appauth.Client.StartTrial's doc comment) into
+// a short "ends in Xh"/"ends in Xd Yh" string. Returns '' once the trial has
+// already lapsed so a stale re-render never claims time that's gone.
+function formatTrialCountdown(expiresAt) {
+  if (!expiresAt) return '';
+  const ms = new Date(expiresAt).getTime() - Date.now();
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  const totalHours = Math.ceil(ms / 3_600_000);
+  if (totalHours < 24) return `ends in ${totalHours}h`;
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  return `ends in ${days}d${hours ? ` ${hours}h` : ''}`;
+}
+
 function accountSubscribedMarkup(status) {
+  const trialing = status.state === 'trialing';
+  const countdown = trialing ? formatTrialCountdown(status.expiresAt) : '';
   return `
     <div class="account-meta">
-      ${status.subscription ? `<div>${escapeHtml(status.subscription.tier || 'Winglet Pro')} · ${escapeHtml(status.subscription.status || 'active')}</div>` : ''}
-      ${status.expiresAt ? `<div>Entitlement refreshes before ${escapeHtml(status.expiresAt)}</div>` : ''}
+      ${trialing
+        ? `<div class="trial-pill">${icons.sparkle}Free trial${countdown ? ` · ${countdown}` : ''}</div>`
+        : status.subscription
+          ? `<div>${escapeHtml(status.subscription.tier || 'Winglet Pro')} · ${escapeHtml(status.subscription.status || 'active')}</div>`
+          : ''}
+      ${!trialing && status.expiresAt ? `<div>Entitlement refreshes before ${escapeHtml(status.expiresAt)}</div>` : ''}
       ${status.lastRefreshAt ? `<div>Last checked ${escapeHtml(status.lastRefreshAt)}</div>` : ''}
     </div>
     <div class="account-actions">
-      <button class="hook-action-button enable" type="button" data-account-action="sync">Sync</button>
-      <button class="hook-action-button" type="button" data-account-action="pricing">Pricing</button>
+      ${trialing ? `<button class="hook-action-button enable" type="button" data-account-action="pricing">Subscribe now</button>` : ''}
+      <button class="hook-action-button ${trialing ? '' : 'enable'}" type="button" data-account-action="sync">Sync</button>
+      ${trialing ? '' : `<button class="hook-action-button" type="button" data-account-action="pricing">Pricing</button>`}
       <button class="hook-action-button disable" type="button" data-account-action="logout">Sign out</button>
     </div>
   `;
 }
 
 function accountSignInMarkup(status) {
+  const trialAvailable = status.state === 'trial_available';
   return `
     <div class="account-actions">
-      <button class="hook-action-button enable" type="button" data-account-action="signin">Sign in with browser</button>
+      ${trialAvailable ? `<button class="hook-action-button enable" type="button" data-account-action="start-trial">${icons.sparkle}Start 3-day free trial</button>` : ''}
+      <button class="hook-action-button ${trialAvailable ? '' : 'enable'}" type="button" data-account-action="signin">Sign in with browser</button>
       <button class="hook-action-button" type="button" data-account-action="pricing">Pricing</button>
       ${status.emailHint ? `<button class="hook-action-button" type="button" data-account-action="sync">Sync</button>` : ''}
       ${status.emailHint ? `<button class="hook-action-button disable" type="button" data-account-action="logout">Sign out</button>` : ''}
@@ -704,7 +730,8 @@ function accountSignInMarkup(status) {
 }
 
 function accountLabel(status) {
-  if (status.dashboardAllowed && status.hookAllowed) return 'Active';
+  if (status.dashboardAllowed && status.hookAllowed) return status.state === 'trialing' ? 'Trial active' : 'Active';
+  if (status.state === 'trial_available') return 'Trial available';
   if (status.emailHint) return 'Subscription needed';
   return 'Signed out';
 }
@@ -724,6 +751,19 @@ function wireAccountActions(container) {
         try {
           await runAccountAction(async () => {
             state.accountStatus = await StartBrowserSignIn();
+          });
+        } finally {
+          btn.disabled = false;
+          btn.textContent = originalLabel;
+        }
+      }
+      if (action === 'start-trial') {
+        const originalLabel = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = 'Starting trial…';
+        try {
+          await runAccountAction(async () => {
+            state.accountStatus = await StartFreeTrial();
           });
         } finally {
           btn.disabled = false;
@@ -758,6 +798,106 @@ async function runAccountAction(fn) {
 function needsAccountGate() {
   return (state.screen === 'overview' || state.screen === 'projects') &&
     (!state.accountStatus || !state.accountStatus.dashboardAllowed);
+}
+
+// gateContent picks the copy and actions for every non-trial gate state.
+// signed_out and expired share the same shell (gateScreenMarkup) as the
+// trial welcome screen (trialWelcomeMarkup) — one centered card, swapped
+// content — so a brand-new user landing on 'signed_out' sees the same
+// 3-day-trial pitch the 'trial_available' screen makes right after they
+// actually sign in, instead of the trial only being mentioned once they're
+// already past the point it would have sold them on signing in.
+function gateContent(status) {
+  switch (status.state) {
+    case 'expired':
+      return {
+        title: 'Subscribe to Winglet Pro',
+        subtitle: status.message || 'Subscribe to keep the dashboard and hook savings active.',
+        primaryAction: 'pricing',
+        primaryLabel: 'See plans',
+        secondaryAction: 'sync',
+        secondaryLabel: 'I just subscribed — refresh',
+      };
+    case 'server_error':
+      return {
+        title: "Winglet couldn't verify your account",
+        subtitle: status.message || 'Something went wrong reaching Winglet. Try again in a moment.',
+        primaryAction: 'sync',
+        primaryLabel: 'Try again',
+        secondaryAction: 'signin',
+        secondaryLabel: 'Sign in again',
+      };
+    default:
+      return {
+        title: 'Sign in to Winglet',
+        subtitle: 'Connect your account to turn on hook savings, the live dashboard, and your 3-day free trial.',
+        primaryAction: 'signin',
+        primaryLabel: 'Sign in with browser',
+        secondaryAction: 'pricing',
+        secondaryLabel: 'View pricing',
+      };
+  }
+}
+
+function gateScreenMarkup(status) {
+  const c = gateContent(status);
+  return `
+    <div class="gate-screen">
+      <div class="gate-card">
+        <div class="gate-brand">${renderBrand()}</div>
+        <h1 class="gate-title">${escapeHtml(c.title)}</h1>
+        <p class="gate-subtitle">${escapeHtml(c.subtitle)}</p>
+        <button class="gate-cta" type="button" data-account-action="${c.primaryAction}">${escapeHtml(c.primaryLabel)}</button>
+        <button class="gate-secondary" type="button" data-account-action="${c.secondaryAction}">${escapeHtml(c.secondaryLabel)}</button>
+        ${state.accountError ? `<p class="gate-error">${escapeHtml(state.accountError)}</p>` : ''}
+      </div>
+    </div>`;
+}
+
+// trialWelcomeMarkup is the first-run screen a newly signed-in account with
+// an unclaimed trial lands on (status.state === 'trial_available' — see
+// appauth.Status.TrialEligible's doc comment). The two-stop timeline is
+// decorative (both trial days are fixed at 72h from the click, not tied to
+// any real progress yet) — its job is just to make the "3 days, then it's
+// gone" shape of the offer legible at a glance before the user commits.
+function trialWelcomeMarkup() {
+  return `
+    <div class="gate-screen">
+      <div class="gate-card">
+        <div class="gate-badge">${icons.sparkle}3-Day Free Trial</div>
+        <div class="gate-brand">${renderBrand()}</div>
+        <h1 class="gate-title">Welcome to Winglet</h1>
+        <p class="gate-subtitle">You're signed in. Get started with a free 3-day trial of Winglet Pro — the live dashboard and hook savings, unlocked instantly.</p>
+        <div class="gate-timeline">
+          <div class="gate-day active">
+            <span class="gate-day-dot"></span>
+            <span class="gate-day-label">Today</span>
+            <span class="gate-day-desc">Full access unlocks instantly</span>
+          </div>
+          <div class="gate-day">
+            <span class="gate-day-dot"></span>
+            <span class="gate-day-label">Day 3</span>
+            <span class="gate-day-desc">Trial ends — subscribe to keep it</span>
+          </div>
+        </div>
+        <button class="gate-cta" type="button" data-account-action="start-trial">Start my 3-day trial</button>
+        <button class="gate-secondary" type="button" data-account-action="pricing">See pricing instead</button>
+        <div class="gate-fineprint">${icons.check}No credit card required</div>
+        ${state.accountError ? `<p class="gate-error">${escapeHtml(state.accountError)}</p>` : ''}
+      </div>
+    </div>`;
+}
+
+async function renderGateScreen(container) {
+  if (!state.accountStatus) {
+    container.innerHTML = `<div class="empty-state">Loading…</div>`;
+    await loadAccountStatus();
+    render();
+    return;
+  }
+  const status = state.accountStatus;
+  container.innerHTML = status.state === 'trial_available' ? trialWelcomeMarkup() : gateScreenMarkup(status);
+  wireAccountActions(container);
 }
 
 function hookAgentMarkup(agent) {
@@ -830,9 +970,9 @@ function escapeHtml(value) {
 function renderMain(container) {
   if (state.screen === 'account') return renderAccountScreen(container);
   if (!state.accountStatus && (state.screen === 'overview' || state.screen === 'projects')) {
-    return renderAccountScreen(container);
+    return renderGateScreen(container);
   }
-  if (needsAccountGate()) return renderAccountScreen(container);
+  if (needsAccountGate()) return renderGateScreen(container);
   if (state.screen === 'overview') return renderOverviewScreen(container);
   if (state.screen === 'projects') return renderProjectsScreen(container);
   if (state.screen === 'installations') return renderInstallationsScreen(container);

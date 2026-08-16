@@ -1,19 +1,32 @@
+/* Hanken Grotesk is agentwinglet.com's own display face (see that repo's
+   app/layout.tsx) — bundled locally via @fontsource rather than linked from
+   Google Fonts so the dashboard never depends on network access to render
+   its own headings. Only the weights --font-display actually uses. */
+@import "@fontsource/hanken-grotesk/500.css";
+@import "@fontsource/hanken-grotesk/600.css";
+@import "@fontsource/hanken-grotesk/700.css";
+
 :root {
   --font-ui: -apple-system, "SF Pro Text", "Segoe UI", "Ubuntu", system-ui, sans-serif;
-  --font-display: var(--font-ui);
+  --font-display: "Hanken Grotesk", var(--font-ui);
 
+  /* --bg/--bg-elevated/--sidebar-bg and --accent below are agentwinglet.com's
+     own tokens (see that repo's app/globals.css) so the dashboard's surfaces
+     and product-green read as the same coat of paint as the marketing site,
+     not a close approximation of it. */
   --bg: #f5f5f7;
   --bg-elevated: #ffffff;
   --sidebar-bg: #ececef;
   --text-primary: #1d1d1f;
-  --text-secondary: #6e6e73;
+  --text-secondary: #67676f;
   --border: rgba(0, 0, 0, 0.06);
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 4px 12px rgba(0, 0, 0, 0.05);
-  --accent: #1f9d55;
-  --accent-bg: rgba(31, 157, 85, 0.12);
-  --accent-border: rgba(31, 157, 85, 0.35);
-  --accent-glow: 0 0 10px rgba(31, 157, 85, 0.2);
-  --accent-glow-bg: rgba(31, 157, 85, 0.05);
+  --accent: #20b863;
+  --accent-contrast: #06170f;
+  --accent-bg: rgba(32, 184, 99, 0.12);
+  --accent-border: rgba(32, 184, 99, 0.35);
+  --accent-glow: 0 0 10px rgba(32, 184, 99, 0.2);
+  --accent-glow-bg: rgba(32, 184, 99, 0.05);
   --muted: #8e8e93;
   --muted-bg: rgba(142, 142, 147, 0.12);
   --hairline: rgba(0, 0, 0, 0.08);
@@ -31,18 +44,19 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #111113;
-    --bg-elevated: #1a1a1d;
+    --bg: #070708;
+    --bg-elevated: #151518;
     --sidebar-bg: #0e0e10;
     --text-primary: #f5f5f7;
-    --text-secondary: #98989d;
+    --text-secondary: #a2a3aa;
     --border: rgba(255, 255, 255, 0.08);
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.35);
-    --accent: #3fe08a;
-    --accent-bg: rgba(63, 224, 138, 0.16);
-    --accent-border: rgba(63, 224, 138, 0.35);
-    --accent-glow: 0 0 10px rgba(63, 224, 138, 0.3);
-    --accent-glow-bg: rgba(63, 224, 138, 0.07);
+    --accent: #4af79d;
+    --accent-contrast: #06170f;
+    --accent-bg: rgba(74, 247, 157, 0.16);
+    --accent-border: rgba(74, 247, 157, 0.35);
+    --accent-glow: 0 0 10px rgba(74, 247, 157, 0.3);
+    --accent-glow-bg: rgba(74, 247, 157, 0.07);
     --muted: #8e8e93;
     --muted-bg: rgba(142, 142, 147, 0.18);
     --hairline: rgba(255, 255, 255, 0.08);
@@ -895,6 +909,9 @@ body {
 }
 
 .hook-action-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   min-height: 30px;
   border: 1px solid transparent;
   border-radius: 6px;
@@ -904,6 +921,12 @@ body {
   font-weight: 700;
   cursor: default;
   transition: background-color 0.15s ease;
+}
+
+.hook-action-button svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
 }
 
 .hook-action-button.enable {
@@ -949,6 +972,20 @@ body {
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.45;
+}
+
+.trial-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--accent);
+  font-family: var(--font-display);
+  font-weight: 600;
+}
+
+.trial-pill svg {
+  width: 12px;
+  height: 12px;
 }
 
 .account-form {
@@ -1076,6 +1113,196 @@ body {
   line-height: 1.5;
 }
 
+/* --- Sign-in / trial gate --- */
+/* Full takeover of .main for an account that can't reach the dashboard yet
+   (see needsAccountGate() in main.js): centered on the same radial accent
+   glow .main already paints behind every screen, so this never reads as a
+   separate "auth page" bolted onto the dashboard. */
+
+.gate-screen {
+  min-height: calc(100vh - var(--titlebar-inset) - 72px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.gate-card {
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.gate-brand {
+  margin-bottom: 24px;
+}
+
+.gate-brand .brand {
+  justify-content: center;
+}
+
+.gate-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px 5px 10px;
+  border-radius: 999px;
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  color: var(--accent);
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  margin-bottom: 16px;
+}
+
+.gate-badge svg {
+  width: 13px;
+  height: 13px;
+}
+
+.gate-title {
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0 0 10px;
+}
+
+.gate-subtitle {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  margin: 0 0 28px;
+  max-width: 320px;
+}
+
+.gate-timeline {
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+  gap: 16px;
+  margin-bottom: 28px;
+}
+
+.gate-day {
+  flex: 1;
+  position: relative;
+  padding-top: 18px;
+  text-align: left;
+}
+
+.gate-day::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: var(--hairline);
+}
+
+.gate-day.active::before {
+  background: var(--accent);
+  box-shadow: var(--accent-glow);
+}
+
+.gate-day-dot {
+  position: absolute;
+  top: -3px;
+  left: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.gate-day.active .gate-day-dot {
+  background: var(--accent);
+  box-shadow: var(--accent-glow);
+}
+
+.gate-day-label {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.gate-day-desc {
+  display: block;
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  margin-top: 3px;
+}
+
+.gate-cta {
+  width: 100%;
+  height: 44px;
+  border-radius: 10px;
+  border: none;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: default;
+  box-shadow: var(--accent-glow);
+  transition: transform 0.12s ease, opacity 0.12s ease;
+}
+
+.gate-cta:hover {
+  transform: translateY(-1px);
+}
+
+.gate-cta:disabled {
+  opacity: 0.7;
+  transform: none;
+}
+
+.gate-secondary {
+  margin-top: 12px;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: default;
+  padding: 6px;
+  transition: color 0.12s ease;
+}
+
+.gate-secondary:hover {
+  color: var(--text-primary);
+}
+
+.gate-fineprint {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 20px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.gate-fineprint svg {
+  width: 12px;
+  height: 12px;
+  color: var(--accent);
+}
+
+.gate-error {
+  margin-top: 16px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--danger);
+  max-width: 320px;
+}
+
 /* --- Motion --- */
 
 @media (prefers-reduced-motion: reduce) {
@@ -1090,7 +1317,9 @@ body {
   .nav-parent .nav-chevron,
   .hook-action-button,
   .nav-subitem,
-  .nav-subitem::before {
+  .nav-subitem::before,
+  .gate-cta,
+  .gate-secondary {
     transition: none !important;
   }
 }

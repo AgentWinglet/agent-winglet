@@ -65,3 +65,7 @@ export function SetCompactNudgesEnabled(arg1) {
 export function StartBrowserSignIn() {
   return window['go']['main']['App']['StartBrowserSignIn']();
 }
+
+export function StartFreeTrial() {
+  return window['go']['main']['App']['StartFreeTrial']();
+}

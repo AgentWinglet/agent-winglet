@@ -90,6 +90,13 @@ func (a *App) RefreshEntitlement() (appauth.Status, error) {
 	return (&appauth.Client{}).Refresh()
 }
 
+// StartFreeTrial claims the signed-in account's one-time 3-day cardless
+// trial — see appauth.Client.StartTrial's doc comment for why this never
+// touches Subscription.
+func (a *App) StartFreeTrial() (appauth.Status, error) {
+	return (&appauth.Client{}).StartTrial()
+}
+
 func (a *App) Logout() (appauth.Status, error) {
 	if err := appauth.Logout(); err != nil {
 		return appauth.Status{}, err

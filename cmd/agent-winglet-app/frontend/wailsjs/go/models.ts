@@ -28,6 +28,7 @@ export namespace appauth {
 	    dashboardAllowed: boolean;
 	    lastRefreshAt: string;
 	    expiresAt: string;
+	    trialEligible: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Status(source);
@@ -44,6 +45,7 @@ export namespace appauth {
 	        this.dashboardAllowed = source["dashboardAllowed"];
 	        this.lastRefreshAt = source["lastRefreshAt"];
 	        this.expiresAt = source["expiresAt"];
+	        this.trialEligible = source["trialEligible"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

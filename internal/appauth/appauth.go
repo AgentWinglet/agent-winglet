@@ -43,6 +43,7 @@ type Account struct {
 	AccountID    string        `json:"accountId"`
 	Email        string        `json:"email"`
 	Subscription *Subscription `json:"subscription,omitempty"`
+	Trial        *Trial        `json:"trial,omitempty"`
 }
 
 type Subscription struct {
@@ -50,6 +51,14 @@ type Subscription struct {
 	Tier    string `json:"tier"`
 	Status  string `json:"status"`
 	Active  bool   `json:"active"`
+}
+
+// Trial is the account's cardless-trial eligibility, tracked by the site
+// separately from Subscription (see StartTrial's doc comment) — Eligible is
+// false both before any trial has ever started and forever after one has
+// been used, so the app never needs to distinguish those two cases itself.
+type Trial struct {
+	Eligible bool `json:"eligible"`
 }
 
 type Status struct {
@@ -62,6 +71,7 @@ type Status struct {
 	DashboardAllowed bool          `json:"dashboardAllowed"`
 	LastRefreshAt    string        `json:"lastRefreshAt"`
 	ExpiresAt        string        `json:"expiresAt"`
+	TrialEligible    bool          `json:"trialEligible"`
 }
 
 type Client struct {
@@ -81,6 +91,11 @@ type issueResponse struct {
 }
 
 type refreshResponse struct {
+	Entitlement string   `json:"entitlement"`
+	Account     *Account `json:"account"`
+}
+
+type startTrialResponse struct {
 	Entitlement string   `json:"entitlement"`
 	Account     *Account `json:"account"`
 }
@@ -110,6 +125,7 @@ func (c *Client) AccountStatus() Status {
 	}
 	if auth.Account != nil {
 		status.Subscription = auth.Account.Subscription
+		status.TrialEligible = auth.Account.Trial != nil && auth.Account.Trial.Eligible
 	}
 	hook := entitlement.Check(entitlement.FeatureHookSavings, time.Now())
 	dashboard := entitlement.Check(entitlement.FeatureDesktopDashboard, time.Now())
@@ -119,11 +135,21 @@ func (c *Client) AccountStatus() Status {
 		status.ExpiresAt = time.Unix(hook.Claims.ExpiresAt, 0).UTC().Format(time.RFC3339)
 	}
 	if status.HookAllowed && status.DashboardAllowed {
+		if hook.Claims != nil && hook.Claims.Status == "trialing" {
+			status.State = "trialing"
+			status.Message = "Your 3-day free trial is active."
+			return status
+		}
 		status.State = "subscribed"
 		status.Message = "Winglet Pro is active."
 		return status
 	}
 	if hook.Reason == entitlement.ReasonInactive || hook.Reason == entitlement.ReasonExpired || hook.Reason == entitlement.ReasonWrongFeature {
+		if status.TrialEligible {
+			status.State = "trial_available"
+			status.Message = "Start your 3-day free trial to unlock Winglet Pro."
+			return status
+		}
 		status.State = "expired"
 		status.Message = "Subscribe to Winglet Pro to enable hook savings."
 		return status
@@ -297,6 +323,46 @@ func (c *Client) Refresh() (Status, error) {
 	}
 	if out.Entitlement == "" {
 		return c.AccountStatus(), fmt.Errorf("site returned an incomplete refresh response")
+	}
+	auth.LastRefreshAt = time.Now().UTC().Format(time.RFC3339)
+	auth.Account = out.Account
+	if out.Account != nil {
+		auth.UIDHash = out.Account.AccountID
+		auth.EmailHint = maskEmail(out.Account.Email)
+	}
+	if err := SaveAuthAndEntitlement(auth, out.Entitlement); err != nil {
+		return c.AccountStatus(), err
+	}
+	return c.AccountStatus(), nil
+}
+
+// StartTrial claims the account's one-time 3-day cardless trial. The site
+// tracks eligibility on the user's own record, separate from Subscription —
+// this never creates or touches a Paddle subscription, since Paddle does not
+// yet fully support cardless trials — and grants only the first time a given
+// account calls it; a repeat call returns an error instead of extending or
+// re-granting. On success the site responds the same way Refresh does: a
+// freshly signed entitlement whose Claims.Status is "trialing" and whose
+// ExpiresAt is now+72h, which internal/entitlement.Authorize already treats
+// exactly like an active subscription, so no other app-side gating changes.
+func (c *Client) StartTrial() (Status, error) {
+	auth, err := LoadAuth()
+	if err != nil {
+		return c.AccountStatus(), err
+	}
+	if auth.SiteBaseURL == "" {
+		auth.SiteBaseURL = SiteBaseURL()
+	}
+	payload := map[string]string{
+		"deviceId":     auth.DeviceID,
+		"refreshToken": auth.RefreshToken,
+	}
+	var out startTrialResponse
+	if err := c.postJSON(auth.SiteBaseURL+"/api/app/trial/start", payload, "", &out); err != nil {
+		return c.AccountStatus(), err
+	}
+	if out.Entitlement == "" {
+		return c.AccountStatus(), fmt.Errorf("site returned an incomplete trial response")
 	}
 	auth.LastRefreshAt = time.Now().UTC().Format(time.RFC3339)
 	auth.Account = out.Account
