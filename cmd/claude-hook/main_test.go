@@ -73,6 +73,50 @@ func TestEntitlementGateTellsClaudeWhenSignedOut(t *testing.T) {
 	}
 }
 
+// TestEntitlementGateStaysBlockedAfterFirstNoticeInSameSession guards against
+// a bug where the gate only actually blocked the first hook call of a
+// session: entitlement.ShouldEmitNotice throttles the *visible* notice to
+// once per session, but handle() used to treat "no notice to show" and
+// "allowed" identically, so every call after the first quietly ran the full
+// suppression logic — including recording state that later calls could
+// then dedup-match against.
+func TestEntitlementGateStaysBlockedAfterFirstNoticeInSameSession(t *testing.T) {
+	t.Setenv("AGENT_WINGLET_TEST_ALLOW_UNGATED_HOOKS", "0")
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+
+	if _, err := handle(hookInput{SessionID: "sess-gate", Cwd: dir, HookEventName: "SessionStart"}); err != nil {
+		t.Fatal(err)
+	}
+
+	in := bashInput(t, dir, "sess-gate", "echo hi", bashOutput{Stdout: "hi\n"})
+
+	first, err := handle(in)
+	if err != nil {
+		t.Fatalf("first Bash call errored: %v", err)
+	}
+	if first == nil {
+		t.Fatalf("blocked call should still return an output (with no notice), got nil")
+	}
+	if first.SystemMessage != "" {
+		t.Fatalf("blocked call after the session's first notice shouldn't repeat it, got %q", first.SystemMessage)
+	}
+	if _, ok := first.HookSpecificOutput.UpdatedToolOutput.(bashOutput); ok {
+		t.Fatalf("blocked session should never produce a dedup substitution, got %+v", first)
+	}
+
+	second, err := handle(in)
+	if err != nil {
+		t.Fatalf("second Bash call errored: %v", err)
+	}
+	if second == nil {
+		t.Fatalf("blocked call should still return an output, got nil")
+	}
+	if _, ok := second.HookSpecificOutput.UpdatedToolOutput.(bashOutput); ok {
+		t.Fatalf("still-blocked session substituted a repeat call — the gate stopped applying after the first blocked call: %+v", second)
+	}
+}
+
 func bashInput(t *testing.T, dir, sessionID, command string, response bashOutput) hookInput {
 	t.Helper()
 	toolInput, err := json.Marshal(struct {

@@ -90,8 +90,8 @@ func run() error {
 }
 
 func handle(in hookInput) (*hookOutput, error) {
-	if out := entitlementGateOutput("codex", in.SessionID, in.HookEventName); out != nil {
-		return out, nil
+	if result := entitlement.Check(entitlement.FeatureHookSavings, time.Now()); !result.Allowed {
+		return entitlementBlockedOutput(result, "codex", in.SessionID, in.HookEventName), nil
 	}
 	switch in.HookEventName {
 	case "SessionStart", "PostCompact":
@@ -109,13 +109,17 @@ func handle(in hookInput) (*hookOutput, error) {
 	return nil, nil
 }
 
-func entitlementGateOutput(agent, sessionID, eventName string) *hookOutput {
-	result := entitlement.Check(entitlement.FeatureHookSavings, time.Now())
-	if result.Allowed {
-		return nil
-	}
+// entitlementBlockedOutput always short-circuits handle's business logic for
+// a session that isn't entitled — every hook event takes this path, not just
+// the first one. entitlement.ShouldEmitNotice separately throttles the
+// *visible* notice to once per session so it doesn't repeat on every tool
+// call; conflating that throttle with the gate itself (both driven off the
+// same nil/non-nil return) was the bug — only the first blocked call in a
+// session actually skipped the suppression logic below, and every later
+// call ran it in full because ShouldEmitNotice's second call returned false.
+func entitlementBlockedOutput(result entitlement.CheckResult, agent, sessionID, eventName string) *hookOutput {
 	if !entitlement.ShouldEmitNotice(agent, sessionID) {
-		return nil
+		return &hookOutput{}
 	}
 	msg := entitlement.NoticeFor(result.Reason)
 	return &hookOutput{
