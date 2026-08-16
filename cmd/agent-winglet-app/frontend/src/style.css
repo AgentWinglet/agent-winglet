@@ -873,6 +873,15 @@ body {
   color: var(--text-secondary);
 }
 
+.settings-panel-danger {
+  padding-top: 18px;
+  border-top: 1px solid var(--hairline);
+}
+
+.settings-panel-danger .settings-panel-header h2 {
+  color: var(--danger);
+}
+
 .hook-agent-list {
   display: grid;
   gap: 10px;

@@ -17,6 +17,7 @@ import {
   SetCodexHookEnabled,
   StartBrowserSignIn,
   StartFreeTrial,
+  UninstallWinglet,
 } from '../wailsjs/go/main/App';
 
 const state = {
@@ -623,12 +624,49 @@ async function loadInstallations(container) {
             <p>After enabling, disabling, or updating an integration, restart your terminal or IDE and start a new session so Winglet can pick up the change.</p>
           </div>
         </section>
+        <section class="settings-panel settings-panel-danger">
+          <div class="settings-panel-header">
+            <div>
+              <h2>Uninstall Winglet</h2>
+              <p>Removes the app and disconnects the Claude Code and Codex hooks. Your saved usage stats and preferences in ~/.agent-winglet are kept.</p>
+            </div>
+            <button class="hook-action-button disable" type="button" data-uninstall>Uninstall</button>
+          </div>
+        </section>
       </div>
     `;
     container.querySelectorAll('[data-hook-action]').forEach((btn) => {
       btn.addEventListener('click', () => runHookAction(container, btn));
     });
+    container.querySelectorAll('[data-uninstall]').forEach((btn) => {
+      btn.addEventListener('click', () => runUninstall(container, btn));
+    });
   });
+}
+
+// runUninstall calls the Go side's native confirm dialog + removal (see
+// App.UninstallWinglet's doc comment for why it isn't a JS confirm() here).
+// A successful uninstall quits the whole app shortly after on the Go side —
+// there's nothing left to render at that point, so this only needs to handle
+// the two cases where the window is still around afterward: the user hit
+// Cancel in the native dialog (resolves with no error, nothing changed), or
+// removal itself failed partway through (surfaced like any other settings
+// error).
+async function runUninstall(container, btn) {
+  const original = btn.textContent;
+  state.settingsError = '';
+  btn.disabled = true;
+  btn.textContent = 'Uninstalling...';
+  try {
+    await UninstallWinglet();
+    btn.disabled = false;
+    btn.textContent = original;
+  } catch (err) {
+    state.settingsError = err?.message || String(err);
+    btn.disabled = false;
+    btn.textContent = original;
+    await renderInstallationsScreen(container);
+  }
 }
 
 async function renderInstallationsScreen(container) {

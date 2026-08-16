@@ -114,6 +114,86 @@ func (a *App) OpenBillingPortal() {
 	a.OpenPricing()
 }
 
+// UninstallWinglet reverses what install.sh does — the same two things
+// uninstall.sh's default (no-flags) invocation removes: hook wiring and the
+// installed app — leaving the same thing it deliberately leaves alone:
+// ~/.agent-winglet (saved usage stats, project registry, preferences). Never
+// gated by requireEntitlement: uninstalling has to work whether or not the
+// account is currently entitled to anything.
+//
+// Reimplemented natively here instead of shelling out to uninstall.sh: a
+// distributed .app has no guarantee the checkout it was built from is still
+// on disk by the time someone clicks this button, so uninstall_paths.go
+// duplicates the relevant bits of scripts/lib.sh by hand (see its own doc
+// comment) rather than depending on the script surviving alongside it.
+//
+// Confirms via a native OS dialog first, not a JS confirm() in the webview —
+// this is destructive enough to want the OS's own chrome around it — then
+// quits once removal finishes, since there's nothing installed left for it
+// to keep running as.
+func (a *App) UninstallWinglet() error {
+	if a.ctx != nil {
+		result, err := wailsruntime.MessageDialog(a.ctx, wailsruntime.MessageDialogOptions{
+			Type:          wailsruntime.QuestionDialog,
+			Title:         "Uninstall Winglet?",
+			Message:       "This removes the Winglet app and disconnects the Claude Code and Codex hooks. Your saved usage stats and preferences in ~/.agent-winglet are kept.",
+			Buttons:       []string{"Cancel", "Uninstall"},
+			DefaultButton: "Cancel",
+			CancelButton:  "Cancel",
+		})
+		if err != nil {
+			return err
+		}
+		if result != "Uninstall" {
+			return nil
+		}
+	}
+
+	if err := setGlobalHookEnabled("claude-hook", false); err != nil {
+		return fmt.Errorf("removing Claude Code hook: %w", err)
+	}
+	if err := setGlobalHookEnabled("codex-hook", false); err != nil {
+		return fmt.Errorf("removing Codex hook: %w", err)
+	}
+
+	if err := UnregisterLoginItem(); err != nil {
+		fmt.Println("agent-winglet-app: login item unregistration failed:", err)
+	}
+	stopTrayHelper()
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	removeTrayAutostart(home)
+	removeAppShortcut(home)
+	if goruntime.GOOS == "linux" {
+		_ = os.Remove(linuxDesktopEntryPath(home))
+		_ = os.RemoveAll(linuxIconDir(home))
+	}
+
+	paths, err := appInstallPaths()
+	if err != nil {
+		return err
+	}
+	for _, p := range paths {
+		if _, statErr := os.Stat(p); statErr != nil {
+			continue
+		}
+		if err := os.RemoveAll(p); err != nil {
+			return fmt.Errorf("removing %s: %w", p, err)
+		}
+	}
+
+	if a.ctx != nil {
+		go func() {
+			time.Sleep(300 * time.Millisecond)
+			wailsruntime.Quit(a.ctx)
+		}()
+	}
+	return nil
+}
+
 func (a *App) SetClaudeHookEnabled(enabled bool) (HookHealth, error) {
 	if enabled {
 		if err := requireEntitlement(entitlement.FeatureHookSavings); err != nil {

@@ -36,3 +36,5 @@ export function SetCompactNudgesEnabled(arg1:boolean):Promise<void>;
 export function StartBrowserSignIn():Promise<appauth.Status>;
 
 export function StartFreeTrial():Promise<appauth.Status>;
+
+export function UninstallWinglet():Promise<void>;

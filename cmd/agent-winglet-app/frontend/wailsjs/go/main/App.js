@@ -69,3 +69,7 @@ export function StartBrowserSignIn() {
 export function StartFreeTrial() {
   return window['go']['main']['App']['StartFreeTrial']();
 }
+
+export function UninstallWinglet() {
+  return window['go']['main']['App']['UninstallWinglet']();
+}
