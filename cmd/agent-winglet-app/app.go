@@ -131,7 +131,16 @@ func (a *App) OpenBillingPortal() {
 // this is destructive enough to want the OS's own chrome around it — then
 // quits once removal finishes, since there's nothing installed left for it
 // to keep running as.
-func (a *App) UninstallWinglet() error {
+//
+// The bool return tells the frontend whether removal actually ran, distinct
+// from a nil error: the dialog's Cancel button carries the Return-key
+// equivalent and macOS renders it in the primary/rightmost position (correct
+// per HIG — a destructive action shouldn't be one Enter-press away), so
+// cancelling is the easy, unremarkable-looking path here, not an edge case.
+// Returning proceeded=false lets the caller say so explicitly instead of the
+// cancel and the already-nothing-to-do cases both reading as identical,
+// silent no-ops indistinguishable from a bug that quietly did nothing.
+func (a *App) UninstallWinglet() (bool, error) {
 	if a.ctx != nil {
 		result, err := wailsruntime.MessageDialog(a.ctx, wailsruntime.MessageDialogOptions{
 			Type:          wailsruntime.QuestionDialog,
@@ -142,18 +151,18 @@ func (a *App) UninstallWinglet() error {
 			CancelButton:  "Cancel",
 		})
 		if err != nil {
-			return err
+			return false, err
 		}
 		if result != "Uninstall" {
-			return nil
+			return false, nil
 		}
 	}
 
 	if err := setGlobalHookEnabled("claude-hook", false); err != nil {
-		return fmt.Errorf("removing Claude Code hook: %w", err)
+		return false, fmt.Errorf("removing Claude Code hook: %w", err)
 	}
 	if err := setGlobalHookEnabled("codex-hook", false); err != nil {
-		return fmt.Errorf("removing Codex hook: %w", err)
+		return false, fmt.Errorf("removing Codex hook: %w", err)
 	}
 
 	if err := UnregisterLoginItem(); err != nil {
@@ -163,7 +172,7 @@ func (a *App) UninstallWinglet() error {
 
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return err
+		return false, err
 	}
 	removeTrayAutostart(home)
 	removeAppShortcut(home)
@@ -174,14 +183,14 @@ func (a *App) UninstallWinglet() error {
 
 	paths, err := appInstallPaths()
 	if err != nil {
-		return err
+		return false, err
 	}
 	for _, p := range paths {
 		if _, statErr := os.Stat(p); statErr != nil {
 			continue
 		}
 		if err := os.RemoveAll(p); err != nil {
-			return fmt.Errorf("removing %s: %w", p, err)
+			return false, fmt.Errorf("removing %s: %w", p, err)
 		}
 	}
 
@@ -191,7 +200,7 @@ func (a *App) UninstallWinglet() error {
 			wailsruntime.Quit(a.ctx)
 		}()
 	}
-	return nil
+	return true, nil
 }
 
 func (a *App) SetClaudeHookEnabled(enabled bool) (HookHealth, error) {
