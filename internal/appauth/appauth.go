@@ -543,4 +543,3 @@ func removeIfExists(path string) error {
 	}
 	return nil
 }
-
