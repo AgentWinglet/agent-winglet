@@ -21,14 +21,11 @@ The website is the billing/auth control plane. This repo is the local product.
 The local product should only need a server-issued, signed entitlement file to
 decide whether paid behavior is enabled.
 
-For local testing against the companion site branch, the app must be able to use
-`http://localhost:3000` as the site base URL for login, pricing, entitlement
-issue, and entitlement refresh.
-
-Use `AGENT_WINGLET_SITE_BASE_URL=http://localhost:3000` as the local testing
-site override. When unset, default to `https://agentwinglet.com`. The app
-embeds public entitlement verification keys in `internal/entitlement/keys.go`;
-public-key env vars are only for testing alternate signing keys.
+The app and hooks only ever talk to `https://agentwinglet.com`. There is no
+dev/prod dichotomy and no env var or local dotenv to point them elsewhere —
+`agentwinglet.com` is live and is the only site this product talks to, for
+login, pricing, entitlement issue, and entitlement refresh alike. The app
+embeds public entitlement verification keys in `internal/entitlement/keys.go`.
 
 ## Current Shape
 
@@ -136,16 +133,15 @@ Add a dedicated local auth package, separate from existing stats/config files:
 }
 ```
 
-`siteBaseURL` defaults to `https://agentwinglet.com` for production builds. For
-local app/site integration testing on the `add-app-verification` branch, set
-`AGENT_WINGLET_SITE_BASE_URL=http://localhost:3000`; persist the resolved value
-in `auth.json` as `siteBaseURL`. All app-created URLs and API calls are
-resolved against this value:
+`siteBaseURL` is always `https://agentwinglet.com` — it is stored for display
+and for forward compatibility, not because it's configurable. There is no env
+var or build flag that points the app at anything else. All app-created URLs
+and API calls use this fixed value:
 
-- login and in-app Firebase auth: `siteBaseURL`
-- pricing/checkout entry point: `${siteBaseURL}/#pricing`
-- entitlement issue: `${siteBaseURL}/api/app/entitlements/issue`
-- entitlement refresh: `${siteBaseURL}/api/app/entitlements/refresh`
+- login and in-app Firebase auth: `https://agentwinglet.com`
+- pricing/checkout entry point: `https://agentwinglet.com/#pricing`
+- entitlement issue: `https://agentwinglet.com/api/app/entitlements/issue`
+- entitlement refresh: `https://agentwinglet.com/api/app/entitlements/refresh`
 
 `entitlement.jws` is a compact JWS signed by the site with a private key. This
 repo embeds only the public verification key.
@@ -220,14 +216,11 @@ exchanges the resulting Firebase ID token with the site. This is
 significantly simpler than the originally planned flow and is what's
 actually implemented on `add-app-verification`.
 
-Base URL:
-
-- Production: `https://agentwinglet.com`
-- Local testing: `AGENT_WINGLET_SITE_BASE_URL=http://localhost:3000`
-
-The desktop app must not hardcode production-only URLs. The same base URL must
-drive Firebase auth pages, pricing, and entitlement API calls so the app can be
-tested against the local site branch without code changes.
+Base URL: `https://agentwinglet.com`, hardcoded. There is no dev/prod
+dichotomy, no env var, and no local dotenv override — the app and hooks only
+ever call the production site for Firebase auth pages, pricing, and
+entitlement API calls. Point a local site dev server at production data if
+you need to test against it; don't add a code path for an alternate base URL.
 
 - `POST /api/app/entitlements/issue`
   - Called once, right after in-webview Firebase sign-in.
@@ -255,7 +248,7 @@ exists. `Logout()` in the app has nothing server-side to call yet — see
 
 Pricing/subscription entry:
 
-- The app's pricing action opens `${siteBaseURL}/#pricing`.
+- The app's pricing action opens `https://agentwinglet.com/#pricing`.
 - Checkout is owned by the site and Paddle. The app does not call Paddle
   directly and does not store Paddle credentials.
 - After checkout, the app refreshes entitlement status through
@@ -265,8 +258,8 @@ Pricing/subscription entry:
 Login entry:
 
 - The primary login path is inside the Wails app using the Firebase client SDK.
-- If the app also offers an "Open Winglet account" link, it must use
-  `siteBaseURL`, not a production-only URL.
+- If the app also offers an "Open Winglet account" link, it opens
+  `https://agentwinglet.com`.
 
 The app must not upload paths, prompts, transcripts, command output, savings
 events, session ids, or project ids. Acceptable request fields are product
@@ -289,10 +282,9 @@ email/password method to build:
   the Wails webview (not the OS default browser) for the app to end up
   holding the resulting ID token — see `Known Gaps`.
 
-`agentwinglet.com` is live today and can be used directly for sign-in
-during app development, not just as a future production target; the
-`AGENT_WINGLET_SITE_BASE_URL` override exists for testing against local
-site changes, not because production isn't usable yet.
+`agentwinglet.com` is live today and is the only site the app talks to,
+including during development — there's no env var or dotenv override to point
+it elsewhere, and none should be added.
 
 There is no device code, no `loginUrl`, and no polling loop.
 
@@ -305,8 +297,8 @@ Backend:
 - Add `internal/siteapi` for the issue/refresh calls.
 - Add Wails methods:
   - `GetAccountStatus()`
-  - `GetSiteBaseURL()` — returns the resolved site base URL so frontend login
-    and pricing links use the same origin as entitlement API calls.
+  - `GetSiteBaseURL()` — returns the fixed `https://agentwinglet.com`, so the
+    frontend never hardcodes it separately from the backend.
   - `CompleteFirebaseSignIn(idToken string)` — frontend calls this right
     after `user.getIdToken()` succeeds; backend calls
     `POST /api/app/entitlements/issue` and persists `auth.json` +
@@ -315,9 +307,7 @@ Backend:
   - `Logout()` — clears local `auth.json`/`entitlement.jws`; there is no
     server-side session revoke to call yet (see `Known Gaps`).
   - `OpenBillingPortal()`
-  - `OpenPricing()` — opens `${siteBaseURL}/#pricing`; with
-    `AGENT_WINGLET_SITE_BASE_URL=http://localhost:3000`, opens
-    `http://localhost:3000/#pricing`.
+  - `OpenPricing()` — opens `https://agentwinglet.com/#pricing`.
 - Keep current stats methods local-only. Do not mix stats payloads into auth
   refresh calls.
 
@@ -336,9 +326,8 @@ Frontend:
 - Add a login action inside the app. It signs in with Firebase in the app
   webview, calls `CompleteFirebaseSignIn(idToken)`, and shows the returned
   account/subscription state.
-- Add a pricing action. It opens `${siteBaseURL}/#pricing` so a signed-in user
-  can subscribe through the site/Paddle flow. For local testing this is
-  `http://localhost:3000/#pricing`.
+- Add a pricing action. It opens `https://agentwinglet.com/#pricing` so a
+  signed-in user can subscribe through the site/Paddle flow.
 
 Refresh behavior:
 

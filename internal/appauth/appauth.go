@@ -19,9 +19,8 @@ import (
 )
 
 const (
-	siteBaseURLEnv      = "AGENT_WINGLET_SITE_BASE_URL"
 	firebaseAPIKeyEnv   = "AGENT_WINGLET_FIREBASE_API_KEY"
-	defaultSiteBaseURL  = "https://agentwinglet.com"
+	siteBaseURL         = "https://agentwinglet.com"
 	defaultHTTPTimeout  = 15 * time.Second
 	defaultAppVersion   = "dev"
 	contentTypeJSON     = "application/json"
@@ -84,12 +83,10 @@ type refreshResponse struct {
 	Account     *Account `json:"account"`
 }
 
+// SiteBaseURL is always the production site. There is no local/dev override:
+// the app and hooks only ever talk to agentwinglet.com.
 func SiteBaseURL() string {
-	configured := strings.TrimSpace(os.Getenv(siteBaseURLEnv))
-	if configured == "" {
-		return defaultSiteBaseURL
-	}
-	return strings.TrimRight(configured, "/")
+	return siteBaseURL
 }
 
 func (c *Client) AccountStatus() Status {
