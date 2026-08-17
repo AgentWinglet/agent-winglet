@@ -1,0 +1,278 @@
+name: Release
+
+# Builds and publishes signed, notarized public installers for a tagged
+# release — see SPEC.md for the full artifact spec each platform job below
+# builds toward. Distinct from app-build.yml (PR/main smoke test: unsigned,
+# host-arch only) and ci.yml (fast Go-only checks, reused here as the `test`
+# gate): this is the slow, secrets-using path that only runs for an actual
+# version tag (or a manual dry run via workflow_dispatch, which skips
+# publishing — see the `publish` job's `if`).
+#
+# Required repository secrets:
+#   macOS signing/notarization:
+#     MACOS_CERTIFICATE_BASE64      Developer ID Application cert, as a
+#                                    base64-encoded .p12
+#     MACOS_CERTIFICATE_PASSWORD    that .p12's export password
+#     MACOS_KEYCHAIN_PASSWORD       password for the temporary CI keychain
+#                                    (any random string; only exists for
+#                                    this job's lifetime)
+#     MACOS_NOTARY_KEY_BASE64       App Store Connect API key, as a
+#                                    base64-encoded .p8
+#     MACOS_NOTARY_KEY_ID           that API key's Key ID
+#     MACOS_NOTARY_ISSUER_ID        that API key's Issuer ID
+#   Windows signing:
+#     WINDOWS_CERTIFICATE_BASE64    Authenticode code-signing cert, as a
+#                                    base64-encoded .pfx
+#     WINDOWS_CERTIFICATE_PASSWORD  that .pfx's export password
+#
+# See scripts/package/macos.sh's header comment for how to obtain the macOS
+# credentials in the first place (creating the Developer ID cert, generating
+# the API key) — encode either binary secret with `base64 -i file -o -`
+# (macOS) or `base64 -w0 file` (Linux) before pasting it into a GitHub
+# Actions secret.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (no leading v) for a manual dry run — ignored on a real tag push, which always uses the tag"
+        required: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  determine-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ inputs.version }}" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            source scripts/package-lib.sh
+            echo "version=$(resolve_version)" >> "$GITHUB_OUTPUT"
+          fi
+
+  macos-package:
+    needs: [test, determine-version]
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.determine-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.5"
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+
+      # Standard GitHub Actions pattern for codesigning: import the
+      # Developer ID cert into a throwaway keychain that only exists for
+      # this job's lifetime, rather than touching the runner's real login
+      # keychain. MACOS_SIGN_IDENTITY is derived from the imported cert (not
+      # itself a secret) and exported for the build step below.
+      - name: Import Developer ID certificate
+        env:
+          MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          echo "$MACOS_CERTIFICATE_BASE64" | base64 --decode > "${RUNNER_TEMP}/certificate.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          # Setting it default alone isn't enough — codesign/find-identity
+          # resolve against the keychain *search list*, which a fresh
+          # keychain isn't automatically added to.
+          security list-keychains -d user -s build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import "${RUNNER_TEMP}/certificate.p12" -k build.keychain -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          rm -f "${RUNNER_TEMP}/certificate.p12"
+          identity="$(security find-identity -v -p codesigning build.keychain | grep '"Developer ID Application:' | head -1 | sed -E 's/.*"(Developer ID Application:[^"]+)".*/\1/')"
+          echo "MACOS_SIGN_IDENTITY=${identity}" >> "$GITHUB_ENV"
+
+      - name: Write notarization API key
+        env:
+          MACOS_NOTARY_KEY_BASE64: ${{ secrets.MACOS_NOTARY_KEY_BASE64 }}
+        run: |
+          echo "$MACOS_NOTARY_KEY_BASE64" | base64 --decode > "${RUNNER_TEMP}/notary_key.p8"
+          echo "MACOS_NOTARY_KEY_PATH=${RUNNER_TEMP}/notary_key.p8" >> "$GITHUB_ENV"
+
+      - name: Build and package macOS
+        env:
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: make package-macos VERSION="$VERSION"
+
+      - name: Verify
+        run: ./scripts/package/macos-verify.sh cmd/agent-winglet-app/build/bin/Winglet.app dist/macos/*.dmg
+
+      - name: Clean up keychain and API key
+        if: always()
+        run: |
+          security delete-keychain build.keychain || true
+          rm -f "${RUNNER_TEMP}/notary_key.p8"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist/macos/*
+
+  windows-package:
+    needs: [test, determine-version]
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.determine-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.5"
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+
+      - name: Install NSIS
+        run: choco install nsis -y
+
+      - name: Decode signing certificate
+        shell: bash
+        env:
+          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+        run: |
+          echo "$WINDOWS_CERTIFICATE_BASE64" | base64 --decode > "${RUNNER_TEMP}/certificate.pfx"
+          echo "WINDOWS_SIGN_PFX_PATH=${RUNNER_TEMP}/certificate.pfx" >> "$GITHUB_ENV"
+
+      - name: Build and package Windows
+        shell: bash
+        env:
+          WINDOWS_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: make package-windows VERSION="$VERSION"
+
+      - name: Clean up certificate
+        if: always()
+        shell: bash
+        run: rm -f "${RUNNER_TEMP}/certificate.pfx"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: dist/windows/*
+
+  ubuntu-package:
+    needs: [test, determine-version]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.determine-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.5"
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+
+      - name: Build and package Ubuntu
+        run: make package-ubuntu VERSION="$VERSION"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-deb
+          path: dist/ubuntu/*
+
+  checksums:
+    needs: [determine-version, macos-package, windows-package, ubuntu-package]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist/macos
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: dist/windows
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ubuntu-deb
+          path: dist/ubuntu
+
+      - name: Generate checksums and manifest
+        run: ./scripts/package/checksums-and-manifest.sh "${{ needs.determine-version.outputs.version }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest
+          path: |
+            dist/manifest.json
+            dist/SHA256SUMS
+
+  # Publishes a GitHub Release with every artifact attached. Syncing those
+  # artifacts + manifest.json to agentwinglet.com's actual hosting is a
+  # separate, not-yet-defined step (SPEC.md's CI/CD Plan says "create GitHub
+  # Release or upload artifacts to the storage backend used by
+  # agentwinglet.com" — this repo doesn't say what that backend is, so this
+  # implements the GitHub Release half only; wire up the site sync
+  # separately once that's decided).
+  #
+  # Skipped for a manual workflow_dispatch dry run (no tag to attach the
+  # release to) — only a real tag push publishes.
+  publish:
+    needs: [determine-version, checksums]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.determine-version.outputs.version }}
+        run: |
+          gh release create "v${VERSION}" dist-artifacts/* \
+            --title "Winglet v${VERSION}" \
+            --generate-notes
