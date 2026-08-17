@@ -9,5 +9,12 @@
   "author": {
     "name": "Umit Kaan Usta",
     "email": "u.kaanusta@gmail.com"
+  },
+  "info": {
+    "companyName": "Winglet",
+    "productName": "Winglet",
+    "productVersion": "0.1.0",
+    "copyright": "Copyright © 2026 Umit Kaan Usta",
+    "comments": "Local-only dashboard for agent-winglet's Claude Code and Codex hooks. For more, go to agentwinglet.com."
   }
 }
