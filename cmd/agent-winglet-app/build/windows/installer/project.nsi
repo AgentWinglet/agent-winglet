@@ -16,6 +16,11 @@ Unicode true
 ## > makensis -DARG_WAILS_ARM64_BINARY=..\..\bin\app.exe
 ## For a installer with both architectures:
 ## > makensis -DARG_WAILS_AMD64_BINARY=..\..\bin\app-amd64.exe -DARG_WAILS_ARM64_BINARY=..\..\bin\app-arm64.exe
+##
+## Winglet also always requires ARG_TRAY_AMD64_BINARY (path to the built
+## agent-winglet-tray.exe — see the "Winglet:" block below and
+## scripts/package/windows.sh), e.g.:
+## > makensis -DARG_WAILS_AMD64_BINARY=..\..\bin\app.exe -DARG_TRAY_AMD64_BINARY=..\..\..\..\agent-winglet-tray\build\bin\agent-winglet-tray.exe
 ####
 ## The following information is taken from the ProjectInfo file, but they can be overwritten here.
 ####
@@ -29,6 +34,28 @@ Unicode true
 ## !define UNINST_KEY_NAME     "UninstKeyInRegistry"  # Default "${INFO_COMPANYNAME}${INFO_PRODUCTNAME}"
 ####
 ## !define REQUEST_EXECUTION_LEVEL "admin"            # Default "admin"  see also https://nsis.sourceforge.io/Docs/Chapter4.html
+####
+## Winglet: per-user install scope (see SPEC.md's Artifact Matrix — the
+## Windows deliverable is a per-user install, not machine-wide/admin, to
+## match install.sh's existing %LOCALAPPDATA% install path and avoid an
+## elevation prompt for a single-user desktop app). Defining these here
+## before including wails_tools.nsh overrides its "admin" default.
+####
+!define WAILS_INSTALL_SCOPE "user"
+!define REQUEST_EXECUTION_LEVEL "user"
+
+####
+## Winglet: the tray helper (cmd/agent-winglet-tray) binary to bundle
+## alongside the dashboard — passed at makensis invocation time via
+## -DARG_TRAY_AMD64_BINARY=path\to\agent-winglet-tray.exe (see
+## scripts/package/windows.sh). Not a wails-generated define, so it isn't
+## populated by wails_tools.nsh the way ARG_WAILS_AMD64_BINARY is.
+####
+!ifndef ARG_TRAY_AMD64_BINARY
+    !error "Winglet: ARG_TRAY_AMD64_BINARY must be defined (path to the built agent-winglet-tray.exe) — see scripts/package/windows.sh"
+!endif
+!define TRAY_EXECUTABLE "agent-winglet-tray.exe"
+
 ####
 ## Include the wails tools
 ####
@@ -96,6 +123,16 @@ Section
 
     !insertmacro wails.files
 
+    ; Tray helper — installed alongside the dashboard so
+    ; cmd/agent-winglet-app/tray_path.go's sibling-of-executable lookup
+    ; finds it, started at login via a Startup-folder shortcut (mirrors
+    ; scripts/lib.sh's windows_register_tray_autostart, reimplemented here
+    ; so the installer doesn't depend on Git Bash/PowerShell scripts from a
+    ; checkout — see SPEC.md's Windows Package section).
+    File "/oname=${TRAY_EXECUTABLE}" "${ARG_TRAY_AMD64_BINARY}"
+    CreateDirectory "$SMSTARTUP"
+    CreateShortcut "$SMSTARTUP\${INFO_PRODUCTNAME} Tray.lnk" "$INSTDIR\${TRAY_EXECUTABLE}"
+
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
 
@@ -103,10 +140,22 @@ Section
     !insertmacro wails.associateCustomProtocols
 
     !insertmacro wails.writeUninstaller
+
+    ; Launch the tray helper now so the icon appears right away instead of
+    ; only at the next login — best-effort and non-blocking (ExecShell, not
+    ; ExecWait: the installer shouldn't wait on a background helper, and a
+    ; failure here isn't fatal to the install).
+    ExecShell "" "$INSTDIR\${TRAY_EXECUTABLE}"
 SectionEnd
 
 Section "uninstall"
     !insertmacro wails.setShellContext
+
+    ; Stop any running tray helper before removing files — Windows won't
+    ; let a running .exe be deleted, and NSIS runs the previous version's
+    ; uninstaller before installing a new one (same UNINST_KEY), so this
+    ; also covers the upgrade case.
+    ExecWait 'taskkill /IM "${TRAY_EXECUTABLE}" /F'
 
     RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
 
@@ -114,6 +163,7 @@ Section "uninstall"
 
     Delete "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk"
     Delete "$DESKTOP\${INFO_PRODUCTNAME}.lnk"
+    Delete "$SMSTARTUP\${INFO_PRODUCTNAME} Tray.lnk"
 
     !insertmacro wails.unassociateFiles
     !insertmacro wails.unassociateCustomProtocols
