@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	Hardened runtime (required for notarization) locks down JIT and
+	unsigned executable memory by default, which breaks Wails' embedded
+	WKWebView (it JITs the page's JavaScript). Without these three, a
+	signed-with-hardened-runtime build launches to a blank/crashing
+	window instead of the dashboard. disable-library-validation lets the
+	process load WebKit's own dynamically-signed frameworks, which don't
+	carry this app's Team ID.
+	-->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+</dict>
+</plist>
