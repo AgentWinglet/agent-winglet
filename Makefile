@@ -1,4 +1,4 @@
-.PHONY: build claude-hook codex-hook test installer-smoke app tray nest-tray-darwin install uninstall
+.PHONY: build claude-hook codex-hook test installer-smoke app tray nest-tray-darwin install uninstall package-macos package-macos-verify package-windows package-ubuntu checksums
 
 build: claude-hook codex-hook
 
@@ -82,3 +82,26 @@ nest-tray-darwin:
 	cp cmd/agent-winglet-tray/build/darwin/Info.plist "$(TRAY_HELPER_BUNDLE)/Contents/Info.plist"
 	cp cmd/agent-winglet-tray/build/darwin/appicon.icns "$(TRAY_HELPER_BUNDLE)/Contents/Resources/appicon.icns"
 	codesign --sign - --force --deep cmd/agent-winglet-app/build/bin/Winglet.app
+
+# Public packaging targets — see SPEC.md for the full artifact/acceptance
+# spec each of these builds toward. Distinct from `app`/`tray` above (which
+# build host-arch-only, for local dev/install.sh): these build the
+# multi-arch, versioned, distributable artifacts for agentwinglet.com.
+#
+# VERSION defaults to the current commit's exact release tag (see
+# scripts/package-lib.sh's resolve_version); override with
+# `make package-macos VERSION=0.1.0` for a specific version.
+package-macos:
+	./scripts/package/macos.sh "$(VERSION)"
+
+package-macos-verify:
+	./scripts/package/macos-verify.sh
+
+package-windows:
+	./scripts/package/windows.sh "$(VERSION)"
+
+package-ubuntu:
+	./scripts/package/ubuntu.sh "$(VERSION)"
+
+checksums:
+	./scripts/package/checksums-and-manifest.sh "$(VERSION)"
