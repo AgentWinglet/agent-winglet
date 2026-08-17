@@ -6,7 +6,7 @@ Ship first-class downloadable desktop installers from `agentwinglet.com` so user
 
 The download page should offer:
 
-- macOS: universal `.dmg` (unsigned, not notarized for v1 — see Non-Goals)
+- macOS: signed and notarized universal `.dmg`
 - Windows: signed `.exe` installer
 - Ubuntu: `.deb` package, with an `.AppImage` as a portable fallback only if the `.deb` path proves too brittle
 
@@ -39,7 +39,7 @@ The source installer is useful for development, but it is not the public packagi
 
 | Platform | Primary Artifact | Architectures | Install Scope | Notes |
 | --- | --- | --- | --- | --- |
-| macOS | `Winglet-${version}-macOS-universal.dmg` | `amd64` + `arm64` | `/Applications/Winglet.app` | v1 ships unsigned and not notarized (see Non-Goals). Includes nested universal tray login item, also unsigned. |
+| macOS | `Winglet-${version}-macOS-universal.dmg` | `amd64` + `arm64` | `/Applications/Winglet.app` | Developer ID signed and notarized. Includes nested signed tray login item. |
 | Windows | `Winglet-${version}-windows-x64-setup.exe` | `amd64` first | per-user | NSIS installer from Wails. Code signing required before broad distribution. |
 | Ubuntu | `winglet_${version}_amd64.deb` | `amd64` first | system package | Target Ubuntu 24.04 LTS and newer first. Add `arm64` after amd64 release flow is stable. |
 | Ubuntu fallback | `Winglet-${version}-x86_64.AppImage` | `amd64` first | portable | Optional. Use only if `.deb` support creates too much friction. |
@@ -59,7 +59,7 @@ Before packaging work starts, add release metadata to `cmd/agent-winglet-app/wai
 
 ## macOS Package
 
-**v1 decision: no Developer ID signing or notarization.** Winglet does not have an Apple Developer ID account provisioned yet, and setting one up is not a blocker for shipping the first downloadable build. Users installing the v1 `.dmg` will see Gatekeeper's "Apple could not verify this app" warning and must right-click → Open (or clear the quarantine attribute) to launch it. The download page's install note per OS should explain this step for macOS. Signing and notarization are tracked as a fast-follow once a Developer ID is set up; the steps below are kept as reference for that later pass and marked accordingly.
+A Developer ID Application certificate is provisioned (`security find-identity -v -p codesigning` on the build Mac lists it). Every public macOS build is signed and notarized — `scripts/package/macos.sh` does this by default and refuses to run without a signing identity and notarization credentials. `UNSIGNED=1` builds an ad-hoc-only DMG for quick local iteration, but that path must never be used for a public release: it fails Gatekeeper the same way an unsigned build always would.
 
 ### Build Output
 
@@ -83,15 +83,10 @@ Use a macOS runner or a local Mac builder with:
 - Node version matching CI
 - Wails CLI pinned to the repo's current version
 - Xcode command line tools
+- Apple Developer ID Application certificate, installed in the build Mac's keychain (`security find-identity -v -p codesigning`)
+- Notarization credentials for `xcrun notarytool` — either a keychain profile (`xcrun notarytool store-credentials`, local-Mac convenience) or an App Store Connect API key (.p8 + key ID + issuer ID, works on CI's ephemeral runners)
 
-Not needed for v1 (post-v1, once signing/notarization is added):
-
-- Apple Developer ID Application certificate
-- App Store Connect API key or notarytool credentials
-
-### Notarization (Post-v1)
-
-Not part of v1 (see decision above). Kept here as reference for when a Developer ID is provisioned.
+### Notarization
 
 Notarization is Apple's automated security check for Mac software distributed outside the Mac App Store. It is not App Review: Apple is not manually approving Winglet's product behavior, UI, business model, or usefulness. The notary service scans the signed artifact for known malware and common code-signing problems. If it passes, Apple issues a ticket that Gatekeeper can use to trust the download.
 
@@ -120,15 +115,7 @@ GOOS=darwin GOARCH=arm64 go build -o /tmp/winglet-tray-arm64 ./cmd/agent-winglet
 lipo -create -output cmd/agent-winglet-app/build/bin/Winglet.app/Contents/Library/LoginItems/Tray.app/Contents/MacOS/agent-winglet-tray /tmp/winglet-tray-amd64 /tmp/winglet-tray-arm64
 ```
 
-The v1 order (no signing or notarization):
-
-1. Build universal `Winglet.app`.
-2. Create and populate `Contents/Library/LoginItems/Tray.app`.
-3. Build the tray helper as universal.
-4. Create the DMG.
-5. Gatekeeper-test on a clean Mac to confirm the expected "unidentified developer" warning appears and the app still opens via right-click → Open.
-
-Post-v1, once signing/notarization is added, insert these steps between building the app bundle and creating the DMG, then add DMG signing/notarization/stapling after DMG creation:
+The final order matters:
 
 1. Build universal `Winglet.app`.
 2. Create and populate `Contents/Library/LoginItems/Tray.app`.
@@ -142,15 +129,19 @@ Post-v1, once signing/notarization is added, insert these steps between building
 10. Staple the notarization ticket.
 11. Gatekeeper-test on a clean Mac.
 
+`scripts/package/macos.sh` (invoked via `make package-macos`) implements this order, plus the entitlements hardened runtime needs for Wails' embedded WebKit view (`cmd/agent-winglet-app/build/darwin/entitlements.plist`).
+
 ### Acceptance Criteria
 
 - `file Winglet.app/Contents/MacOS/Winglet` reports both `x86_64` and `arm64`.
 - `file Winglet.app/Contents/Library/LoginItems/Tray.app/Contents/MacOS/agent-winglet-tray` reports both `x86_64` and `arm64`.
+- `codesign --verify --deep --strict --verbose=2 Winglet.app` passes.
+- `spctl --assess --type execute --verbose Winglet.app` passes.
+- `xcrun stapler validate Winglet.dmg` passes (ticket is stapled).
+- `spctl --assess --type open --context context:primary-signature --verbose Winglet.dmg` passes (Gatekeeper accepts the DMG with no network round-trip).
 - DMG opens cleanly on a fresh Apple Silicon Mac.
 - DMG opens cleanly on a fresh Intel Mac.
-- Gatekeeper shows the expected "unidentified developer" warning on first launch, and the app opens via right-click → Open.
 - Login item registers and launches the tray helper after reboot.
-- Post-v1 only: `codesign --verify --deep --strict --verbose=2 Winglet.app` and `spctl --assess --type execute --verbose Winglet.app` pass once signing/notarization is added.
 
 ## Windows Package
 
@@ -331,18 +322,17 @@ Keep `.github/workflows/app-build.yml` as the PR smoke test. The release workflo
 
 Public downloads must satisfy:
 
+- Signed macOS app and DMG
+- Apple notarization and stapling
 - Signed Windows binaries and installer
 - SHA-256 checksums in the download manifest
 - Reproducible release inputs: tag, commit SHA, pinned Go/Node/Wails versions
 - No unsigned auto-update path until a signed updater design exists
 
-macOS app and DMG signing/notarization are deferred past v1 (see Non-Goals). The v1 macOS `.dmg` is unsigned and unnotarized; users rely on the download page's SHA-256 checksum and the documented right-click → Open step instead of Gatekeeper's automated trust check.
-
 Do not add silent background network behavior as part of packaging. Installation should only install Winglet and its tray helper.
 
 ## Non-Goals For The First Packaging Pass
 
-- macOS Developer ID signing and notarization (v1 ships unsigned and unnotarized; Gatekeeper's "unidentified developer" warning is expected and documented for users)
 - Microsoft Store package
 - Mac App Store package
 - Homebrew cask
@@ -359,8 +349,7 @@ These can come later after the direct downloads are stable.
 
 - Add release metadata to `wails.json`.
 - Add `make package-macos` that builds universal main app and universal nested tray helper.
-- Add macOS DMG creation and verification scripts (unsigned, not notarized for v1).
-- Add a macOS install note to the download page explaining the right-click → Open Gatekeeper workaround.
+- Add macOS signing, DMG creation, notarization, stapling, and verification scripts.
 - Update Windows NSIS template to include tray helper and startup registration.
 - Add `make package-windows` for signed NSIS installer output.
 - Add Debian packaging files or an `nfpm` config for Ubuntu `.deb`.
@@ -368,7 +357,7 @@ These can come later after the direct downloads are stable.
 - Add `make package-ubuntu` for `.deb` output.
 - Add release workflow for tag-triggered builds.
 - Add checksum and manifest generation.
-- Add manual QA runbook for clean macOS Intel, macOS Apple Silicon, Windows 10/11, and Ubuntu.
+- Add manual QA runbook for clean macOS Intel, macOS Apple Silicon, Windows 10/11, and Ubuntu (`PACKAGING-QA-RUNBOOK.md`).
 
 ## References
 
