@@ -22,6 +22,33 @@ func appExecutablePath() (string, error) {
 	switch runtime.GOOS {
 	case "darwin":
 		return filepath.Join("/Applications", appName+".app", "Contents", "MacOS", appName), nil
+	case "linux", "windows":
+		// Mirror of cmd/agent-winglet-app/tray_path.go's trayExecutablePath
+		// — see its doc comment for why sibling-of-this-binary covers both
+		// install.sh's layout and a packaged install's (Debian package,
+		// Windows NSIS installer) different one, where a fixed
+		// ~/.local/bin or %LOCALAPPDATA% guess wouldn't.
+		binName := appName
+		if runtime.GOOS == "windows" {
+			binName += ".exe"
+		}
+		if self, err := os.Executable(); err == nil {
+			if resolved, err := filepath.EvalSymlinks(self); err == nil {
+				return filepath.Join(filepath.Dir(resolved), binName), nil
+			}
+			return filepath.Join(filepath.Dir(self), binName), nil
+		}
+		return legacyAppExecutablePath()
+	default:
+		return "", errUnsupportedOS
+	}
+}
+
+// legacyAppExecutablePath is appExecutablePath's fallback for the rare case
+// os.Executable() itself fails — install.sh's own fixed layout, same as
+// before the sibling-of-executable lookup above was added.
+func legacyAppExecutablePath() (string, error) {
+	switch runtime.GOOS {
 	case "linux":
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -29,7 +56,6 @@ func appExecutablePath() (string, error) {
 		}
 		return filepath.Join(home, ".local", "bin", appName), nil
 	case "windows":
-		// Mirrors scripts/lib.sh's windows_local_app_dir: %LOCALAPPDATA%\<app>\<app>.exe.
 		localAppData := os.Getenv("LOCALAPPDATA")
 		if localAppData == "" {
 			home, err := os.UserHomeDir()
