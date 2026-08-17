@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Winglet
+Comment=Local-only dashboard for agent-winglet's Claude Code and Codex hooks
+Exec=/usr/bin/winglet
+Icon=winglet
+Categories=Utility;
+Terminal=false
