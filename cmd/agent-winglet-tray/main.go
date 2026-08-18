@@ -29,6 +29,7 @@ import (
 	"github.com/getlantern/systray"
 
 	"github.com/umitkaanusta/agent-winglet/internal/appipc"
+	"github.com/umitkaanusta/agent-winglet/internal/buildinfo"
 )
 
 var errUnsupportedOS = errors.New("agent-winglet-tray: unsupported OS")
@@ -40,7 +41,7 @@ func main() {
 func onReady() {
 	template, regular := trayIcons()
 	systray.SetTemplateIcon(template, regular)
-	systray.SetTooltip("Winglet")
+	systray.SetTooltip("Winglet " + buildinfo.Version)
 
 	mOpen := systray.AddMenuItem("Open Winglet", "Show the Winglet dashboard")
 	systray.AddSeparator()

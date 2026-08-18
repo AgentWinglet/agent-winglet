@@ -1,0 +1,55 @@
+# Template for nfpm (https://nfpm.goreleaser.com/) — scripts/package/ubuntu.sh
+# fills in the __PLACEHOLDER__ values with `sed` and writes the result to a
+# temp file before invoking `nfpm package`, rather than relying on nfpm's own
+# env-var expansion (keeps the substitution explicit and version-independent).
+#
+# The artifact layout this produces: /opt/winglet holds the actual binaries
+# (not managed by any per-user config), /usr/bin/winglet is a convenience
+# symlink, and nothing here writes into a user's home directory — the
+# packaged app registers its own per-user tray autostart on first launch
+# instead (see cmd/agent-winglet-app/autostart_linux.go).
+name: winglet
+arch: amd64
+platform: linux
+version: "__VERSION__"
+section: utils
+priority: optional
+maintainer: "Winglet <hi@agentwinglet.com>"
+description: |
+  Winglet trims the wasted context out of your coding agent sessions, 
+  so your plan goes further. Everything runs locally, your data never leaves 
+  your machine.
+homepage: "https://agentwinglet.com"
+license: Apache-2.0
+
+depends:
+  - libgtk-3-0
+  - libwebkit2gtk-4.1-0
+  - libayatana-appindicator3-1
+  - ca-certificates
+
+contents:
+  - src: __APP_BIN__
+    dst: /opt/winglet/Winglet
+    file_info:
+      mode: 0755
+  - src: __TRAY_BIN__
+    dst: /opt/winglet/agent-winglet-tray
+    file_info:
+      mode: 0755
+  - src: winglet.desktop
+    dst: /usr/share/applications/winglet.desktop
+    file_info:
+      mode: 0644
+  - src: appicon-256.png
+    dst: /usr/share/icons/hicolor/256x256/apps/winglet.png
+    file_info:
+      mode: 0644
+  - src: /opt/winglet/Winglet
+    dst: /usr/bin/winglet
+    type: symlink
+
+scripts:
+  postinstall: postinst.sh
+  preremove: prerm.sh
+  postremove: postrm.sh

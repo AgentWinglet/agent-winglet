@@ -24,6 +24,8 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
+
+	"github.com/umitkaanusta/agent-winglet/internal/buildinfo"
 )
 
 //go:embed all:frontend/dist
@@ -82,7 +84,7 @@ func main() {
 			// exactly match the real thing, which isn't worth risking here.
 			About: &mac.AboutInfo{
 				Title:   "Winglet",
-				Message: "Local-only dashboard for agent-winglet's Claude Code hooks.",
+				Message: "Trims wasted context from your coding agent sessions, so your plan goes further.\nVersion " + buildinfo.Version,
 			},
 			// Lets the sidebar's backdrop-filter blur (style.css, gated on
 			// data-os="darwin") show real desktop vibrancy behind it instead

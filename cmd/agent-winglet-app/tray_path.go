@@ -31,6 +31,38 @@ func trayExecutablePath() (string, error) {
 		// Makefile's nest-tray-darwin target for why (SMAppService login
 		// items must live inside the app that registers them).
 		return filepath.Join("/Applications", appName+".app", "Contents", "Library", "LoginItems", "Tray.app", "Contents", "MacOS", trayBinName), nil
+	case "linux", "windows":
+		// install.sh puts the tray helper right next to this binary
+		// (~/.local/bin/{Winglet,agent-winglet-tray} on linux,
+		// %LOCALAPPDATA%\Winglet\{Winglet,agent-winglet-tray}.exe on
+		// windows), and so does the packaged install (a Debian package's
+		// /opt/winglet/{Winglet,agent-winglet-tray}, or the Windows NSIS
+		// installer's $INSTDIR) — so resolving relative to this process'
+		// own (symlink-resolved, for /usr/bin/winglet -> /opt/winglet/
+		// Winglet) executable path covers every install method with one
+		// lookup, instead of hardcoding install.sh's own layout and
+		// silently missing a packaged install's different one.
+		binName := trayBinName
+		if runtime.GOOS == "windows" {
+			binName += ".exe"
+		}
+		if self, err := os.Executable(); err == nil {
+			if resolved, err := filepath.EvalSymlinks(self); err == nil {
+				return filepath.Join(filepath.Dir(resolved), binName), nil
+			}
+			return filepath.Join(filepath.Dir(self), binName), nil
+		}
+		return legacyTrayExecutablePath()
+	default:
+		return "", errUnsupportedOS
+	}
+}
+
+// legacyTrayExecutablePath is trayExecutablePath's fallback for the rare
+// case os.Executable() itself fails — install.sh's own fixed layout, same
+// as before the sibling-of-executable lookup above was added.
+func legacyTrayExecutablePath() (string, error) {
+	switch runtime.GOOS {
 	case "linux":
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -38,7 +70,6 @@ func trayExecutablePath() (string, error) {
 		}
 		return filepath.Join(home, ".local", "bin", trayBinName), nil
 	case "windows":
-		// Mirrors scripts/lib.sh's windows_local_app_dir: %LOCALAPPDATA%\<app>\<tray-bin>.exe.
 		localAppData := os.Getenv("LOCALAPPDATA")
 		if localAppData == "" {
 			home, err := os.UserHomeDir()

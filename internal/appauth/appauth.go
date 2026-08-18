@@ -177,7 +177,7 @@ func (c *Client) AccountStatus() Status {
 // specific auth method), so sign-in happens on agentwinglet.com/app-signin
 // in the user's real browser, and hands control back to the app via a
 // loopback redirect — the same pattern `gh auth login`/`gcloud auth login`
-// use. See SPEC.md's "Desktop App Work" section.
+// use.
 type BrowserSignIn struct {
 	// URL is the agentwinglet.com/app-signin address to open in the system
 	// browser. The caller (app.go, which holds the Wails context) is
@@ -383,10 +383,9 @@ func (c *Client) StartTrial() (Status, error) {
 }
 
 // Logout always clears local state, even if the site can't be reached —
-// signing out must work offline (see SPEC.md's "must not gate" list). The
-// server-side revoke is attempted first, best-effort, so a stolen refresh
-// token from a wiped device stops working; a failure there doesn't stop the
-// local sign-out.
+// signing out must work offline. The server-side revoke is attempted first,
+// best-effort, so a stolen refresh token from a wiped device stops working;
+// a failure there doesn't stop the local sign-out.
 func Logout() error {
 	if auth, err := LoadAuth(); err == nil {
 		revokeRemote(auth)

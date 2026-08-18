@@ -685,6 +685,7 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	go a.serveIPC()
 	go a.ensureTrayRunning()
+	go ensureLinuxTrayAutostart()
 
 	// Defensive fallback: install.sh already calls RegisterLoginItem via
 	// `--register-login-item` right after installing, but this covers any

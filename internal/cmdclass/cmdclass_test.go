@@ -5,13 +5,13 @@ import "testing"
 func TestClassifyInvestigateCommands(t *testing.T) {
 	tests := []string{
 		"cat README.md",
-		"less SPEC.md",
+		"less README.md",
 		"head -n 20 go.mod",
 		"tail -n 50 app.log",
 		"grep -R winglet internal",
 		"rg --files",
 		"find internal -name '*.go'",
-		"fd SPEC",
+		"fd README",
 		"ls -la",
 		"wc -l README.md",
 		"git status --short",

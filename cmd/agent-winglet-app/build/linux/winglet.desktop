@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Winglet
+Comment=Trims wasted context from your coding agent sessions, so your plan goes further
+Exec=/usr/bin/winglet
+Icon=winglet
+Categories=Utility;
+Terminal=false
