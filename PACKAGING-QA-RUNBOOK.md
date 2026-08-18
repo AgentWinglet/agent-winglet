@@ -26,8 +26,8 @@ Same checklist as Intel, with:
 ## Windows 10 x64
 
 - [ ] Download the `-setup.exe` via a browser.
-- [ ] Run it. No SmartScreen "Windows protected your PC" block (this build is Authenticode-signed; that warning would mean signing regressed).
-- [ ] Installer completes without requiring elevation (per-user install scope — see SPEC.md's Windows Package section).
+- [ ] Run it. `release.yml`'s `windows-package` job signs automatically once `WINDOWS_CERTIFICATE_BASE64` is set, and builds unsigned otherwise (current default — see `scripts/package/windows.sh`'s header comment). If this release is signed, no SmartScreen "Windows protected your PC" block should appear; that warning would mean signing regressed. If unsigned, the warning is expected — click More info → Run anyway.
+- [ ] Installer completes without requiring elevation (per-user install scope — see `project.nsi`'s `WAILS_INSTALL_SCOPE`/`REQUEST_EXECUTION_LEVEL` overrides).
 - [ ] Winglet appears in the Start Menu.
 - [ ] Dashboard launches from the Start Menu shortcut.
 - [ ] Tray icon appears within a few seconds of install finishing, without a reboot.
@@ -53,4 +53,4 @@ Same checklist as Windows 10.
 
 - [ ] All three `manifest.json` SHA-256 checksums match the actual downloaded files (`shasum -a 256` / `sha256sum` against `dist/SHA256SUMS`).
 - [ ] All three artifacts' embedded version (About panel on macOS, tray tooltip on all three) matches the release tag.
-- [ ] None of the three installs made any network call other than the ones the app already made pre-packaging (sign-in, entitlement check) — no telemetry added by packaging itself (see SPEC.md's Security and Trust section).
+- [ ] None of the three installs made any network call other than the ones the app already made pre-packaging (sign-in, entitlement check) — no telemetry added by packaging itself.

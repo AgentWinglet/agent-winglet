@@ -157,13 +157,22 @@ jobs:
       - name: Install NSIS
         run: choco install nsis -y
 
-      - name: Decode signing certificate
+      # No Windows code-signing cert yet (see scripts/package/windows.sh's
+      # header comment) — this builds unsigned automatically whenever
+      # WINDOWS_CERTIFICATE_BASE64 isn't set, and switches to signed the
+      # moment that secret is added, with no further changes needed here.
+      - name: Decode signing certificate (if configured)
         shell: bash
         env:
           WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
         run: |
-          echo "$WINDOWS_CERTIFICATE_BASE64" | base64 --decode > "${RUNNER_TEMP}/certificate.pfx"
-          echo "WINDOWS_SIGN_PFX_PATH=${RUNNER_TEMP}/certificate.pfx" >> "$GITHUB_ENV"
+          if [ -n "$WINDOWS_CERTIFICATE_BASE64" ]; then
+            echo "$WINDOWS_CERTIFICATE_BASE64" | base64 --decode > "${RUNNER_TEMP}/certificate.pfx"
+            echo "WINDOWS_SIGN_PFX_PATH=${RUNNER_TEMP}/certificate.pfx" >> "$GITHUB_ENV"
+          else
+            echo "No WINDOWS_CERTIFICATE_BASE64 secret set — building unsigned."
+            echo "UNSIGNED=1" >> "$GITHUB_ENV"
+          fi
 
       - name: Build and package Windows
         shell: bash

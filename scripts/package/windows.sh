@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the public Windows deliverable: Winglet.exe + agent-winglet-tray.exe
-# bundled into a signed NSIS installer,
-# dist/windows/Winglet-${VERSION}-windows-x64-setup.exe.
+# bundled into an NSIS installer (signed if credentials are provided, see
+# below), dist/windows/Winglet-${VERSION}-windows-x64-setup.exe.
 #
 # Must run on Windows, under a bash capable of calling native Windows tools
 # (Git Bash/MSYS2/Cygwin — same environments install.sh/scripts/lib.sh
@@ -17,10 +17,12 @@
 #   WINDOWS_SIGN_PFX_PASSWORD    its password
 #   WINDOWS_SIGN_TIMESTAMP_URL   optional, defaults to DigiCert's RFC3161 server
 #
-# Set UNSIGNED=1 to skip signing entirely and build an unsigned installer,
-# e.g. for local iteration. Never use an UNSIGNED=1 build for a public
-# release — unsigned Windows binaries trigger SmartScreen warnings for every
-# user (see SPEC.md's Windows Package section).
+# Set UNSIGNED=1 to skip signing entirely and build an unsigned installer.
+# Unsigned binaries trigger a Windows SmartScreen "unrecognized publisher"
+# warning for every user (click More info -> Run anyway to get past it) —
+# accepted as the current tradeoff until Windows code signing is set up (no
+# cert yet; see release.yml's windows-package job, which builds unsigned
+# automatically whenever WINDOWS_CERTIFICATE_BASE64 isn't configured).
 #
 # Usage: scripts/package/windows.sh [version]
 #   version defaults to scripts/package-lib.sh's resolve_version.
