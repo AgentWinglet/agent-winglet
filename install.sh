@@ -309,7 +309,7 @@ if [ "$WANT_APP" = "1" ]; then
 [Desktop Entry]
 Type=Application
 Name=Winglet
-Comment=Local-only dashboard for agent-winglet's Claude Code hooks
+Comment=Trims wasted context from your coding agent sessions, so your plan goes further
 Exec=${DEST}
 Icon=${ICON}
 Categories=Utility;
