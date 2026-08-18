@@ -3,12 +3,11 @@
 # temp file before invoking `nfpm package`, rather than relying on nfpm's own
 # env-var expansion (keeps the substitution explicit and version-independent).
 #
-# See SPEC.md's Ubuntu Package section for the artifact layout this
-# produces and why: /opt/winglet holds the actual binaries (not managed by
-# any per-user config), /usr/bin/winglet is a convenience symlink, and
-# nothing here writes into a user's home directory — the packaged app
-# registers its own per-user tray autostart on first launch instead (see
-# cmd/agent-winglet-app/autostart_linux.go).
+# The artifact layout this produces: /opt/winglet holds the actual binaries
+# (not managed by any per-user config), /usr/bin/winglet is a convenience
+# symlink, and nothing here writes into a user's home directory — the
+# packaged app registers its own per-user tray autostart on first launch
+# instead (see cmd/agent-winglet-app/autostart_linux.go).
 name: winglet
 arch: amd64
 platform: linux

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Generates dist/manifest.json (SPEC.md's Download Page Contract — what
-# agentwinglet.com's download page reads to render current downloads
-# without hardcoding filenames) and a combined dist/SHA256SUMS, from
+# Generates dist/manifest.json (what agentwinglet.com's download page would
+# read to render current downloads without hardcoding filenames) and a
+# combined dist/SHA256SUMS, from
 # whatever platform artifacts already exist under
 # dist/{macos,windows,ubuntu}/. Run this after package-macos/
 # package-windows/package-ubuntu have produced their DMG/exe/deb — this

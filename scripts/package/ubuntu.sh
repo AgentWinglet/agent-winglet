@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Builds the public Ubuntu deliverable: a .deb bundling Winglet + the tray
-# helper, dist/ubuntu/winglet_${VERSION}_amd64.deb — see SPEC.md's Ubuntu
-# Package section for the artifact layout and why nothing here writes into
-# a user's home directory (that happens on first app launch instead — see
+# helper, dist/ubuntu/winglet_${VERSION}_amd64.deb. Nothing here writes into
+# a user's home directory — the layout is /opt/winglet plus a /usr/bin
+# symlink and desktop/icon files (see nfpm.yaml.tmpl); the tray's per-user
+# autostart entry is registered on first app launch instead (see
 # cmd/agent-winglet-app/autostart_linux.go).
 #
 # Must run on Linux: wails build's linux target needs GTK/WebKit dev

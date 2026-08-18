@@ -13,8 +13,8 @@ import (
 // already writes this exact file directly at install time (see
 // scripts/lib.sh's linux_register_tray_autostart) — a system package can't
 // do the same at install time since it has no single user's home to write
-// into (see SPEC.md's Ubuntu Package section), so the app registers it
-// itself the first time it actually runs as some specific user instead.
+// into, so the app registers it itself the first time it actually runs as
+// some specific user instead.
 //
 // Idempotent and silent: an existing entry — from either this or
 // install.sh's own identical file — is left untouched, and a failure to

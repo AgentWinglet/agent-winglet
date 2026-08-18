@@ -2,9 +2,9 @@
 # Builds the public macOS deliverable: a universal (amd64+arm64) Winglet.app
 # with a universal nested tray helper, signed with a Developer ID
 # Application certificate, notarized, stapled, and packaged into
-# dist/macos/Winglet-${VERSION}-macOS-universal.dmg. Follows the build ->
-# sign -> package dmg -> sign dmg -> notarize -> staple order documented in
-# SPEC.md's macOS Package section.
+# dist/macos/Winglet-${VERSION}-macOS-universal.dmg. Follows Apple's
+# recommended order: build -> sign -> package dmg -> sign dmg -> notarize ->
+# staple.
 #
 # Requires:
 #   MACOS_SIGN_IDENTITY   Developer ID Application signing identity, e.g.
@@ -96,10 +96,9 @@ build_universal_app() {
 # Builds the tray helper for both macOS architectures and lipos them into a
 # single universal binary nested inside the just-built app bundle — mirrors
 # the Makefile's nest-tray-darwin target, but for both architectures instead
-# of the host one, per SPEC.md's "Required Build Changes" for the macOS
-# package (a host-arch-only nested tray would make an Apple Silicon-built
-# .app appear to support Intel via the outer Wails target while the nested
-# login item silently doesn't).
+# of the host one (a host-arch-only nested tray would make an Apple
+# Silicon-built .app appear to support Intel via the outer Wails target
+# while the nested login item silently doesn't).
 nest_universal_tray() {
   rm -rf "$TRAY_BUNDLE"
   mkdir -p "${TRAY_BUNDLE}/Contents/MacOS" "${TRAY_BUNDLE}/Contents/Resources"

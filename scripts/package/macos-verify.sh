@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Checks scripts/package/macos.sh's output against SPEC.md's macOS
-# Acceptance Criteria: architecture (universal app + tray), and — since
-# signing/notarization is wired into the pipeline — a real Developer ID
-# signature and a Gatekeeper-passing DMG.
+# Checks scripts/package/macos.sh's output: architecture (universal app +
+# tray), and — since signing/notarization is wired into the pipeline — a
+# real Developer ID signature and a Gatekeeper-passing DMG.
 #
 # Set UNSIGNED_OK=1 to treat the signing/notarization checks as
 # informational instead of required, for verifying an UNSIGNED=1 dev build

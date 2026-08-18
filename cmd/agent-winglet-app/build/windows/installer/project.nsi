@@ -35,11 +35,11 @@ Unicode true
 ####
 ## !define REQUEST_EXECUTION_LEVEL "admin"            # Default "admin"  see also https://nsis.sourceforge.io/Docs/Chapter4.html
 ####
-## Winglet: per-user install scope (see SPEC.md's Artifact Matrix — the
-## Windows deliverable is a per-user install, not machine-wide/admin, to
-## match install.sh's existing %LOCALAPPDATA% install path and avoid an
-## elevation prompt for a single-user desktop app). Defining these here
-## before including wails_tools.nsh overrides its "admin" default.
+## Winglet: per-user install scope — the Windows deliverable is a per-user
+## install, not machine-wide/admin, to match install.sh's existing
+## %LOCALAPPDATA% install path and avoid an elevation prompt for a
+## single-user desktop app. Defining these here before including
+## wails_tools.nsh overrides its "admin" default.
 ####
 !define WAILS_INSTALL_SCOPE "user"
 !define REQUEST_EXECUTION_LEVEL "user"
@@ -128,7 +128,7 @@ Section
     ; finds it, started at login via a Startup-folder shortcut (mirrors
     ; scripts/lib.sh's windows_register_tray_autostart, reimplemented here
     ; so the installer doesn't depend on Git Bash/PowerShell scripts from a
-    ; checkout — see SPEC.md's Windows Package section).
+    ; checkout).
     File "/oname=${TRAY_EXECUTABLE}" "${ARG_TRAY_AMD64_BINARY}"
     CreateDirectory "$SMSTARTUP"
     CreateShortcut "$SMSTARTUP\${INFO_PRODUCTNAME} Tray.lnk" "$INSTDIR\${TRAY_EXECUTABLE}"

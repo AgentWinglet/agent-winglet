@@ -1,12 +1,14 @@
 name: Release
 
-# Builds and publishes signed, notarized public installers for a tagged
-# release — see SPEC.md for the full artifact spec each platform job below
-# builds toward. Distinct from app-build.yml (PR/main smoke test: unsigned,
-# host-arch only) and ci.yml (fast Go-only checks, reused here as the `test`
-# gate): this is the slow, secrets-using path that only runs for an actual
-# version tag (or a manual dry run via workflow_dispatch, which skips
-# publishing — see the `publish` job's `if`).
+# Builds and publishes the public installers for a tagged release: macOS
+# signed and notarized, Ubuntu unsigned (.deb packages aren't code-signed),
+# Windows signed if WINDOWS_CERTIFICATE_BASE64 is configured and unsigned
+# otherwise (see windows-package's "Decode signing certificate" step).
+# Distinct from app-build.yml (PR/main smoke test: unsigned, host-arch only)
+# and ci.yml (fast Go-only checks, reused here as the `test` gate): this is
+# the slow, secrets-using path that only runs for an actual version tag (or
+# a manual dry run via workflow_dispatch, which skips publishing — see the
+# `publish` job's `if`).
 #
 # Required repository secrets:
 #   macOS signing/notarization:
@@ -253,13 +255,11 @@ jobs:
             dist/manifest.json
             dist/SHA256SUMS
 
-  # Publishes a GitHub Release with every artifact attached. Syncing those
-  # artifacts + manifest.json to agentwinglet.com's actual hosting is a
-  # separate, not-yet-defined step (SPEC.md's CI/CD Plan says "create GitHub
-  # Release or upload artifacts to the storage backend used by
-  # agentwinglet.com" — this repo doesn't say what that backend is, so this
-  # implements the GitHub Release half only; wire up the site sync
-  # separately once that's decided).
+  # Publishes a GitHub Release with every artifact attached. Note: while
+  # this repo stays private, GitHub Release assets aren't publicly
+  # downloadable — agentwinglet.com's download page needs either the repo
+  # (or at least Releases) made public, or these artifacts synced somewhere
+  # else the site can serve from. That sync isn't implemented here yet.
   #
   # Skipped for a manual workflow_dispatch dry run (no tag to attach the
   # release to) — only a real tag push publishes.
