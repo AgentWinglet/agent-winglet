@@ -11,7 +11,7 @@
 	<key>CFBundleExecutable</key>
 	<string>agent-winglet-tray</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.umitkaanusta.winglet.tray</string>
+	<string>com.agentwinglet.winglet.tray</string>
 	<key>CFBundleVersion</key>
 	<string>1.0</string>
 	<key>CFBundleShortVersionString</key>

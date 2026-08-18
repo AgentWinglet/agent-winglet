@@ -17,7 +17,7 @@ import (
 // (cmd/agent-winglet-tray/build/darwin/Info.plist) — that's what ties this
 // registration to that specific bundle inside
 // Winglet.app/Contents/Library/LoginItems/.
-const loginItemIdentifier = "com.umitkaanusta.winglet.tray"
+const loginItemIdentifier = "com.agentwinglet.winglet.tray"
 
 // loginItemCallTimeout bounds how long RegisterLoginItem/UnregisterLoginItem
 // wait for SMAppService. Observed in testing: unregisterAndReturnError can
