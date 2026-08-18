@@ -183,6 +183,8 @@ jobs:
     runs-on: windows-latest
     env:
       VERSION: ${{ needs.determine-version.outputs.version }}
+    outputs:
+      signed: ${{ steps.decode-cert.outputs.signed }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
 
@@ -205,6 +207,7 @@ jobs:
       # WINDOWS_CERTIFICATE_BASE64 isn't set, and switches to signed the
       # moment that secret is added, with no further changes needed here.
       - name: Decode signing certificate (if configured)
+        id: decode-cert
         shell: bash
         env:
           WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
@@ -212,9 +215,11 @@ jobs:
           if [ -n "$WINDOWS_CERTIFICATE_BASE64" ]; then
             printf '%s' "$WINDOWS_CERTIFICATE_BASE64" | base64 --decode > "${RUNNER_TEMP}/certificate.pfx"
             echo "WINDOWS_SIGN_PFX_PATH=${RUNNER_TEMP}/certificate.pfx" >> "$GITHUB_ENV"
+            echo "signed=true" >> "$GITHUB_OUTPUT"
           else
             echo "No WINDOWS_CERTIFICATE_BASE64 secret set — building unsigned."
             echo "UNSIGNED=1" >> "$GITHUB_ENV"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build and package Windows
@@ -236,6 +241,8 @@ jobs:
   windows-artifact-validation:
     needs: [windows-package]
     runs-on: windows-latest
+    env:
+      EXPECT_SIGNED: ${{ needs.windows-package.outputs.signed }}
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -254,8 +261,19 @@ jobs:
 
           $signature = Get-AuthenticodeSignature -FilePath $installers[0].FullName
           $signature | Format-List
-          if ($signature.Status -ne "Valid") {
-            Write-Error "Windows installer is not Authenticode signed with a valid signature."
+
+          # windows-package only signs when WINDOWS_CERTIFICATE_BASE64 is
+          # configured (see its "Decode signing certificate" step) — this
+          # mirrors that same condition here instead of unconditionally
+          # requiring a valid signature, so an expected-unsigned dry run
+          # doesn't fail validation.
+          if ($env:EXPECT_SIGNED -eq "true") {
+            if ($signature.Status -ne "Valid") {
+              Write-Error "Windows installer is not Authenticode signed with a valid signature."
+              exit 1
+            }
+          } elseif ($signature.Status -ne "NotSigned") {
+            Write-Error "Expected an unsigned installer (no WINDOWS_CERTIFICATE_BASE64 configured) but got signature status: $($signature.Status)."
             exit 1
           }
 
