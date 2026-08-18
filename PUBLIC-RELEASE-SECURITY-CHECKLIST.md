@@ -20,16 +20,17 @@ Track the remaining work before making this repository public and publishing sig
 - [x] Ignore local signing/notarization credential exports: `*.p8`, `*.p12`, `*.pfx`.
 - [x] Search current tracked files and Git history for `.p8`, `.p12`, `.pfx`, `AuthKey*`, `.env`, private-key headers, and obvious hardcoded key/cert blobs.
 - [x] Harden Ubuntu apt update steps against the flaky Azure apt mirror.
+- [x] Pin all external GitHub Actions in `.github/workflows/` to full commit SHAs.
 
 ## GitHub Settings To Do
 
-- [ ] Protect `v*` tags so only trusted maintainers can create or update release tags.
-- [ ] Restrict who can manually run the `Release` workflow, if repo/org policy supports it.
-- [ ] Keep Actions approval required for outside/fork contributors.
-- [ ] Set repository default `GITHUB_TOKEN` permissions to read-only in GitHub Settings.
-- [ ] Enable GitHub secret scanning.
-- [ ] Enable GitHub push protection.
-- [ ] Review branch protection for `main`: require CI, require reviews, and block force-pushes.
+- [x] Protect `v*` tags so only trusted maintainers can create or update release tags.
+- [x] Restrict who can manually run the `Release` workflow, if repo/org policy supports it.
+- [x] Keep Actions approval required for outside/fork contributors.
+- [x] Set repository default `GITHUB_TOKEN` permissions to read-only in GitHub Settings.
+- [x] Enable GitHub secret scanning.
+- [x] Enable GitHub push protection.
+- [x] Review branch protection for `main`: require CI, require reviews, and block force-pushes.
 
 ## Release Validation To Do
 
