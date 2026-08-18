@@ -156,6 +156,28 @@ jobs:
           name: macos-dmg
           path: dist/macos/*
 
+  macos-artifact-validation:
+    needs: [macos-package]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: macos-dmg
+          path: dist/macos
+
+      - name: Validate downloaded DMG
+        shell: bash
+        run: |
+          shopt -s nullglob
+          dmgs=(dist/macos/*.dmg)
+          if [ "${#dmgs[@]}" -ne 1 ]; then
+            echo "Expected exactly one DMG artifact, found ${#dmgs[@]}." >&2
+            printf 'Found: %s\n' "${dmgs[@]:-none}" >&2
+            exit 1
+          fi
+          xcrun stapler validate "${dmgs[0]}"
+          spctl --assess --type open --context context:primary-signature --verbose "${dmgs[0]}"
+
   windows-package:
     needs: [test, determine-version]
     runs-on: windows-latest
@@ -211,6 +233,32 @@ jobs:
           name: windows-installer
           path: dist/windows/*
 
+  windows-artifact-validation:
+    needs: [windows-package]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: windows-installer
+          path: dist/windows
+
+      - name: Validate downloaded installer
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem -Path dist/windows -Filter *.exe -File)
+          if ($installers.Count -ne 1) {
+            Write-Error "Expected exactly one Windows installer artifact, found $($installers.Count)."
+            $installers | ForEach-Object { Write-Host "Found: $($_.FullName)" }
+            exit 1
+          }
+
+          $signature = Get-AuthenticodeSignature -FilePath $installers[0].FullName
+          $signature | Format-List
+          if ($signature.Status -ne "Valid") {
+            Write-Error "Windows installer is not Authenticode signed with a valid signature."
+            exit 1
+          }
+
   ubuntu-package:
     needs: [test, determine-version]
     runs-on: ubuntu-latest
@@ -246,8 +294,50 @@ jobs:
           name: ubuntu-deb
           path: dist/ubuntu/*
 
+  ubuntu-artifact-validation:
+    needs: [determine-version, ubuntu-package]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ubuntu-deb
+          path: dist/ubuntu
+
+      - name: Validate downloaded deb
+        env:
+          VERSION: ${{ needs.determine-version.outputs.version }}
+        run: |
+          shopt -s nullglob
+          debs=(dist/ubuntu/*.deb)
+          if [ "${#debs[@]}" -ne 1 ]; then
+            echo "Expected exactly one Ubuntu deb artifact, found ${#debs[@]}." >&2
+            printf 'Found: %s\n' "${debs[@]:-none}" >&2
+            exit 1
+          fi
+
+          package_name="$(dpkg-deb --field "${debs[0]}" Package)"
+          package_version="$(dpkg-deb --field "${debs[0]}" Version)"
+          dpkg-deb --info "${debs[0]}"
+          dpkg-deb --contents "${debs[0]}"
+          if [ "$package_version" != "$VERSION" ]; then
+            echo "Package version ${package_version} does not match release version ${VERSION}." >&2
+            exit 1
+          fi
+
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+          fi
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 update
+          sudo apt-get install -y "./${debs[0]}"
+
+          dpkg -s "$package_name"
+          test -x /opt/winglet/Winglet
+          test -x /opt/winglet/agent-winglet-tray
+          test -e /usr/bin/winglet
+          test -f /usr/share/applications/winglet.desktop
+
   checksums:
-    needs: [determine-version, macos-package, windows-package, ubuntu-package]
+    needs: [determine-version, macos-artifact-validation, windows-artifact-validation, ubuntu-artifact-validation]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
