@@ -36,19 +36,17 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// linesOfApproxTokens returns 2*tokens single-character lines ("x",
-// newline-joined, trailing newline included). budgetBody's estimatedTokens
-// proxy is len(body)/4 (integer division); a body built this way is always
-// exactly 4*tokens bytes long, so estimatedTokens(body) == tokens exactly —
-// letting boundary tests target budgetTokenThreshold precisely instead of
-// guessing through an arbitrary line count the way the old line-count
-// threshold could be tested directly. The line count (2*tokens) is also
-// always comfortably above budgetHeadLines+budgetTailLines, so these bodies
-// never trip budgetBody's separate too-few-lines-to-split guard.
+// linesOfApproxTokens returns a newline-heavy body whose token count matches
+// the hook's deterministic tokenizer-style counter. The line count is also
+// comfortably above budgetHeadLines+budgetTailLines, so these bodies never
+// trip budgetBody's separate too-few-lines-to-split guard.
 func linesOfApproxTokens(tokens int) string {
-	lines := make([]string, 2*tokens)
+	lines := make([]string, max(1, tokens/2))
 	for i := range lines {
 		lines[i] = "x"
+	}
+	if tokens%2 == 1 {
+		lines[0] = "x."
 	}
 	return strings.Join(lines, "\n") + "\n"
 }
@@ -447,17 +445,16 @@ func linesOfEntries(n int) []string {
 	return entries
 }
 
-// entriesOfApproxTokens returns 2*tokens+1 single-character entries. Joined
-// by budgetEntryList with "\n" (the same join budgetBody's caller performs)
-// that's exactly 4*tokens+1 bytes — one more than linesOfApproxTokens'
-// 4*tokens because strings.Join has no trailing separator — but integer
-// division still floors len/4 to exactly tokens, so this hits the same
+// entriesOfApproxTokens returns single-character entries that hit the same
 // token-threshold boundary precisely for the entry-list shape (Glob's
 // filenames) that linesOfApproxTokens hits for freeform text bodies.
 func entriesOfApproxTokens(tokens int) []string {
-	entries := make([]string, 2*tokens+1)
+	entries := make([]string, max(1, (tokens+1)/2))
 	for i := range entries {
 		entries[i] = "x"
+	}
+	if tokens%2 == 0 {
+		entries[0] = "x."
 	}
 	return entries
 }
@@ -929,7 +926,7 @@ func TestHandleDoesNotRetireInvestigateBeforeBoundaryCrossed(t *testing.T) {
 	}
 }
 
-func TestHandleRetiresInvestigateAfterBoundaryCrossed(t *testing.T) {
+func TestHandleDoesNotRetireShortInvestigateAfterBoundaryCrossed(t *testing.T) {
 	dir := t.TempDir()
 
 	// Seed: one investigate call, then the implement call that crosses the
@@ -949,8 +946,34 @@ func TestHandleRetiresInvestigateAfterBoundaryCrossed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handle errored: %v", err)
 	}
+	if out != nil {
+		t.Fatalf("short investigate call after the boundary has crossed should pass through, got %+v", out)
+	}
+}
+
+func TestHandleRetiresLongInvestigateAfterBoundaryCrossed(t *testing.T) {
+	dir := t.TempDir()
+
+	if _, err := handle(investigateInput("sess1", dir, "Read",
+		json.RawMessage(`{"file_path":"/tmp/a.go"}`), json.RawMessage(`{"type":"text","file":{"content":"package a"}}`))); err != nil {
+		t.Fatalf("seeding investigate call errored: %v", err)
+	}
+	if _, err := handle(toolCallInput("sess1", dir, "Edit")); err != nil {
+		t.Fatalf("crossing call errored: %v", err)
+	}
+
+	raw, err := json.Marshal(map[string]string{"content": linesOfApproxTokens(budgetTokenThreshold + 1)})
+	if err != nil {
+		t.Fatalf("Marshal errored: %v", err)
+	}
+	in := investigateInput("sess1", dir, "Grep", json.RawMessage(`{"pattern":"TODO"}`), raw)
+
+	out, err := handle(in)
+	if err != nil {
+		t.Fatalf("handle errored: %v", err)
+	}
 	if out == nil {
-		t.Fatalf("investigate call after the boundary has crossed should be retired, got nil")
+		t.Fatalf("long investigate call after the boundary has crossed should be retired, got nil")
 	}
 	receipt, ok := out.HookSpecificOutput.UpdatedToolOutput.(string)
 	if !ok {
@@ -973,8 +996,8 @@ func TestHandleRetiresInvestigateAfterBoundaryCrossed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading retired content at %q errored: %v", path, err)
 	}
-	if string(stored) != string(response) {
-		t.Fatalf("retired content = %q, want %q", stored, response)
+	if string(stored) != string(raw) {
+		t.Fatalf("retired content = %q, want %q", stored, raw)
 	}
 }
 
@@ -987,8 +1010,13 @@ func TestHandleRetireIsNotBashOnly(t *testing.T) {
 		t.Fatalf("crossing call errored: %v", err)
 	}
 
+	raw, err := json.Marshal(map[string]string{"content": linesOfApproxTokens(budgetTokenThreshold + 1)})
+	if err != nil {
+		t.Fatalf("Marshal errored: %v", err)
+	}
+
 	for _, tool := range []string{"WebFetch", "WebSearch", "Task"} {
-		out, err := handle(toolCallInput("sess1", dir, tool))
+		out, err := handle(investigateInput("sess1", dir, tool, json.RawMessage(`{}`), raw))
 		if err != nil {
 			t.Fatalf("%s errored: %v", tool, err)
 		}
@@ -1232,7 +1260,11 @@ func TestHandleSessionStartInvalidatesRetiredContent(t *testing.T) {
 	if _, err := handle(toolCallInput("sess1", dir, "Edit")); err != nil {
 		t.Fatalf("crossing call errored: %v", err)
 	}
-	response := json.RawMessage(`{"matches":["x"]}`)
+	raw, err := json.Marshal(map[string]string{"content": linesOfApproxTokens(budgetTokenThreshold + 1)})
+	if err != nil {
+		t.Fatalf("Marshal errored: %v", err)
+	}
+	response := json.RawMessage(raw)
 	in := investigateInput("sess1", dir, "Grep", json.RawMessage(`{"pattern":"x"}`), response)
 	out, err := handle(in)
 	if err != nil {
@@ -1253,9 +1285,10 @@ func TestHandleSessionStartInvalidatesRetiredContent(t *testing.T) {
 		t.Fatalf("retired content survived SessionStart: err=%v", err)
 	}
 
-	// And the boundary itself must be forgotten too: the same Grep call,
+	// And the boundary itself must be forgotten too: a short Grep call,
 	// right after SessionStart, should no longer be retired.
-	out, err = handle(in)
+	shortIn := investigateInput("sess1", dir, "Grep", json.RawMessage(`{"pattern":"x"}`), json.RawMessage(`{"matches":["x"]}`))
+	out, err = handle(shortIn)
 	if err != nil {
 		t.Fatalf("post-invalidation call errored: %v", err)
 	}
@@ -1368,7 +1401,11 @@ func TestHandleSessionEndReportsRetiredCall(t *testing.T) {
 	if _, err := handle(toolCallInput("sess1", dir, "Edit")); err != nil {
 		t.Fatalf("crossing call errored: %v", err)
 	}
-	if _, err := handle(toolCallInput("sess1", dir, "Grep")); err != nil {
+	raw, err := json.Marshal(map[string]string{"content": linesOfApproxTokens(budgetTokenThreshold + 1)})
+	if err != nil {
+		t.Fatalf("Marshal errored: %v", err)
+	}
+	if _, err := handle(investigateInput("sess1", dir, "Grep", json.RawMessage(`{"pattern":"a"}`), json.RawMessage(raw))); err != nil {
 		t.Fatalf("post-boundary investigate call errored: %v", err)
 	}
 
@@ -2011,7 +2048,11 @@ func TestRetiredBytesOnRetiredCall(t *testing.T) {
 	if _, err := handle(toolCallInput("sess1", dir, "Edit")); err != nil {
 		t.Fatalf("crossing call errored: %v", err)
 	}
-	response := json.RawMessage(`{"matches":["a"]}`)
+	raw, err := json.Marshal(map[string]string{"content": linesOfApproxTokens(budgetTokenThreshold + 1)})
+	if err != nil {
+		t.Fatalf("Marshal errored: %v", err)
+	}
+	response := json.RawMessage(raw)
 	if _, err := handle(investigateInput("sess1", dir, "Grep", json.RawMessage(`{"pattern":"a"}`), response)); err != nil {
 		t.Fatalf("retiring call errored: %v", err)
 	}

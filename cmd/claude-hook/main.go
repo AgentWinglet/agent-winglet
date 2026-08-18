@@ -14,7 +14,7 @@
 //     one investigate-classified call (Read/Grep/Glob/WebFetch/WebSearch/
 //     Task) this session, emits a one-time suggestion to compact
 //     (handlePhaseBoundary). Once that boundary is crossed, any further
-//     investigate call has its output archived to disk and replaced with a
+//     long investigate call has its output archived to disk and replaced with a
 //     receipt (handleRetireInvestigate) instead of budgeted; the same
 //     archive-and-receipt treatment also fires pre-boundary once a session
 //     passes investigateCallThreshold investigate calls, since a long
@@ -68,6 +68,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/umitkaanusta/agent-winglet/internal/compactnudge"
 	"github.com/umitkaanusta/agent-winglet/internal/config"
 	"github.com/umitkaanusta/agent-winglet/internal/entitlement"
 	"github.com/umitkaanusta/agent-winglet/internal/ledger"
@@ -465,9 +466,7 @@ func handlePhaseBoundary(in hookInput, root string) (out *hookOutput, pastBounda
 		return nil, pastBoundary, overInvestigateThreshold, nil
 	}
 
-	const msg = "[agent-winglet] /compact nudge - you can compact the " +
-		"session ahead of implementation, to save context while what's " +
-		"still relevant is still clear."
+	msg := compactnudge.Message
 	// additionalContext reaches the model, not the user directly (unlike
 	// systemMessage, which the user already sees on its own) — so it spells
 	// out that the model must act on this now, before any further tool
@@ -476,9 +475,9 @@ func handlePhaseBoundary(in hookInput, root string) (out *hookOutput, pastBounda
 	// (rather than just "tell the user") turns this from text the user
 	// might skim past into an explicit decision they have to make one way
 	// or the other.
-	const modelInstruction = msg + " Before continuing with any further " +
+	modelInstruction := msg + " Before continuing with any further " +
 		"work, ask the user now via the AskUserQuestion tool whether " +
-		"they'd like to run /compact now."
+		"they'd like to run /compact now." + compactnudge.PreservationGuidance
 
 	return &hookOutput{
 		SystemMessage: msg,
@@ -535,8 +534,10 @@ const investigateThresholdReason = "past the pre-boundary investigate-call thres
 // handlePostToolUse): once the session has already crossed the
 // investigate→implement boundary (see handlePhaseBoundary), or, pre-
 // boundary, once investigateCallThreshold investigate calls have already
-// been made this session. reason names which one, and is threaded straight
-// into the receipt so a saved output's notice line explains why it was cut.
+// been made this session. The post-boundary path is length-gated so short,
+// immediately useful observations still pass through. reason names which
+// condition fired, and is threaded straight into the receipt so a saved
+// output's notice line explains why it was cut.
 func handleRetireInvestigate(in hookInput, root, reason string) (*hookOutput, error) {
 	path, err := retire.Store(root, in.SessionID, in.ToolResponse)
 	if err != nil {
@@ -620,7 +621,10 @@ func handlePostToolUse(in hookInput) (*hookOutput, error) {
 	}
 	if investigateTools[in.ToolName] {
 		if pastBoundary {
-			return handleRetireInvestigate(in, root, "post-boundary")
+			if estimatedTokens(string(in.ToolResponse)) > budgetTokenThreshold {
+				return handleRetireInvestigate(in, root, "post-boundary")
+			}
+			return nil, nil
 		}
 		if overInvestigateThreshold {
 			return handleRetireInvestigate(in, root, investigateThresholdReason)
