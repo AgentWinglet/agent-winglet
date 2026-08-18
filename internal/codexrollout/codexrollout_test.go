@@ -47,7 +47,7 @@ func TestReadSessionUsageUsesLatestCumulativeTokenCount(t *testing.T) {
 	}
 
 	wantBytes := int64(len("Please inspect the project and summarize the next step.") +
-		len("Command: rg --files\nOutput:\nSPEC.md\ninternal/transcript/transcript.go\n"))
+		len("Command: rg --files\nOutput:\nREADME.md\ninternal/transcript/transcript.go\n"))
 	if u.ContentBytes != wantBytes {
 		t.Fatalf("ContentBytes = %d, want %d", u.ContentBytes, wantBytes)
 	}

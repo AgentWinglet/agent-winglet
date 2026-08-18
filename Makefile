@@ -83,8 +83,8 @@ nest-tray-darwin:
 	cp cmd/agent-winglet-tray/build/darwin/appicon.icns "$(TRAY_HELPER_BUNDLE)/Contents/Resources/appicon.icns"
 	codesign --sign - --force --deep cmd/agent-winglet-app/build/bin/Winglet.app
 
-# Public packaging targets — see SPEC.md for the full artifact/acceptance
-# spec each of these builds toward. Distinct from `app`/`tray` above (which
+# Public packaging targets for versioned distributable artifacts. Distinct
+# from `app`/`tray` above (which
 # build host-arch-only, for local dev/install.sh): these build the
 # multi-arch, versioned, distributable artifacts for agentwinglet.com.
 #

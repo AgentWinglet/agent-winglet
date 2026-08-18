@@ -464,7 +464,7 @@ func TestPostToolUseRetiresInvestigateShellAfterBoundaryCrossed(t *testing.T) {
 	sessionID := "codex-session"
 
 	if out, err := handle(codexBashPostInput(t, dir, sessionID, "rg --files", map[string]interface{}{
-		"stdout":    "SPEC.md\n",
+		"stdout":    "README.md\n",
 		"stderr":    "",
 		"exit_code": 0,
 	})); err != nil {
@@ -556,7 +556,7 @@ func TestPostToolUseRetiresLongNeutralShellOutputPostBoundary(t *testing.T) {
 	sessionID := "codex-session"
 
 	if _, err := handle(codexBashPostInput(t, dir, sessionID, "rg --files", map[string]interface{}{
-		"stdout":    "SPEC.md\n",
+		"stdout":    "README.md\n",
 		"stderr":    "",
 		"exit_code": 0,
 	})); err != nil {
@@ -638,7 +638,7 @@ func TestPostToolUseDedupTakesPrecedenceOverRetirementPostBoundary(t *testing.T)
 		t.Fatalf("first long output should be budgeted, got %+v", first)
 	}
 	if _, err := handle(codexBashPostInput(t, dir, sessionID, "rg --files", map[string]interface{}{
-		"stdout":    "SPEC.md\n",
+		"stdout":    "README.md\n",
 		"stderr":    "",
 		"exit_code": 0,
 	})); err != nil {
@@ -666,7 +666,7 @@ func TestPostToolUseEmitsCodexCompactNudgeOnceOnBoundary(t *testing.T) {
 	sessionID := "codex-session"
 
 	if out, err := handle(codexBashPostInput(t, dir, sessionID, "rg --files", map[string]interface{}{
-		"stdout":    "SPEC.md\n",
+		"stdout":    "README.md\n",
 		"stderr":    "",
 		"exit_code": 0,
 	})); err != nil {
@@ -716,7 +716,7 @@ func TestPostToolUseSkipsCodexCompactNudgeWhenDisabled(t *testing.T) {
 	}
 
 	if _, err := handle(codexBashPostInput(t, dir, sessionID, "rg --files", map[string]interface{}{
-		"stdout":    "SPEC.md\n",
+		"stdout":    "README.md\n",
 		"stderr":    "",
 		"exit_code": 0,
 	})); err != nil {
@@ -736,7 +736,7 @@ func TestPostToolUseDedupUsesModelFacingStringOutput(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	sessionID := "codex-session"
-	response := "Command: rg --files\nOutput:\nSPEC.md\n"
+	response := "Command: rg --files\nOutput:\nREADME.md\n"
 
 	if out, err := handle(codexBashPostInput(t, dir, sessionID, "rg --files", response)); err != nil {
 		t.Fatalf("first PostToolUse errored: %v", err)
