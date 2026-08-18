@@ -199,8 +199,20 @@ jobs:
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
 
+      # choco installs NSIS onto the machine PATH via the registry, but the
+      # runner process was already started and won't see that change — so
+      # subsequent steps (a fresh child process each, inheriting the
+      # runner's own stale env) can't find makensis unless its install dir
+      # is added to $GITHUB_PATH explicitly here.
       - name: Install NSIS
-        run: choco install nsis -y
+        shell: pwsh
+        run: |
+          choco install nsis -y --no-progress
+          $nsisPath = "C:\Program Files (x86)\NSIS"
+          if (-not (Test-Path "$nsisPath\makensis.exe")) {
+            throw "makensis.exe not found at $nsisPath after installing NSIS"
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $nsisPath
 
       # No Windows code-signing cert yet (see scripts/package/windows.sh's
       # header comment) — this builds unsigned automatically whenever
