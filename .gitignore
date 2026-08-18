@@ -27,6 +27,11 @@ go.work.sum
 # env file
 .env
 
+# Local signing/notarization credentials
+*.p8
+*.p12
+*.pfx
+
 # Editor/IDE
 # .idea/
 # .vscode/
