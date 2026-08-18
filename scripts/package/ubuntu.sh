@@ -82,6 +82,11 @@ sed \
   -e "s#__VERSION__#${VERSION}#g" \
   -e "s#__APP_BIN__#${REPO_ROOT}/cmd/agent-winglet-app/build/bin/Winglet#g" \
   -e "s#__TRAY_BIN__#${REPO_ROOT}/cmd/agent-winglet-tray/build/bin/agent-winglet-tray#g" \
+  -e "s#__DESKTOP_FILE__#${REPO_ROOT}/${DEBIAN_DIR}/winglet.desktop#g" \
+  -e "s#__ICON_FILE__#${REPO_ROOT}/${DEBIAN_DIR}/appicon-256.png#g" \
+  -e "s#__POSTINSTALL_SCRIPT__#${REPO_ROOT}/${DEBIAN_DIR}/postinst.sh#g" \
+  -e "s#__PREREMOVE_SCRIPT__#${REPO_ROOT}/${DEBIAN_DIR}/prerm.sh#g" \
+  -e "s#__POSTREMOVE_SCRIPT__#${REPO_ROOT}/${DEBIAN_DIR}/postrm.sh#g" \
   "${DEBIAN_DIR}/nfpm.yaml.tmpl" > "${DEBIAN_DIR}/nfpm.yaml.generated"
 cp cmd/agent-winglet-app/build/linux/winglet.desktop "${DEBIAN_DIR}/winglet.desktop"
 cp cmd/agent-winglet-app/build/linux/appicon-256.png "${DEBIAN_DIR}/appicon-256.png"
