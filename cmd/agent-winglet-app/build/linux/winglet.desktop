@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=Winglet
-Comment=Local-only dashboard for agent-winglet's Claude Code and Codex hooks
+Comment=Trims wasted context from your coding agent sessions, so your plan goes further
 Exec=/usr/bin/winglet
 Icon=winglet
 Categories=Utility;

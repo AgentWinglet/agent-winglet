@@ -84,7 +84,7 @@ func main() {
 			// exactly match the real thing, which isn't worth risking here.
 			About: &mac.AboutInfo{
 				Title:   "Winglet",
-				Message: "Local-only dashboard for agent-winglet's Claude Code hooks.\nVersion " + buildinfo.Version,
+				Message: "Trims wasted context from your coding agent sessions, so your plan goes further.\nVersion " + buildinfo.Version,
 			},
 			// Lets the sidebar's backdrop-filter blur (style.css, gated on
 			// data-os="darwin") show real desktop vibrancy behind it instead
