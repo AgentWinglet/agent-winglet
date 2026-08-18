@@ -5,6 +5,8 @@ package outputbudget
 import (
 	"fmt"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/umitkaanusta/agent-winglet/internal/retire"
 )
@@ -18,10 +20,47 @@ const (
 	TailLines      = 15
 )
 
-// EstimatedTokens is a cheap, tokenizer-free proxy (chars/4) used only to
-// decide whether output should be budgeted.
+// EstimatedTokens is a deterministic tokenizer-style counter used only to
+// decide whether output should be budgeted or retired. It is intentionally
+// local and dependency-free: hook execution must not fetch model tokenizer
+// tables or block on network.
 func EstimatedTokens(body string) int {
-	return len(body) / 4
+	tokens := 0
+	for len(body) > 0 {
+		r, size := utf8.DecodeRuneInString(body)
+		if r == utf8.RuneError && size == 0 {
+			break
+		}
+
+		switch {
+		case unicode.IsSpace(r):
+			body = body[size:]
+			tokens++
+		case isWordRune(r):
+			n := size
+			body = body[size:]
+			for len(body) > 0 {
+				next, nextSize := utf8.DecodeRuneInString(body)
+				if !isWordRune(next) {
+					break
+				}
+				n += nextSize
+				body = body[nextSize:]
+			}
+			tokens += (n + 3) / 4
+		case r < utf8.RuneSelf:
+			body = body[size:]
+			tokens++
+		default:
+			body = body[size:]
+			tokens++
+		}
+	}
+	return tokens
+}
+
+func isWordRune(r rune) bool {
+	return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
 // Body collapses body to its first HeadLines and last TailLines lines if its
