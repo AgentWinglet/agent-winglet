@@ -1,7 +1,7 @@
 // codex-hook is the Codex hook binary for agent-winglet. In this phase it
 // registers projects, resets per-session state at session starts/compacts,
 // records Codex rollout-derived usage, dedups repeated successful shell output,
-// budgets long first-time shell output, retires post-boundary investigation
+// budgets long first-time shell output, retires long post-boundary investigation
 // output, emits the compact nudge, and carries a disabled-by-default
 // replacement probe.
 package main
@@ -16,6 +16,7 @@ import (
 
 	"github.com/umitkaanusta/agent-winglet/internal/cmdclass"
 	"github.com/umitkaanusta/agent-winglet/internal/codexrollout"
+	"github.com/umitkaanusta/agent-winglet/internal/compactnudge"
 	"github.com/umitkaanusta/agent-winglet/internal/config"
 	"github.com/umitkaanusta/agent-winglet/internal/entitlement"
 	"github.com/umitkaanusta/agent-winglet/internal/ledger"
@@ -232,7 +233,10 @@ func handleCodexToolPostUse(in hookInput, root string, class cmdclass.Class) (*h
 		}
 		if class == cmdclass.Investigate {
 			if pastBoundary {
-				return handleCodexRetire(in, root, toolOutput, "post-boundary", toolOutput.RetireLabel)
+				if outputbudget.EstimatedTokens(toolOutput.Text) > outputbudget.TokenThreshold {
+					return handleCodexRetire(in, root, toolOutput, "post-boundary", toolOutput.RetireLabel)
+				}
+				return nil, nil
 			}
 			if overInvestigateThreshold {
 				return handleCodexRetire(in, root, toolOutput, investigateThresholdReason, toolOutput.RetireLabel)
@@ -608,11 +612,10 @@ func codexCompactNudgeOutput() *hookOutput {
 		return nil
 	}
 
-	const msg = "[agent-winglet] /compact nudge - you can compact the " +
-		"session ahead of implementation, to save context while what's " +
-		"still relevant is still clear."
-	const modelInstruction = msg + " Before continuing with any further " +
-		"work, tell the user they can run /compact now if they want to compact first."
+	msg := compactnudge.Message
+	modelInstruction := msg + " Before continuing with any further " +
+		"work, tell the user they can run /compact now if they want to compact first." +
+		compactnudge.PreservationGuidance
 
 	return &hookOutput{
 		SystemMessage: msg,

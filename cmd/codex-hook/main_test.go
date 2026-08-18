@@ -126,9 +126,12 @@ func appendRollout(t *testing.T, path string, lines ...string) {
 }
 
 func linesOfApproxTokens(tokens int) string {
-	lines := make([]string, 2*tokens)
+	lines := make([]string, max(1, tokens/2))
 	for i := range lines {
 		lines[i] = "x"
+	}
+	if tokens%2 == 1 {
+		lines[0] = "x."
 	}
 	return strings.Join(lines, "\n") + "\n"
 }
@@ -458,7 +461,7 @@ func TestPostToolUseDedupTakesPrecedenceOverBudgeting(t *testing.T) {
 	}
 }
 
-func TestPostToolUseRetiresInvestigateShellAfterBoundaryCrossed(t *testing.T) {
+func TestPostToolUseDoesNotRetireShortInvestigateShellAfterBoundaryCrossed(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	sessionID := "codex-session"
@@ -487,8 +490,38 @@ func TestPostToolUseRetiresInvestigateShellAfterBoundaryCrossed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("post-boundary investigate shell errored: %v", err)
 	}
+	if out != nil {
+		t.Fatalf("short post-boundary investigate shell should pass through, got %+v", out)
+	}
+}
+
+func TestPostToolUseRetiresLongInvestigateShellAfterBoundaryCrossed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	sessionID := "codex-session"
+
+	if _, err := handle(codexBashPostInput(t, dir, sessionID, "rg --files", map[string]interface{}{
+		"stdout":    "README.md\n",
+		"stderr":    "",
+		"exit_code": 0,
+	})); err != nil {
+		t.Fatalf("investigate seed errored: %v", err)
+	}
+	if _, err := handle(codexApplyPatchInput(t, dir, sessionID)); err != nil {
+		t.Fatalf("apply_patch boundary signal errored: %v", err)
+	}
+
+	output := linesOfApproxTokens(outputbudget.TokenThreshold + 1)
+	out, err := handle(codexBashPostInput(t, dir, sessionID, "cat main.go", map[string]interface{}{
+		"stdout":    output,
+		"stderr":    "",
+		"exit_code": 0,
+	}))
+	if err != nil {
+		t.Fatalf("post-boundary investigate shell errored: %v", err)
+	}
 	if out == nil {
-		t.Fatalf("expected post-boundary investigate shell retirement")
+		t.Fatalf("expected long post-boundary investigate shell retirement")
 	}
 	if !strings.Contains(out.SystemMessage, "investigate output retired post-boundary") {
 		t.Fatalf("SystemMessage = %q, want post-boundary retire receipt", out.SystemMessage)
@@ -609,7 +642,7 @@ func TestSubagentEventsCountAsInvestigationForCodexBoundary(t *testing.T) {
 	}
 
 	out, err := handle(codexBashPostInput(t, dir, sessionID, "cat README.md", map[string]interface{}{
-		"stdout":    "readme\n",
+		"stdout":    linesOfApproxTokens(outputbudget.TokenThreshold + 1),
 		"stderr":    "",
 		"exit_code": 0,
 	}))
@@ -905,7 +938,7 @@ func TestPostToolUseBudgetsLongNonShellLocalReadTool(t *testing.T) {
 	}
 }
 
-func TestPostToolUseRetiresNonShellLocalReadToolAfterBoundary(t *testing.T) {
+func TestPostToolUseDoesNotRetireShortNonShellLocalReadToolAfterBoundary(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	sessionID := "codex-session"
@@ -930,8 +963,34 @@ func TestPostToolUseRetiresNonShellLocalReadToolAfterBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("post-boundary local read errored: %v", err)
 	}
+	if out != nil {
+		t.Fatalf("short post-boundary local read should pass through, got %+v", out)
+	}
+}
+
+func TestPostToolUseRetiresLongNonShellLocalReadToolAfterBoundary(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	sessionID := "codex-session"
+
+	if _, err := handle(codexLocalPostInput(t, dir, sessionID, "list_dir", map[string]interface{}{"path": "."}, map[string]interface{}{
+		"output": "main.go\n",
+	})); err != nil {
+		t.Fatalf("investigate seed errored: %v", err)
+	}
+	if _, err := handle(codexApplyPatchInput(t, dir, sessionID)); err != nil {
+		t.Fatalf("apply_patch boundary signal errored: %v", err)
+	}
+
+	output := linesOfApproxTokens(outputbudget.TokenThreshold + 1)
+	out, err := handle(codexLocalPostInput(t, dir, sessionID, "read_file", map[string]interface{}{"path": "main.go"}, map[string]interface{}{
+		"content": output,
+	}))
+	if err != nil {
+		t.Fatalf("post-boundary local read errored: %v", err)
+	}
 	if out == nil || !strings.Contains(out.SystemMessage, "investigate output retired post-boundary") {
-		t.Fatalf("post-boundary local read should retire, got %+v", out)
+		t.Fatalf("long post-boundary local read should retire, got %+v", out)
 	}
 	path := archivePathFromBudgetedOutput(t, out.SystemMessage, "full output at ")
 	stored, err := os.ReadFile(path)
