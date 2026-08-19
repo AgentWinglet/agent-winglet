@@ -41,5 +41,5 @@ Track the remaining work before making this repository public and publishing sig
 - [x] Confirm the dry run passes the `macos-package` job: certificate import, notarization key write, package build, and verification.
 - [x] Confirm the dry run passes the `macos-artifact-validation` job.
 - [x] Confirm the dry run passes the `windows-artifact-validation` job.
-- [ ] Confirm the dry run passes the `ubuntu-artifact-validation` job.
+- [x] Confirm the dry run passes the `ubuntu-artifact-validation` job.
 - [ ] Push the real `v*` tag only after the dry run passes.
