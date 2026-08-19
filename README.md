@@ -43,6 +43,8 @@ Measured on industry-standard agentic coding benchmarks
 - Input token savings: **21.1-35.9%**
 - Answer quality: **Stays the same**, ranging between -1.0% and +2.0%.
 
+Note: Results may vary by workload and workflow.
+
 ## How it works
 
 The main idea is **trajectory reduction:** send less junk to the model.
