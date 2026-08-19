@@ -138,8 +138,9 @@ To uninstall:
 Winglet runs locally. Your codebase, prompts, hook output, saved tool logs, and
 savings data stay on your machine.
 
-Winglet servers only receive account and app metadata: your name, email address,
-and platform.
+Winglet servers only receive what is needed for accounts, trials, subscriptions,
+and app licensing: name, email address, sign-in provider, device/app metadata,
+and subscription or trial status.
 
 ## Development
 
@@ -164,6 +165,10 @@ On Linux, app builds may also need GTK/WebKit development packages. On Ubuntu:
 ```sh
 sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
 ```
+
+## Support
+
+For help with installation or billing, email [hi@agentwinglet.com](mailto:hi@agentwinglet.com).
 
 ## License
 Apache 2.0 — see [LICENSE](LICENSE).
