@@ -36,12 +36,25 @@ name: Release
 on:
   push:
     tags:
-      - "v*.*.*"
+      - "v*"
   workflow_dispatch:
     inputs:
       version:
         description: "Version to build (no leading v) for a manual dry run — ignored on a real tag push, which always uses the tag"
         required: false
+      platform:
+        description: "Which platform(s) to build for a manual dry run — ignored on a real tag push, which always builds all three"
+        required: false
+        type: choice
+        default: all
+        options:
+          - all
+          - macos
+          - windows
+          - ubuntu
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -52,32 +65,41 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
       - id: version
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          elif [ -n "${{ inputs.version }}" ]; then
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT_NAME" = "push" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          elif [ -n "$INPUT_VERSION" ]; then
+            version="$INPUT_VERSION"
           else
             source scripts/package-lib.sh
-            echo "version=$(resolve_version)" >> "$GITHUB_OUTPUT"
+            version="$(resolve_version)"
           fi
+          if [[ ! "$version" =~ ^[0-9]+[.][0-9]+[.][0-9]+(-[0-9A-Za-z.-]+)?([+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release version: expected semver like 1.2.3, 1.2.3-beta.1, or 1.2.3+build.1." >&2
+            exit 1
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
 
   macos-package:
     needs: [test, determine-version]
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'macos'
     runs-on: macos-latest
     env:
       VERSION: ${{ needs.determine-version.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
         with:
           go-version: "1.26.5"
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version: "22"
 
@@ -95,26 +117,33 @@ jobs:
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
         run: |
-          echo "$MACOS_CERTIFICATE_BASE64" | base64 --decode > "${RUNNER_TEMP}/certificate.p12"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          certificate_path="${RUNNER_TEMP}/certificate.p12"
+          keychain_path="${RUNNER_TEMP}/build.keychain"
+          printf '%s' "$MACOS_CERTIFICATE_BASE64" | base64 --decode > "$certificate_path"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
           # Setting it default alone isn't enough — codesign/find-identity
           # resolve against the keychain *search list*, which a fresh
           # keychain isn't automatically added to.
-          security list-keychains -d user -s build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security set-keychain-settings -t 3600 -u build.keychain
-          security import "${RUNNER_TEMP}/certificate.p12" -k build.keychain -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
-          rm -f "${RUNNER_TEMP}/certificate.p12"
-          identity="$(security find-identity -v -p codesigning build.keychain | grep '"Developer ID Application:' | head -1 | sed -E 's/.*"(Developer ID Application:[^"]+)".*/\1/')"
+          security list-keychains -d user -s "$keychain_path"
+          security default-keychain -s "$keychain_path"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
+          security set-keychain-settings -t 3600 -u "$keychain_path"
+          security import "$certificate_path" -k "$keychain_path" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$keychain_path"
+          rm -f "$certificate_path"
+          identity="$(security find-identity -v -p codesigning "$keychain_path" | grep '"Developer ID Application:' | head -1 | sed -E 's/.*"(Developer ID Application:[^"]+)".*/\1/')"
+          if [ -z "$identity" ]; then
+            echo "No Developer ID Application signing identity found in temporary keychain." >&2
+            exit 1
+          fi
           echo "MACOS_SIGN_IDENTITY=${identity}" >> "$GITHUB_ENV"
+          echo "MACOS_KEYCHAIN_PATH=${keychain_path}" >> "$GITHUB_ENV"
 
       - name: Write notarization API key
         env:
           MACOS_NOTARY_KEY_BASE64: ${{ secrets.MACOS_NOTARY_KEY_BASE64 }}
         run: |
-          echo "$MACOS_NOTARY_KEY_BASE64" | base64 --decode > "${RUNNER_TEMP}/notary_key.p8"
+          printf '%s' "$MACOS_NOTARY_KEY_BASE64" | base64 --decode > "${RUNNER_TEMP}/notary_key.p8"
           echo "MACOS_NOTARY_KEY_PATH=${RUNNER_TEMP}/notary_key.p8" >> "$GITHUB_ENV"
 
       - name: Build and package macOS
@@ -129,51 +158,102 @@ jobs:
       - name: Clean up keychain and API key
         if: always()
         run: |
-          security delete-keychain build.keychain || true
+          security delete-keychain "${MACOS_KEYCHAIN_PATH:-${RUNNER_TEMP}/build.keychain}" || true
+          rm -f "${RUNNER_TEMP}/certificate.p12"
           rm -f "${RUNNER_TEMP}/notary_key.p8"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: macos-dmg
           path: dist/macos/*
 
+  macos-artifact-validation:
+    needs: [macos-package]
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'macos'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: macos-dmg
+          path: dist/macos
+
+      - name: Validate downloaded DMG
+        shell: bash
+        run: |
+          shopt -s nullglob
+          dmgs=(dist/macos/*.dmg)
+          if [ "${#dmgs[@]}" -ne 1 ]; then
+            echo "Expected exactly one DMG artifact, found ${#dmgs[@]}." >&2
+            printf 'Found: %s\n' "${dmgs[@]:-none}" >&2
+            exit 1
+          fi
+          xcrun stapler validate "${dmgs[0]}"
+          spctl --assess --type open --context context:primary-signature --verbose "${dmgs[0]}"
+
   windows-package:
     needs: [test, determine-version]
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'windows'
     runs-on: windows-latest
     env:
       VERSION: ${{ needs.determine-version.outputs.version }}
+    outputs:
+      signed: ${{ steps.decode-cert.outputs.signed }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
         with:
           go-version: "1.26.5"
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version: "22"
 
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
 
+      # choco installs NSIS onto the machine PATH via the registry, but the
+      # runner process was already started and won't see that change — so
+      # subsequent steps (a fresh child process each, inheriting the
+      # runner's own stale env) can't find makensis unless its install dir
+      # is added to $GITHUB_PATH explicitly here.
       - name: Install NSIS
-        run: choco install nsis -y
+        shell: pwsh
+        run: |
+          $maxAttempts = 3
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            choco install nsis -y --no-progress
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($attempt -eq $maxAttempts) {
+              throw "choco install nsis failed after $maxAttempts attempts (exit code $LASTEXITCODE)"
+            }
+            Write-Host "choco install nsis failed (exit code $LASTEXITCODE), retrying in 15s (attempt $attempt/$maxAttempts)..."
+            Start-Sleep -Seconds 15
+          }
+          $nsisPath = "C:\Program Files (x86)\NSIS"
+          if (-not (Test-Path "$nsisPath\makensis.exe")) {
+            throw "makensis.exe not found at $nsisPath after installing NSIS"
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $nsisPath
 
       # No Windows code-signing cert yet (see scripts/package/windows.sh's
       # header comment) — this builds unsigned automatically whenever
       # WINDOWS_CERTIFICATE_BASE64 isn't set, and switches to signed the
       # moment that secret is added, with no further changes needed here.
       - name: Decode signing certificate (if configured)
+        id: decode-cert
         shell: bash
         env:
           WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
         run: |
           if [ -n "$WINDOWS_CERTIFICATE_BASE64" ]; then
-            echo "$WINDOWS_CERTIFICATE_BASE64" | base64 --decode > "${RUNNER_TEMP}/certificate.pfx"
+            printf '%s' "$WINDOWS_CERTIFICATE_BASE64" | base64 --decode > "${RUNNER_TEMP}/certificate.pfx"
             echo "WINDOWS_SIGN_PFX_PATH=${RUNNER_TEMP}/certificate.pfx" >> "$GITHUB_ENV"
+            echo "signed=true" >> "$GITHUB_OUTPUT"
           else
             echo "No WINDOWS_CERTIFICATE_BASE64 secret set — building unsigned."
             echo "UNSIGNED=1" >> "$GITHUB_ENV"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build and package Windows
@@ -187,31 +267,76 @@ jobs:
         shell: bash
         run: rm -f "${RUNNER_TEMP}/certificate.pfx"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: windows-installer
           path: dist/windows/*
 
+  windows-artifact-validation:
+    needs: [windows-package]
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'windows'
+    runs-on: windows-latest
+    env:
+      EXPECT_SIGNED: ${{ needs.windows-package.outputs.signed }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: windows-installer
+          path: dist/windows
+
+      - name: Validate downloaded installer
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem -Path dist/windows -Filter *.exe -File)
+          if ($installers.Count -ne 1) {
+            Write-Error "Expected exactly one Windows installer artifact, found $($installers.Count)."
+            $installers | ForEach-Object { Write-Host "Found: $($_.FullName)" }
+            exit 1
+          }
+
+          $signature = Get-AuthenticodeSignature -FilePath $installers[0].FullName
+          $signature | Format-List
+
+          # windows-package only signs when WINDOWS_CERTIFICATE_BASE64 is
+          # configured (see its "Decode signing certificate" step) — this
+          # mirrors that same condition here instead of unconditionally
+          # requiring a valid signature, so an expected-unsigned dry run
+          # doesn't fail validation.
+          if ($env:EXPECT_SIGNED -eq "true") {
+            if ($signature.Status -ne "Valid") {
+              Write-Error "Windows installer is not Authenticode signed with a valid signature."
+              exit 1
+            }
+          } elseif ($signature.Status -ne "NotSigned") {
+            Write-Error "Expected an unsigned installer (no WINDOWS_CERTIFICATE_BASE64 configured) but got signature status: $($signature.Status)."
+            exit 1
+          }
+
   ubuntu-package:
     needs: [test, determine-version]
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'ubuntu'
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.determine-version.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
         with:
           go-version: "1.26.5"
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version: "22"
 
+      # Cached (keyed on the package list) since GitHub's default Azure apt
+      # mirror has intermittent slow/degraded periods that otherwise turn
+      # this install into a multi-minute stall.
       - name: Install Linux system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
+        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9
+        with:
+          packages: libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
+          version: 1.0
 
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
@@ -219,28 +344,81 @@ jobs:
       - name: Build and package Ubuntu
         run: make package-ubuntu VERSION="$VERSION"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ubuntu-deb
           path: dist/ubuntu/*
 
-  checksums:
-    needs: [determine-version, macos-package, windows-package, ubuntu-package]
+  ubuntu-artifact-validation:
+    needs: [determine-version, ubuntu-package]
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'ubuntu'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ubuntu-deb
+          path: dist/ubuntu
 
-      - uses: actions/download-artifact@v4
+      - name: Validate downloaded deb
+        env:
+          VERSION: ${{ needs.determine-version.outputs.version }}
+        run: |
+          shopt -s nullglob
+          debs=(dist/ubuntu/*.deb)
+          if [ "${#debs[@]}" -ne 1 ]; then
+            echo "Expected exactly one Ubuntu deb artifact, found ${#debs[@]}." >&2
+            printf 'Found: %s\n' "${debs[@]:-none}" >&2
+            exit 1
+          fi
+
+          package_name="$(dpkg-deb --field "${debs[0]}" Package)"
+          package_version="$(dpkg-deb --field "${debs[0]}" Version)"
+          dpkg-deb --info "${debs[0]}"
+          dpkg-deb --contents "${debs[0]}"
+          # nfpm converts "-" to "~" in deb version strings (e.g.
+          # 0.0.1-test -> 0.0.1~test) per Debian's own versioning convention
+          # ("~" sorts before nothing, correct for a prerelease; "-" is
+          # reserved as the upstream/debian-revision separator), so the
+          # expected version needs the same translation before comparing.
+          # The replacement side of ${var/pat/repl} undergoes tilde expansion
+          # in bash 4+ (though not in macOS's ancient bash 3.2), so a bare
+          # ~ here would expand to $HOME instead of staying literal — must
+          # be escaped.
+          expected_version="${VERSION//-/\~}"
+          if [ "$package_version" != "$expected_version" ]; then
+            echo "Package version ${package_version} does not match expected release version ${expected_version} (from ${VERSION})." >&2
+            exit 1
+          fi
+
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+          fi
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 update
+          sudo apt-get install -y "./${debs[0]}"
+
+          dpkg -s "$package_name"
+          test -x /opt/winglet/Winglet
+          test -x /opt/winglet/agent-winglet-tray
+          test -e /usr/bin/winglet
+          test -f /usr/share/applications/winglet.desktop
+
+  checksums:
+    needs: [determine-version, macos-artifact-validation, windows-artifact-validation, ubuntu-artifact-validation]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: macos-dmg
           path: dist/macos
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: windows-installer
           path: dist/windows
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: ubuntu-deb
           path: dist/ubuntu
@@ -248,7 +426,7 @@ jobs:
       - name: Generate checksums and manifest
         run: ./scripts/package/checksums-and-manifest.sh "${{ needs.determine-version.outputs.version }}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: release-manifest
           path: |
@@ -270,9 +448,9 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: dist-artifacts
           merge-multiple: true

@@ -37,11 +37,11 @@ contents:
     dst: /opt/winglet/agent-winglet-tray
     file_info:
       mode: 0755
-  - src: winglet.desktop
+  - src: __DESKTOP_FILE__
     dst: /usr/share/applications/winglet.desktop
     file_info:
       mode: 0644
-  - src: appicon-256.png
+  - src: __ICON_FILE__
     dst: /usr/share/icons/hicolor/256x256/apps/winglet.png
     file_info:
       mode: 0644
@@ -50,6 +50,6 @@ contents:
     type: symlink
 
 scripts:
-  postinstall: postinst.sh
-  preremove: prerm.sh
-  postremove: postrm.sh
+  postinstall: __POSTINSTALL_SCRIPT__
+  preremove: __PREREMOVE_SCRIPT__
+  postremove: __POSTREMOVE_SCRIPT__

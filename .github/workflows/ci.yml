@@ -9,13 +9,16 @@ on:
   # instead of duplicating them.
   workflow_call:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
         with:
           go-version: "1.26.5"
 
@@ -28,13 +31,17 @@ jobs:
           mkdir -p cmd/agent-winglet-app/frontend/dist
           touch cmd/agent-winglet-app/frontend/dist/placeholder
 
+      # cmd/agent-winglet-tray imports getlantern/systray unconditionally (no
+      # Wails build tags to stub it out like the app binary), so even this
+      # Go-only/fast job needs systray's Linux cgo dep to compile it.
+      # Cached (keyed on the package list) since GitHub's default Azure apt
+      # mirror has intermittent slow/degraded periods that otherwise turn a
+      # two-package install into a multi-minute stall.
       - name: Install Linux system dependencies
-        # cmd/agent-winglet-tray imports getlantern/systray unconditionally
-        # (no Wails build tags to stub it out like the app binary), so even
-        # this Go-only/fast job needs systray's Linux cgo dep to compile it.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev
+        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9
+        with:
+          packages: libgtk-3-dev libayatana-appindicator3-dev
+          version: 1.0
 
       - name: Build
         run: go build ./...

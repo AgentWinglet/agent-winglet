@@ -47,6 +47,21 @@ LDFLAGS="-X github.com/umitkaanusta/agent-winglet/internal/buildinfo.Version=${V
 UNSIGNED="${UNSIGNED:-0}"
 TIMESTAMP_URL="${WINDOWS_SIGN_TIMESTAMP_URL:-http://timestamp.digicert.com}"
 
+windows_file_version() {
+  local version_base="${1%%[-+]*}"
+
+  if [[ "$version_base" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
+    printf '%s.0\n' "$version_base"
+  elif [[ "$version_base" =~ ^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$ ]]; then
+    printf '%s\n' "$version_base"
+  else
+    echo "error: invalid Windows file version source '${1}': expected a numeric version like 1.2.3, optionally with semver prerelease/build metadata." >&2
+    return 1
+  fi
+}
+
+WINDOWS_FILE_VERSION="$(windows_file_version "$VERSION")"
+
 SIGNTOOL=""
 if command -v signtool.exe >/dev/null 2>&1; then
   SIGNTOOL="signtool.exe"
@@ -115,6 +130,20 @@ sign "$app_exe"
 sign "$tray_exe"
 
 mkdir -p "$DIST_DIR"
+
+# wails_tools.nsh's wails.webview2runtime macro (see project.nsi's
+# !insertmacro) embeds this small bootstrapper .exe into the installer,
+# which downloads the full WebView2 runtime at install time. `wails build
+# --nsis` would normally fetch this itself as part of its own NSIS prep,
+# but build_app above deliberately skips --nsis (this script calls makensis
+# directly instead, per project.nsi's own documented manual-invocation flow,
+# so it can pass version overrides that don't go through wails.json) — so
+# nothing else fetches it. Not committed to git since it's a binary download,
+# not project source.
+webview2_bootstrapper="cmd/agent-winglet-app/build/windows/installer/tmp/MicrosoftEdgeWebview2Setup.exe"
+mkdir -p "$(dirname "$webview2_bootstrapper")"
+curl -fsSL -o "$webview2_bootstrapper" "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
+
 # project.nsi's OutFile and MUI_ICON paths are relative to the .nsi file's
 # own directory (per its own header comment's example invocation), so this
 # runs makensis from inside build/windows/installer rather than from the
@@ -126,6 +155,8 @@ rm -f "$installer_out"
   "$MAKENSIS" \
     "-DARG_WAILS_AMD64_BINARY=$(win_path "$app_exe")" \
     "-DARG_TRAY_AMD64_BINARY=$(win_path "$tray_exe")" \
+    "-DINFO_PRODUCTVERSION=$VERSION" \
+    "-DINFO_VERSIONINFO_VERSION=$WINDOWS_FILE_VERSION" \
     project.nsi
 )
 

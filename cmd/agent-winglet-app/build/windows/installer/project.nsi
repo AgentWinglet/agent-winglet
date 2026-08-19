@@ -30,6 +30,8 @@ Unicode true
 ## !define INFO_PRODUCTVERSION "1.0.0"     # Default "{{.Info.ProductVersion}}"
 ## !define INFO_COPYRIGHT      "Copyright" # Default "{{.Info.Copyright}}"
 ###
+## !define INFO_VERSIONINFO_VERSION "1.0.0.0" # Default "${INFO_PRODUCTVERSION}.0"; must be four numeric parts
+###
 ## !define PRODUCT_EXECUTABLE  "Application.exe"      # Default "${INFO_PROJECTNAME}.exe"
 ## !define UNINST_KEY_NAME     "UninstKeyInRegistry"  # Default "${INFO_COMPANYNAME}${INFO_PRODUCTNAME}"
 ####
@@ -61,9 +63,13 @@ Unicode true
 ####
 !include "wails_tools.nsh"
 
-# The version information for this two must consist of 4 parts
-VIProductVersion "${INFO_PRODUCTVERSION}.0"
-VIFileVersion    "${INFO_PRODUCTVERSION}.0"
+!ifndef INFO_VERSIONINFO_VERSION
+    !define INFO_VERSIONINFO_VERSION "${INFO_PRODUCTVERSION}.0"
+!endif
+
+# The VERSIONINFO numeric version must consist of four numeric parts.
+VIProductVersion "${INFO_VERSIONINFO_VERSION}"
+VIFileVersion    "${INFO_VERSIONINFO_VERSION}"
 
 VIAddVersionKey "CompanyName"     "${INFO_COMPANYNAME}"
 VIAddVersionKey "FileDescription" "${INFO_PRODUCTNAME} Installer"
