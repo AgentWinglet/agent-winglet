@@ -98,7 +98,10 @@ sign() {
 build_app() {
   (
     cd cmd/agent-winglet-app
+    echo "DEBUG: wails.json productVersion at build time = $(jq -r .info.productVersion wails.json)"
     wails build -platform windows/amd64 -ldflags "$LDFLAGS" -clean
+    echo "DEBUG: generated wails_tools.nsh INFO_PRODUCTVERSION line:"
+    grep -n "INFO_PRODUCTVERSION" build/windows/installer/wails_tools.nsh || echo "DEBUG: (no match)"
   )
 }
 
