@@ -21,6 +21,9 @@ Track the remaining work before making this repository public and publishing sig
 - [x] Search current tracked files and Git history for `.p8`, `.p12`, `.pfx`, `AuthKey*`, `.env`, private-key headers, and obvious hardcoded key/cert blobs.
 - [x] Harden Ubuntu apt update steps against the flaky Azure apt mirror.
 - [x] Pin all external GitHub Actions in `.github/workflows/` to full commit SHAs.
+- [x] Automatically validate the uploaded `macos-dmg` artifact with `xcrun stapler validate` and `spctl --assess`.
+- [x] Automatically validate the uploaded `windows-installer` artifact has a valid Authenticode signature.
+- [x] Automatically validate and install-test the uploaded `ubuntu-deb` artifact.
 
 ## GitHub Settings To Do
 
@@ -34,9 +37,9 @@ Track the remaining work before making this repository public and publishing sig
 
 ## Release Validation To Do
 
-- [ ] Run a manual `Release` workflow dry run with a test version such as `0.1.0`.
-- [ ] Confirm the macOS job passes: certificate import, notarization key write, package build, and verification.
-- [ ] Download the `macos-dmg` artifact from the dry run.
-- [ ] Confirm `xcrun stapler validate` passes on the downloaded DMG.
-- [ ] Confirm `spctl --assess --type open --context context:primary-signature --verbose` passes on the downloaded DMG.
+- [x] Run a manual `Release` workflow dry run with a test version such as `0.1.0`.
+- [x] Confirm the dry run passes the `macos-package` job: certificate import, notarization key write, package build, and verification.
+- [x] Confirm the dry run passes the `macos-artifact-validation` job.
+- [ ] Confirm the dry run passes the `windows-artifact-validation` job.
+- [ ] Confirm the dry run passes the `ubuntu-artifact-validation` job.
 - [ ] Push the real `v*` tag only after the dry run passes.
