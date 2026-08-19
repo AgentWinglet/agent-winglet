@@ -1,123 +1,174 @@
-# Winglet
+<h1 align="center">Winglet</h1>
 
-**Get more Claude Code and Codex usage out of the same cap.**
+<p align="center">
+  Make your Claude Code / Codex plan go 50% further.
+</p>
 
-[![CI](https://github.com/umitkaanusta/agent-winglet/actions/workflows/ci.yml/badge.svg)](https://github.com/umitkaanusta/agent-winglet/actions/workflows/ci.yml)
-[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+<p align="center">
+  <a href="https://agentwinglet.com">Install</a> | 
+  <a href="https://agentwinglet.com/#performance-comparison">Performance</a> |
+  <a href="https://agentwinglet.com/#how-it-works">Methodology</a> |
+  <a href="https://agentwinglet.com/#pricing">Pricing</a>
+</p>
 
-## Install
+<p align="center">
+  Winglet cuts stale reads, repeated tool output, and wasted context before 
+  they reach the model. <br/>
+  Everything stays on your machine.
+</p>
 
-This repo is private, so there's no public curl-one-liner — clone it and run
-`install.sh` from a checkout instead:
+<p align="center">
+  <img src="branding/winglet-demo.gif" alt="Winglet demo" width="900">
+</p>
 
-```
+---
+
+Winglet is a paid desktop app: $2.50/mo, billed yearly at $30. One plan covers
+every Claude Code and Codex tier. This repo contains the hooks that connect
+Winglet to your coding agent, plus the desktop app for tracking savings.
+
+Winglet stands on the shoulders of two giants: [AgentDiet: Reducing Cost of LLM
+Agents with Trajectory Reduction](https://doi.org/10.1145/3797084) and [The
+Complexity Trap: Simple Observation Masking Is as Efficient as LLM
+Summarization for Agent Context Management](https://arxiv.org/abs/2508.21433).
+
+## Performance
+Measured on industry-standard agentic coding benchmarks 
+[SWE-bench Verified](https://www.swebench.com/verified.html) and
+[Multi-SWE-bench Flash](https://huggingface.co/datasets/ByteDance-Seed/Multi-SWE-bench-flash).
+
+**Results:**
+- Usage gained from cost savings: **26.7%-56.0%**
+- Computational cost savings: **21.1%–35.9%**
+- Input token savings: **21.1-35.9%**
+- Answer quality: **Stays the same**, ranging between -1.0% and +2.0%.
+
+## How it works
+
+The main idea is **trajectory reduction:** send less junk to the model.
+
+Winglet is a desktop app. It integrates with Claude Code and Codex through
+hooks, so it can optimize what gets sent to the model while your agent thinks
+and uses tools. It runs locally, and no data leaves your machine.
+
+### Retire used research
+
+Your agent searches the codebase to find a function. Once it finds it, the full
+search trail is no longer needed while writing code.
+
+Winglet sends the model a short note and keeps the full output on disk if
+needed.
+
+### Trim long tool output
+
+80% of useful information is usually in the first and last 15 lines. Winglet
+sends that head and tail, and keeps the full output on disk if needed.
+
+This also implicitly steers the model toward focused searches.
+
+### Cut duplicates in context
+
+Sometimes the agent asks for the same thing twice. If the output is unchanged,
+it is already in context.
+
+Winglet does not send it to the model again.
+
+### Smart compact
+
+Winglet offers to compact after the agent uses what it found. It keeps the
+current working context intact while reducing older waste, which saves more
+usage.
+
+Note: Compacting is optional. It is not part of Winglet's "usage saved"
+calculation.
+
+## Requirements
+
+To use Winglet, you need:
+
+- Claude Code, Codex, or both.
+- The Winglet desktop app.
+- A Winglet subscription, or the 3-day free trial. No credit card required.
+
+To install from source, you also need Go, Node.js/npm, and `jq`.
+
+## Supported platforms
+
+Winglet supports macOS and Linux. Windows support is coming soon.
+
+## Installation
+
+### Install from Winglet
+
+Download Winglet from [agentwinglet.com](https://agentwinglet.com), open the
+desktop app, then follow Settings > Installation to connect Claude Code, Codex,
+or both.
+
+### Install from source
+
+You can also clone the repo and run the installer:
+
+```sh
 git clone https://github.com/umitkaanusta/agent-winglet.git
 cd agent-winglet
 ./install.sh
 ```
 
-By default this installs **both** agent hooks (`claude-hook` and
-`codex-hook`) and the desktop app (`Winglet`). Pass `--hook-only` or
-`--app-only` to install just one side, or `--claude-only` / `--codex-only`
-to narrow hook installation to one agent.
+By default, this installs the desktop app and configures hooks for both Claude
+Code and Codex.
 
-**The hooks**: installed with `go install`. From this checkout, the installer
-builds the local `cmd/claude-hook` and `cmd/codex-hook` packages. With
-`--hook-only` outside a checkout, it falls back to fetching
-`github.com/umitkaanusta/agent-winglet/...@latest`. `claude-hook` merges
-config into `~/.claude/settings.json`. `codex-hook` merges config into
-`${CODEX_HOME:-~/.codex}/hooks.json`. Neither path overwrites existing
-settings. Installing once globally makes the hooks active for projects under
-that agent; Codex still requires you to open Settings > Hooks and trust the
-`agent-winglet` `codex-hook` before Winglet can record Codex sessions.
+Useful options:
 
-Ledger/stats state lives under `~/.agent-winglet/projects/...`, keyed by the
-session's project root. Each hook registers whichever project it's running
-in — the first time it fires there — into
-`~/.agent-winglet/projects.json` (deduped, pruned of stale/deleted entries
-on each run), which is what feeds the desktop app's Projects screen.
-
-Because the repo is private, `go install` can't resolve it through the
-public module proxy — `install.sh` sets `GOPRIVATE` itself so `go` fetches
-straight from git instead, using whatever git credentials you already have
-configured for github.com (an SSH key, or `gh auth setup-git` for HTTPS).
-If that's not set up yet, `install.sh` will fail with a pointer to fix it.
-
-Pass `--local` to install hooks into just the current directory's project
-instead (`./.claude/settings.json` and/or `./.codex/hooks.json`) — hook
-scope only, the app has no such concept.
-
-**The app**: unlike the hook, this is always built from your local
-checkout — its frontend build output isn't checked into git (it's
-generated), so `go install` can't fetch a working copy of it the way it can
-for the hook. `install.sh` builds it (`make app` under the hood) and installs
-the result to the standard per-OS location:
-
-| OS      | Installed to                                          |
-|---------|--------------------------------------------------------|
-| macOS   | `/Applications/Winglet.app`                       |
-| Linux   | `~/.local/bin/Winglet` + a `~/.local/share/applications` launcher entry |
-| Windows | `%LOCALAPPDATA%\Programs\Winglet\` + a Start Menu shortcut (via Git Bash/MSYS2 — needs `powershell.exe` on PATH for the shortcut, which is skipped, not fatal, if it's missing) |
-
-Windows/Linux support is implemented to spec but has only been verified by
-the CI smoke-test job (see `.github/workflows/app-build.yml`), not by hand
-on those OSes — macOS is the one this has actually been run on end-to-end.
-
-## Update
-
-Re-run `install.sh` from inside your checkout:
-
-```
-cd agent-winglet && git pull && ./install.sh
+```sh
+./install.sh --hook-only
+./install.sh --app-only
+./install.sh --claude-only
+./install.sh --codex-only
+./install.sh --local
 ```
 
-Both the hook-config merge and the app install are idempotent, so this is
-safe to run repeatedly. `git pull` is required for the app (it's always
-built from local source) but not for the hook (`go install ...@latest`
-always fetches fresh from GitHub regardless of your checkout's state) —
-just always pull first, it's harmless either way.
+To uninstall:
 
-For hook-only maintenance, `./install.sh --hook-only` installs both hooks and
-`./uninstall.sh --hook-only` removes both hook entries. Add `--claude-only` or
-`--codex-only` to either command to limit it to one agent. Add `--local` to
-write project-scoped hook config under `./.claude/` and `./.codex/` instead of
-the global agent config directories.
-
-## Uninstall
-
-```
+```sh
 ./uninstall.sh
 ```
 
-By default removes **both** hook wiring paths and the installed app. Same
-`--hook-only`/`--app-only`/`--local`/`--claude-only`/`--codex-only` flags as
-`install.sh`. Uninstalling the app doesn't need to be run from inside a
-checkout — it just removes files from the known per-OS install locations
-above, it doesn't build anything. Add:
+## Privacy
 
-- `--purge-binary` to also delete the selected installed hook binaries
-- `--purge-data` to also delete `~/.agent-winglet` (the global project
-  registry and quiet-mode config) and every registered project's
-  `.claude/agent-winglet/` (that project's savings-ledger/stats history) —
-  lists exactly what it's about to delete and asks for confirmation first,
-  unless `-y`/`--yes` is also passed
+Winglet runs locally. Your codebase, prompts, hook output, saved tool logs, and
+savings data stay on your machine.
 
-`./uninstall.sh --purge-binary --purge-data -y` does a full teardown.
+Winglet servers only receive what is needed for accounts, trials, subscriptions,
+and app licensing: name, email address, sign-in provider, device/app metadata,
+and subscription or trial status.
 
-## Developing this repo
+## Development
 
+Developer setup is mostly for building from source or working on the agent
+integrations.
+
+- Go 1.26.5
+- Node.js/npm
+- Wails 2.13.0
+- `jq`
+
+Common commands:
+
+```sh
+make build
+make test
+make app
 ```
-make build   # builds bin/claude-hook and bin/codex-hook locally
-make test    # runs the Go test suite
-make installer-smoke
+
+On Linux, app builds may also need GTK/WebKit development packages. On Ubuntu:
+
+```sh
+sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
 ```
 
-This repo's own `.claude/settings.json` is a dev/test fixture — it points
-at the locally-built `bin/claude-hook` so the hook can be exercised against
-this repo itself while working on it. A Codex local fixture would live under
-`.codex/hooks.json`. Neither is the install mechanism end users go through;
-that's `install.sh`/`uninstall.sh` above.
+## Support
+
+For help with installation or billing, email [hi@agentwinglet.com](mailto:hi@agentwinglet.com).
 
 ## License
-
 Apache 2.0 — see [LICENSE](LICENSE).
