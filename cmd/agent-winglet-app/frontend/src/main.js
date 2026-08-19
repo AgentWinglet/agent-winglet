@@ -2,6 +2,7 @@ import './style.css';
 import { icons } from './icons.js';
 import { renderBrand } from './brand.js';
 import {
+  CheckForUpdate,
   GetAccountStatus,
   GetCompactNudgesEnabled,
   GetHookHealth,
@@ -12,6 +13,7 @@ import {
   Logout,
   OpenBillingPortal,
   OpenPricing,
+  OpenUpdateRelease,
   RefreshEntitlement,
   SetCompactNudgesEnabled,
   SetClaudeHookEnabled,
@@ -30,7 +32,11 @@ const state = {
   accountStatus: null,
   accountError: '',
   hookHealth: null,
+  updateStatus: null,
+  dismissedUpdateVersions: new Set(),
 };
+
+const UPDATE_DISMISSED_PREFIX = 'winglet.update.dismissed.';
 
 const NAV_ITEMS = [
   { id: 'overview', label: 'Overview', icon: icons.overview },
@@ -102,6 +108,15 @@ async function loadAccountStatus() {
       dashboardAllowed: false,
     };
   }
+}
+
+async function loadUpdateStatus() {
+  try {
+    state.updateStatus = await CheckForUpdate();
+  } catch {
+    state.updateStatus = null;
+  }
+  renderUpdateBanner();
 }
 
 // Stamps data-os on <body> so CSS can scope the sidebar's title-bar inset
@@ -1205,6 +1220,7 @@ function render() {
       </nav>
     </div>
     <div class="main">
+      <div id="update-banner"></div>
       <div id="trial-banner"></div>
       <div class="main-scroll" id="main"></div>
     </div>
@@ -1215,7 +1231,67 @@ function render() {
   });
 
   renderMain(app.querySelector('#main'));
+  renderUpdateBanner();
   renderTrialBanner();
+}
+
+function updateDismissedKey(status) {
+  if (!status?.latestVersion) return '';
+  return UPDATE_DISMISSED_PREFIX + status.latestVersion;
+}
+
+function isUpdateDismissed(status) {
+  const key = updateDismissedKey(status);
+  if (!key) return false;
+  if (state.dismissedUpdateVersions.has(key)) return true;
+  try {
+    return localStorage.getItem(key) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function dismissUpdate(status) {
+  const key = updateDismissedKey(status);
+  if (!key) return;
+  state.dismissedUpdateVersions.add(key);
+  try {
+    localStorage.setItem(key, '1');
+  } catch {
+    // A failed persistence write only means this launch can dismiss it.
+  }
+}
+
+function updateBannerMarkup(status) {
+  if (!status?.available || !status.releaseUrl || isUpdateDismissed(status)) return '';
+  return `
+    <div class="update-banner">
+      <span class="update-banner-text">${icons.info}Winglet v${escapeHtml(status.latestVersion)} is available</span>
+      <div class="update-banner-actions">
+        <button class="update-banner-cta" type="button" data-update-action="open">Update</button>
+        <button class="update-banner-dismiss" type="button" data-update-action="dismiss" aria-label="Dismiss update">
+          ${icons.x}
+        </button>
+      </div>
+    </div>`;
+}
+
+function renderUpdateBanner() {
+  const slot = document.querySelector('#update-banner');
+  if (!slot) return;
+  slot.innerHTML = updateBannerMarkup(state.updateStatus);
+  slot.querySelectorAll('[data-update-action]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const action = btn.getAttribute('data-update-action');
+      if (action === 'open') {
+        OpenUpdateRelease(state.updateStatus.downloadUrl || state.updateStatus.releaseUrl);
+      }
+      if (action === 'dismiss') {
+        dismissUpdate(state.updateStatus);
+        renderUpdateBanner();
+      }
+    });
+  });
 }
 
 // renderTrialBanner keeps the "you're on a free trial" strip visible above
@@ -1248,7 +1324,10 @@ function renderTrialBanner() {
 }
 
 const TRIAL_BANNER_REFRESH_MS = 60_000;
+const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 initPlatform();
 render();
+loadUpdateStatus();
 setInterval(renderTrialBanner, TRIAL_BANNER_REFRESH_MS);
+setInterval(loadUpdateStatus, UPDATE_CHECK_INTERVAL_MS);
