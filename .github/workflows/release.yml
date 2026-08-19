@@ -349,8 +349,14 @@ jobs:
           package_version="$(dpkg-deb --field "${debs[0]}" Version)"
           dpkg-deb --info "${debs[0]}"
           dpkg-deb --contents "${debs[0]}"
-          if [ "$package_version" != "$VERSION" ]; then
-            echo "Package version ${package_version} does not match release version ${VERSION}." >&2
+          # nfpm converts "-" to "~" in deb version strings (e.g.
+          # 0.0.1-test -> 0.0.1~test) per Debian's own versioning convention
+          # ("~" sorts before nothing, correct for a prerelease; "-" is
+          # reserved as the upstream/debian-revision separator), so the
+          # expected version needs the same translation before comparing.
+          expected_version="${VERSION//-/~}"
+          if [ "$package_version" != "$expected_version" ]; then
+            echo "Package version ${package_version} does not match expected release version ${expected_version} (from ${VERSION})." >&2
             exit 1
           fi
 
