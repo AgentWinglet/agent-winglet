@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/umitkaanusta/agent-winglet/internal/registry"
-	"github.com/umitkaanusta/agent-winglet/internal/statedir"
-	"github.com/umitkaanusta/agent-winglet/internal/stats"
+	"github.com/AgentWinglet/agent-winglet/internal/registry"
+	"github.com/AgentWinglet/agent-winglet/internal/statedir"
+	"github.com/AgentWinglet/agent-winglet/internal/stats"
 )
 
 func TestMain(m *testing.M) {

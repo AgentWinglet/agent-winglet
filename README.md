@@ -109,7 +109,7 @@ or both.
 You can also clone the repo and run the installer:
 
 ```sh
-git clone https://github.com/umitkaanusta/agent-winglet.git
+git clone https://github.com/AgentWinglet/agent-winglet.git
 cd agent-winglet
 ./install.sh
 ```

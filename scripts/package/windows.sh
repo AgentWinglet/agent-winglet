@@ -43,7 +43,7 @@ source scripts/package-lib.sh
 
 VERSION="${1:-$(resolve_version)}"
 DIST_DIR="dist/windows"
-LDFLAGS="-X github.com/umitkaanusta/agent-winglet/internal/buildinfo.Version=${VERSION}"
+LDFLAGS="-X github.com/AgentWinglet/agent-winglet/internal/buildinfo.Version=${VERSION}"
 UNSIGNED="${UNSIGNED:-0}"
 TIMESTAMP_URL="${WINDOWS_SIGN_TIMESTAMP_URL:-http://timestamp.digicert.com}"
 

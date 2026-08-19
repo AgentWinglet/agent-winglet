@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/umitkaanusta/agent-winglet/internal/pricing"
+	"github.com/AgentWinglet/agent-winglet/internal/pricing"
 )
 
 func writeFixture(t *testing.T, lines []string) string {

@@ -52,7 +52,7 @@ DIST_DIR="dist/macos"
 APP_BUNDLE="cmd/agent-winglet-app/build/bin/Winglet.app"
 TRAY_BUNDLE="${APP_BUNDLE}/Contents/Library/LoginItems/Tray.app"
 ENTITLEMENTS="cmd/agent-winglet-app/build/darwin/entitlements.plist"
-LDFLAGS="-X github.com/umitkaanusta/agent-winglet/internal/buildinfo.Version=${VERSION}"
+LDFLAGS="-X github.com/AgentWinglet/agent-winglet/internal/buildinfo.Version=${VERSION}"
 UNSIGNED="${UNSIGNED:-0}"
 
 SIGN_IDENTITY="${MACOS_SIGN_IDENTITY:-}"

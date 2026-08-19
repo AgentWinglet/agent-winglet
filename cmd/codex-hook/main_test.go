@@ -8,11 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/umitkaanusta/agent-winglet/internal/config"
-	"github.com/umitkaanusta/agent-winglet/internal/outputbudget"
-	"github.com/umitkaanusta/agent-winglet/internal/phase"
-	"github.com/umitkaanusta/agent-winglet/internal/registry"
-	"github.com/umitkaanusta/agent-winglet/internal/stats"
+	"github.com/AgentWinglet/agent-winglet/internal/config"
+	"github.com/AgentWinglet/agent-winglet/internal/outputbudget"
+	"github.com/AgentWinglet/agent-winglet/internal/phase"
+	"github.com/AgentWinglet/agent-winglet/internal/registry"
+	"github.com/AgentWinglet/agent-winglet/internal/stats"
 )
 
 func TestMain(m *testing.M) {

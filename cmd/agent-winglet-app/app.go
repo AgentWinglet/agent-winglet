@@ -14,12 +14,12 @@ import (
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
-	"github.com/umitkaanusta/agent-winglet/internal/appauth"
-	"github.com/umitkaanusta/agent-winglet/internal/appipc"
-	"github.com/umitkaanusta/agent-winglet/internal/config"
-	"github.com/umitkaanusta/agent-winglet/internal/entitlement"
-	"github.com/umitkaanusta/agent-winglet/internal/registry"
-	"github.com/umitkaanusta/agent-winglet/internal/stats"
+	"github.com/AgentWinglet/agent-winglet/internal/appauth"
+	"github.com/AgentWinglet/agent-winglet/internal/appipc"
+	"github.com/AgentWinglet/agent-winglet/internal/config"
+	"github.com/AgentWinglet/agent-winglet/internal/entitlement"
+	"github.com/AgentWinglet/agent-winglet/internal/registry"
+	"github.com/AgentWinglet/agent-winglet/internal/stats"
 )
 
 // App is the Wails-bound backend. Every method here does the same thing the

@@ -12,7 +12,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/umitkaanusta/agent-winglet/internal/pricing"
+	"github.com/AgentWinglet/agent-winglet/internal/pricing"
 )
 
 // SessionUsage is one transcript file's summary.

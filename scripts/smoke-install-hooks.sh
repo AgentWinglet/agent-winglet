@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Smoke-tests install.sh/uninstall.sh hook wiring in isolated temp HOME/CODEX_HOME
 # directories. It stubs `go install` so the test validates installer behavior
-# without fetching private modules or touching the real machine.
+# without fetching published modules or touching the real machine.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
