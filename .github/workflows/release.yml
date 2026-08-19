@@ -207,7 +207,16 @@ jobs:
       - name: Install NSIS
         shell: pwsh
         run: |
-          choco install nsis -y --no-progress
+          $maxAttempts = 3
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            choco install nsis -y --no-progress
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($attempt -eq $maxAttempts) {
+              throw "choco install nsis failed after $maxAttempts attempts (exit code $LASTEXITCODE)"
+            }
+            Write-Host "choco install nsis failed (exit code $LASTEXITCODE), retrying in 15s (attempt $attempt/$maxAttempts)..."
+            Start-Sleep -Seconds 15
+          }
           $nsisPath = "C:\Program Files (x86)\NSIS"
           if (-not (Test-Path "$nsisPath\makensis.exe")) {
             throw "makensis.exe not found at $nsisPath after installing NSIS"
@@ -354,7 +363,11 @@ jobs:
           # ("~" sorts before nothing, correct for a prerelease; "-" is
           # reserved as the upstream/debian-revision separator), so the
           # expected version needs the same translation before comparing.
-          expected_version="${VERSION//-/~}"
+          # The replacement side of ${var/pat/repl} undergoes tilde expansion
+          # in bash 4+ (though not in macOS's ancient bash 3.2), so a bare
+          # ~ here would expand to $HOME instead of staying literal — must
+          # be escaped.
+          expected_version="${VERSION//-/\~}"
           if [ "$package_version" != "$expected_version" ]; then
             echo "Package version ${package_version} does not match expected release version ${expected_version} (from ${VERSION})." >&2
             exit 1
