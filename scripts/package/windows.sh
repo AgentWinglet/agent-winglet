@@ -130,6 +130,20 @@ sign "$app_exe"
 sign "$tray_exe"
 
 mkdir -p "$DIST_DIR"
+
+# wails_tools.nsh's wails.webview2runtime macro (see project.nsi's
+# !insertmacro) embeds this small bootstrapper .exe into the installer,
+# which downloads the full WebView2 runtime at install time. `wails build
+# --nsis` would normally fetch this itself as part of its own NSIS prep,
+# but build_app above deliberately skips --nsis (this script calls makensis
+# directly instead, per project.nsi's own documented manual-invocation flow,
+# so it can pass version overrides that don't go through wails.json) — so
+# nothing else fetches it. Not committed to git since it's a binary download,
+# not project source.
+webview2_bootstrapper="cmd/agent-winglet-app/build/windows/installer/tmp/MicrosoftEdgeWebview2Setup.exe"
+mkdir -p "$(dirname "$webview2_bootstrapper")"
+curl -fsSL -o "$webview2_bootstrapper" "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
+
 # project.nsi's OutFile and MUI_ICON paths are relative to the .nsi file's
 # own directory (per its own header comment's example invocation), so this
 # runs makensis from inside build/windows/installer rather than from the
