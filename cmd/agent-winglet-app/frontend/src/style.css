@@ -164,6 +164,14 @@ body {
   -webkit-app-region: no-drag;
 }
 
+.sidebar-footer {
+  margin-top: auto;
+  padding: 10px 13px 2px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  -webkit-app-region: no-drag;
+}
+
 .nav-item {
   position: relative;
   display: flex;
@@ -316,46 +324,71 @@ body {
   background-repeat: no-repeat;
 }
 
-/* --- Trial banner --- */
+/* --- Top banners --- */
 /* Sits above #main-scroll, outside every per-screen render/poll cycle (see
-   renderTrialBanner in main.js) so it reads as a persistent strip across
-   navigation, not a per-screen element. */
+   renderTrialBanner/renderUpdateBanner in main.js) so these read as
+   persistent strips across navigation, not per-screen elements. */
 
-.trial-banner {
+.trial-banner,
+.update-banner {
   flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 11px 20px;
+}
+
+.trial-banner {
   background: var(--warn-bg);
   border-bottom: 1px solid var(--warn-border);
 }
 
-.trial-banner-text {
+.update-banner {
+  background: var(--accent-bg);
+  border-bottom: 1px solid var(--accent-border);
+}
+
+.trial-banner-text,
+.update-banner-text {
   display: flex;
   align-items: center;
   gap: 7px;
   font-family: var(--font-display);
   font-size: 14px;
   font-weight: 700;
+}
+
+.trial-banner-text {
   color: var(--warn);
 }
 
-.trial-banner-text svg {
+.update-banner-text {
+  color: var(--accent);
+}
+
+.trial-banner-text svg,
+.update-banner-text svg {
   width: 15px;
   height: 15px;
   flex-shrink: 0;
 }
 
-.trial-banner-cta {
+.update-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.trial-banner-cta,
+.update-banner-cta {
   flex-shrink: 0;
   height: 28px;
   padding: 0 13px;
   border-radius: 6px;
-  border: 1px solid var(--warn-border);
+  border: 1px solid transparent;
   background: transparent;
-  color: var(--warn);
   font-family: var(--font-display);
   font-size: 12px;
   font-weight: 700;
@@ -363,8 +396,42 @@ body {
   transition: background-color 0.12s ease;
 }
 
+.trial-banner-cta {
+  border: 1px solid var(--warn-border);
+  color: var(--warn);
+}
+
+.update-banner-cta {
+  border: 1px solid var(--accent-border);
+  color: var(--accent);
+}
+
 .trial-banner-cta:hover {
   background: color-mix(in srgb, var(--warn-bg), var(--warn) 15%);
+}
+
+.update-banner-cta:hover,
+.update-banner-dismiss:hover {
+  background: color-mix(in srgb, var(--accent-bg), var(--accent) 15%);
+}
+
+.update-banner-dismiss {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--accent);
+  cursor: default;
+  transition: background-color 0.12s ease;
+}
+
+.update-banner-dismiss svg {
+  width: 15px;
+  height: 15px;
 }
 
 .screen-title {
@@ -1013,6 +1080,16 @@ body {
   background: color-mix(in srgb, var(--danger-bg), var(--danger) 15%);
 }
 
+.hook-action-button.outline {
+  color: var(--text-primary);
+  background: transparent;
+  border-color: var(--hairline);
+}
+
+.hook-action-button.outline:hover {
+  background: var(--nav-active-bg);
+}
+
 .hook-action-button:disabled {
   opacity: 0.7;
 }
@@ -1193,6 +1270,11 @@ body {
 
 .settings-info-link:hover {
   color: color-mix(in srgb, var(--accent), var(--text-primary) 15%);
+}
+
+.about-links {
+  display: flex;
+  justify-content: flex-end;
 }
 
 /* --- Sign-in / trial gate --- */

@@ -2,6 +2,7 @@ import './style.css';
 import { icons } from './icons.js';
 import { renderBrand } from './brand.js';
 import {
+  CheckForUpdate,
   GetAccountStatus,
   GetCompactNudgesEnabled,
   GetHookHealth,
@@ -11,7 +12,10 @@ import {
   GetSessionStats,
   Logout,
   OpenBillingPortal,
+  OpenDataFolder,
   OpenPricing,
+  OpenReleaseNotes,
+  OpenUpdateRelease,
   RefreshEntitlement,
   SetCompactNudgesEnabled,
   SetClaudeHookEnabled,
@@ -20,6 +24,7 @@ import {
   StartFreeTrial,
   UninstallWinglet,
 } from '../wailsjs/go/main/App';
+import { ClipboardSetText } from '../wailsjs/runtime/runtime';
 
 const state = {
   screen: 'overview',
@@ -30,7 +35,12 @@ const state = {
   accountStatus: null,
   accountError: '',
   hookHealth: null,
+  updateStatus: null,
+  aboutError: '',
+  dismissedUpdateVersions: new Set(),
 };
+
+const UPDATE_DISMISSED_PREFIX = 'winglet.update.dismissed.';
 
 const NAV_ITEMS = [
   { id: 'overview', label: 'Overview', icon: icons.overview },
@@ -41,6 +51,7 @@ const SETTINGS_ITEMS = [
   { id: 'account', label: 'Account' },
   { id: 'preferences', label: 'Preferences' },
   { id: 'installations', label: 'Installations' },
+  { id: 'about', label: 'About' },
 ];
 
 // Session/project stats files on disk are updated live by the hook (every
@@ -102,6 +113,17 @@ async function loadAccountStatus() {
       dashboardAllowed: false,
     };
   }
+}
+
+async function loadUpdateStatus() {
+  try {
+    state.updateStatus = await CheckForUpdate();
+  } catch {
+    state.updateStatus = null;
+  }
+  renderUpdateBanner();
+  const footer = document.querySelector('#version-footer');
+  if (footer) footer.textContent = versionFooterText();
 }
 
 // Stamps data-os on <body> so CSS can scope the sidebar's title-bar inset
@@ -715,6 +737,130 @@ async function renderPreferencesScreen(container) {
   });
 }
 
+function platformLabel(goos) {
+  switch (goos) {
+    case 'darwin':
+      return 'macOS';
+    case 'windows':
+      return 'Windows';
+    case 'linux':
+      return 'Linux';
+    default:
+      return '';
+  }
+}
+
+// buildDiagnosticInfo assembles exactly what a support request needs and
+// nothing more — no email, no tokens — since it's headed for the clipboard
+// and from there possibly into a public support channel. Fetches hook
+// health fresh rather than trusting state.hookHealth, which is only
+// populated once the Installations screen has been visited this launch.
+async function buildDiagnosticInfo() {
+  if (!state.accountStatus) await loadAccountStatus();
+  const hookHealth = await GetHookHealth().catch(() => null);
+  return [
+    `Winglet ${state.updateStatus?.currentVersion ? `v${state.updateStatus.currentVersion}` : '(version unknown)'} · ${platformLabel(document.body.dataset.os) || document.body.dataset.os || 'unknown OS'}`,
+    `Account: ${accountLabel(state.accountStatus || {})}`,
+    `Claude Code hook: ${hookHealth ? hookHealth.claudeStatus : 'unknown'}`,
+    `Codex hook: ${hookHealth ? hookHealth.codexStatus : 'unknown'}`,
+  ].join('\n');
+}
+
+// flashButtonLabel gives one-off action buttons (Copy to Clipboard, Check
+// for Updates) a brief confirmation state without needing a persisted
+// per-button flag in state — the timeout just no-ops harmlessly if the user
+// has already navigated away and the button node is detached.
+function flashButtonLabel(btn, html, revertHtml, ms = 1800) {
+  btn.innerHTML = html;
+  btn.disabled = true;
+  setTimeout(() => {
+    btn.innerHTML = revertHtml;
+    btn.disabled = false;
+  }, ms);
+}
+
+async function renderAboutScreen(container) {
+  if (!state.updateStatus) await loadUpdateStatus();
+  const version = state.updateStatus?.currentVersion;
+  const platform = platformLabel(document.body.dataset.os);
+  container.innerHTML = `
+    <h1 class="screen-title">About</h1>
+    <div class="settings-stack">
+      ${state.aboutError ? `<div class="settings-error">${escapeHtml(state.aboutError)}</div>` : ''}
+      <section class="settings-panel">
+        <div class="settings-row">
+          <div>
+            <div class="settings-row-label">Winglet</div>
+            <div class="settings-row-desc">${version ? `Version ${escapeHtml(version)}` : 'Version unknown'}${platform ? ` · ${escapeHtml(platform)}` : ''} · Apache License 2.0</div>
+          </div>
+          <button class="hook-action-button outline" type="button" data-about-action="check-updates">Check for Updates</button>
+        </div>
+        <div class="settings-row">
+          <div>
+            <div class="settings-row-label">Diagnostic info</div>
+            <div class="settings-row-desc">Copies your Winglet version, platform, account status, and integration status for a support request.</div>
+          </div>
+          <button class="hook-action-button outline" type="button" data-about-action="copy-diagnostics">${icons.copy}Copy</button>
+        </div>
+        <div class="settings-row">
+          <div>
+            <div class="settings-row-label">Data folder</div>
+            <div class="settings-row-desc">Saved usage stats, project registry, and preferences live in ~/.agent-winglet.</div>
+          </div>
+          <button class="hook-action-button outline" type="button" data-about-action="open-data-folder">Open Folder</button>
+        </div>
+      </section>
+      <div class="about-links">
+        <button class="hook-action-button outline" type="button" data-about-action="release-notes">Release notes</button>
+      </div>
+    </div>
+  `;
+  wireAboutActions(container);
+}
+
+function wireAboutActions(container) {
+  container.querySelectorAll('[data-about-action]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const action = btn.getAttribute('data-about-action');
+      if (action === 'release-notes') {
+        OpenReleaseNotes();
+        return;
+      }
+      if (action === 'check-updates') {
+        btn.disabled = true;
+        btn.textContent = 'Checking…';
+        await loadUpdateStatus();
+        flashButtonLabel(
+          btn,
+          state.updateStatus?.available ? 'Update available' : "You're up to date",
+          'Check for Updates',
+          2200
+        );
+        return;
+      }
+      if (action === 'copy-diagnostics') {
+        try {
+          const info = await buildDiagnosticInfo();
+          await ClipboardSetText(info);
+          flashButtonLabel(btn, 'Copied!', `${icons.copy}Copy`);
+        } catch (err) {
+          state.aboutError = err?.message || String(err);
+          render();
+        }
+        return;
+      }
+      if (action === 'open-data-folder') {
+        try {
+          await OpenDataFolder();
+        } catch (err) {
+          state.aboutError = err?.message || String(err);
+          render();
+        }
+      }
+    });
+  });
+}
+
 async function renderAccountScreen(container) {
   if (!state.accountStatus) {
     container.innerHTML = `<div class="empty-state">Loading...</div>`;
@@ -798,11 +944,10 @@ function accountSubscribedMarkup(status) {
           ? `<div>${escapeHtml(status.subscription.tier || 'Winglet')} · ${escapeHtml(status.subscription.status || 'active')}</div>`
           : ''}
       ${!trialing && status.expiresAt ? `<div>Refreshes automatically before ${escapeHtml(formatLocalTime(status.expiresAt))}</div>` : ''}
-      ${status.lastRefreshAt ? `<div>Last checked ${escapeHtml(formatLocalTime(status.lastRefreshAt))}</div>` : ''}
     </div>
     <div class="account-actions">
       ${trialing ? `<button class="hook-action-button enable" type="button" data-account-action="pricing">Subscribe now</button>` : ''}
-      <button class="hook-action-button ${trialing ? '' : 'enable'}" type="button" data-account-action="sync">Sync</button>
+      <button class="hook-action-button ${trialing ? '' : 'enable'}" type="button" data-account-action="sync">Refresh</button>
       <button class="hook-action-button disable" type="button" data-account-action="logout">Sign out</button>
     </div>
   `;
@@ -822,7 +967,7 @@ function accountSignInMarkup(status) {
       ${trialAvailable ? `<button class="hook-action-button enable" type="button" data-account-action="start-trial">${icons.sparkle}Start 3-day free trial</button>` : ''}
       ${needsSubscribe ? `<button class="hook-action-button enable" type="button" data-account-action="pricing">Subscribe</button>` : ''}
       ${status.emailHint ? '' : `<button class="hook-action-button enable" type="button" data-account-action="signin">Sign in with browser</button>`}
-      ${status.emailHint ? `<button class="hook-action-button" type="button" data-account-action="sync">Sync</button>` : ''}
+      ${status.emailHint ? `<button class="hook-action-button" type="button" data-account-action="sync">Refresh</button>` : ''}
       ${status.emailHint ? `<button class="hook-action-button disable" type="button" data-account-action="logout">Sign out</button>` : ''}
     </div>
   `;
@@ -1168,6 +1313,7 @@ function renderMain(container) {
   if (state.screen === 'projects') return renderProjectsScreen(container);
   if (state.screen === 'installations') return renderInstallationsScreen(container);
   if (state.screen === 'preferences') return renderPreferencesScreen(container);
+  if (state.screen === 'about') return renderAboutScreen(container);
 }
 
 function isSettingsScreen() {
@@ -1203,8 +1349,10 @@ function render() {
           </div>
         </div>
       </nav>
+      <div class="sidebar-footer" id="version-footer">${versionFooterText()}</div>
     </div>
     <div class="main">
+      <div id="update-banner"></div>
       <div id="trial-banner"></div>
       <div class="main-scroll" id="main"></div>
     </div>
@@ -1215,7 +1363,79 @@ function render() {
   });
 
   renderMain(app.querySelector('#main'));
+  renderUpdateBanner();
   renderTrialBanner();
+}
+
+// versionFooterText reads CurrentVersion off the same UpdateStatus
+// CheckForUpdate() already fetches for the update banner (loadUpdateStatus),
+// rather than adding a second Go/JS binding just to say what build this is.
+// CurrentVersion is set before any network call in checkForUpdate (see
+// update.go), so it's populated even when the GitHub reachability check
+// itself fails offline.
+function versionFooterText() {
+  const version = state.updateStatus?.currentVersion;
+  if (!version) return '';
+  return version === 'dev' ? 'Winglet · dev build' : `Winglet v${escapeHtml(version)}`;
+}
+
+function updateDismissedKey(status) {
+  if (!status?.latestVersion) return '';
+  return UPDATE_DISMISSED_PREFIX + status.latestVersion;
+}
+
+function isUpdateDismissed(status) {
+  const key = updateDismissedKey(status);
+  if (!key) return false;
+  if (state.dismissedUpdateVersions.has(key)) return true;
+  try {
+    return localStorage.getItem(key) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function dismissUpdate(status) {
+  const key = updateDismissedKey(status);
+  if (!key) return;
+  state.dismissedUpdateVersions.add(key);
+  try {
+    localStorage.setItem(key, '1');
+  } catch {
+    // A failed persistence write only means this launch can dismiss it.
+  }
+}
+
+function updateBannerMarkup(status) {
+  if (!status?.available || !status.releaseUrl || isUpdateDismissed(status)) return '';
+  return `
+    <div class="update-banner">
+      <span class="update-banner-text">${icons.info}Winglet v${escapeHtml(status.latestVersion)} is available</span>
+      <div class="update-banner-actions">
+        <button class="update-banner-cta" type="button" data-update-action="open">Update</button>
+        <button class="update-banner-dismiss" type="button" data-update-action="dismiss" aria-label="Dismiss update">
+          ${icons.x}
+        </button>
+      </div>
+    </div>`;
+}
+
+function renderUpdateBanner() {
+  const slot = document.querySelector('#update-banner');
+  if (!slot) return;
+  slot.innerHTML = updateBannerMarkup(state.updateStatus);
+  slot.querySelectorAll('[data-update-action]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const action = btn.getAttribute('data-update-action');
+      if (action === 'open') {
+        OpenUpdateRelease(state.updateStatus.downloadUrl || state.updateStatus.releaseUrl);
+      }
+      if (action === 'dismiss') {
+        dismissUpdate(state.updateStatus);
+        renderUpdateBanner();
+      }
+    });
+  });
 }
 
 // renderTrialBanner keeps the "you're on a free trial" strip visible above
@@ -1248,7 +1468,10 @@ function renderTrialBanner() {
 }
 
 const TRIAL_BANNER_REFRESH_MS = 60_000;
+const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 initPlatform();
 render();
+loadUpdateStatus();
 setInterval(renderTrialBanner, TRIAL_BANNER_REFRESH_MS);
+setInterval(loadUpdateStatus, UPDATE_CHECK_INTERVAL_MS);
