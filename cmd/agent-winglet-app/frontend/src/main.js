@@ -810,7 +810,9 @@ async function renderAboutScreen(container) {
           <button class="hook-action-button outline" type="button" data-about-action="open-data-folder">Open Folder</button>
         </div>
       </section>
-      <p class="about-footnote"><button class="settings-info-link" type="button" data-about-action="release-notes">Release notes</button></p>
+      <div class="about-links">
+        <button class="hook-action-button outline" type="button" data-about-action="release-notes">Release notes</button>
+      </div>
     </div>
   `;
   wireAboutActions(container);

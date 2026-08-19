@@ -1272,10 +1272,9 @@ body {
   color: color-mix(in srgb, var(--accent), var(--text-primary) 15%);
 }
 
-.about-footnote {
-  margin: 2px 2px 0;
-  font-size: 12px;
-  color: var(--text-secondary);
+.about-links {
+  display: flex;
+  justify-content: flex-end;
 }
 
 /* --- Sign-in / trial gate --- */
