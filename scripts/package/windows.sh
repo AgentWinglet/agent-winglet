@@ -47,6 +47,21 @@ LDFLAGS="-X github.com/umitkaanusta/agent-winglet/internal/buildinfo.Version=${V
 UNSIGNED="${UNSIGNED:-0}"
 TIMESTAMP_URL="${WINDOWS_SIGN_TIMESTAMP_URL:-http://timestamp.digicert.com}"
 
+windows_file_version() {
+  local version_base="${1%%[-+]*}"
+
+  if [[ "$version_base" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
+    printf '%s.0\n' "$version_base"
+  elif [[ "$version_base" =~ ^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$ ]]; then
+    printf '%s\n' "$version_base"
+  else
+    echo "error: invalid Windows file version source '${1}': expected a numeric version like 1.2.3, optionally with semver prerelease/build metadata." >&2
+    return 1
+  fi
+}
+
+WINDOWS_FILE_VERSION="$(windows_file_version "$VERSION")"
+
 SIGNTOOL=""
 if command -v signtool.exe >/dev/null 2>&1; then
   SIGNTOOL="signtool.exe"
@@ -109,14 +124,7 @@ build_tray() {
   GOOS=windows GOARCH=amd64 go build -ldflags "$LDFLAGS" -o cmd/agent-winglet-tray/build/bin/agent-winglet-tray.exe ./cmd/agent-winglet-tray
 }
 
-# NSIS's VIProductVersion/VIFileVersion (populated from wails.json's
-# info.productVersion) is a Windows PE VERSIONINFO field, which Windows
-# requires to be exactly four numeric components (W.X.Y.Z) — it can't hold
-# a semver prerelease/build-metadata suffix like "-test" or "+sha". Real
-# release tags (see resolve_version) never have one, so this is a no-op for
-# an actual release; it only matters for dry-run versions like 0.0.1-test.
-# The installer filename and everything else still use the full $VERSION.
-with_wails_version "${VERSION%%[-+]*}" build_app
+with_wails_version "$VERSION" build_app
 build_tray
 
 app_exe="${REPO_ROOT}/cmd/agent-winglet-app/build/bin/Winglet.exe"
@@ -136,6 +144,8 @@ rm -f "$installer_out"
   "$MAKENSIS" \
     "-DARG_WAILS_AMD64_BINARY=$(win_path "$app_exe")" \
     "-DARG_TRAY_AMD64_BINARY=$(win_path "$tray_exe")" \
+    "-DINFO_PRODUCTVERSION=$VERSION" \
+    "-DINFO_VERSIONINFO_VERSION=$WINDOWS_FILE_VERSION" \
     project.nsi
 )
 
