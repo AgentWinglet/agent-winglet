@@ -22,15 +22,14 @@
 
 ---
 
-Winglet is a paid subscription app that costs $2.50/mo (billed $30/year), and
-your plan covers every Claude Code and Codex tier, including the highest tier.
-This repo covers the hooks which helps Winglet integrate with your coding agent,
-and the desktop app allowing you to see Winglet's savings.
+Winglet is a paid desktop app: $2.50/mo, billed yearly at $30. One plan covers
+every Claude Code and Codex tier. This repo contains the hooks that connect
+Winglet to your coding agent, plus the desktop app for tracking savings.
 
-Winglet's methodology stands on the shoulders of two giants: [AgentDiet: Reducing 
-Cost of LLM Agents with Trajectory Reduction](https://doi.org/10.1145/3797084) and 
-[The Complexity Trap: Simple Observation Masking Is as Efficient as LLM 
-Summarization for Agent Context Management.](https://arxiv.org/abs/2508.21433)
+Winglet stands on the shoulders of two giants: [AgentDiet: Reducing Cost of LLM
+Agents with Trajectory Reduction](https://doi.org/10.1145/3797084) and [The
+Complexity Trap: Simple Observation Masking Is as Efficient as LLM
+Summarization for Agent Context Management](https://arxiv.org/abs/2508.21433).
 
 ## Performance
 Measured on industry-standard agentic coding benchmarks 
