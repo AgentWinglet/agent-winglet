@@ -117,6 +117,8 @@ async function loadUpdateStatus() {
     state.updateStatus = null;
   }
   renderUpdateBanner();
+  const footer = document.querySelector('#version-footer');
+  if (footer) footer.textContent = versionFooterText();
 }
 
 // Stamps data-os on <body> so CSS can scope the sidebar's title-bar inset
@@ -813,11 +815,10 @@ function accountSubscribedMarkup(status) {
           ? `<div>${escapeHtml(status.subscription.tier || 'Winglet')} · ${escapeHtml(status.subscription.status || 'active')}</div>`
           : ''}
       ${!trialing && status.expiresAt ? `<div>Refreshes automatically before ${escapeHtml(formatLocalTime(status.expiresAt))}</div>` : ''}
-      ${status.lastRefreshAt ? `<div>Last checked ${escapeHtml(formatLocalTime(status.lastRefreshAt))}</div>` : ''}
     </div>
     <div class="account-actions">
       ${trialing ? `<button class="hook-action-button enable" type="button" data-account-action="pricing">Subscribe now</button>` : ''}
-      <button class="hook-action-button ${trialing ? '' : 'enable'}" type="button" data-account-action="sync">Sync</button>
+      <button class="hook-action-button ${trialing ? '' : 'enable'}" type="button" data-account-action="sync">Refresh</button>
       <button class="hook-action-button disable" type="button" data-account-action="logout">Sign out</button>
     </div>
   `;
@@ -837,7 +838,7 @@ function accountSignInMarkup(status) {
       ${trialAvailable ? `<button class="hook-action-button enable" type="button" data-account-action="start-trial">${icons.sparkle}Start 3-day free trial</button>` : ''}
       ${needsSubscribe ? `<button class="hook-action-button enable" type="button" data-account-action="pricing">Subscribe</button>` : ''}
       ${status.emailHint ? '' : `<button class="hook-action-button enable" type="button" data-account-action="signin">Sign in with browser</button>`}
-      ${status.emailHint ? `<button class="hook-action-button" type="button" data-account-action="sync">Sync</button>` : ''}
+      ${status.emailHint ? `<button class="hook-action-button" type="button" data-account-action="sync">Refresh</button>` : ''}
       ${status.emailHint ? `<button class="hook-action-button disable" type="button" data-account-action="logout">Sign out</button>` : ''}
     </div>
   `;
@@ -1218,6 +1219,7 @@ function render() {
           </div>
         </div>
       </nav>
+      <div class="sidebar-footer" id="version-footer">${versionFooterText()}</div>
     </div>
     <div class="main">
       <div id="update-banner"></div>
@@ -1233,6 +1235,18 @@ function render() {
   renderMain(app.querySelector('#main'));
   renderUpdateBanner();
   renderTrialBanner();
+}
+
+// versionFooterText reads CurrentVersion off the same UpdateStatus
+// CheckForUpdate() already fetches for the update banner (loadUpdateStatus),
+// rather than adding a second Go/JS binding just to say what build this is.
+// CurrentVersion is set before any network call in checkForUpdate (see
+// update.go), so it's populated even when the GitHub reachability check
+// itself fails offline.
+function versionFooterText() {
+  const version = state.updateStatus?.currentVersion;
+  if (!version) return '';
+  return version === 'dev' ? 'Winglet · dev build' : `Winglet v${escapeHtml(version)}`;
 }
 
 function updateDismissedKey(status) {

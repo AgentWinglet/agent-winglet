@@ -164,6 +164,14 @@ body {
   -webkit-app-region: no-drag;
 }
 
+.sidebar-footer {
+  margin-top: auto;
+  padding: 10px 13px 2px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  -webkit-app-region: no-drag;
+}
+
 .nav-item {
   position: relative;
   display: flex;
