@@ -44,7 +44,43 @@ Measured on industry-standard agentic coding benchmarks
 - Answer quality: **Stays the same**, ranging between -1.0% and +2.0%.
 
 ## How it works
-WIP
+
+The main idea is **trajectory reduction:** send less junk to the model.
+
+Winglet is a desktop app. It integrates with Claude Code and Codex through
+hooks, so it can optimize what gets sent to the model while your agent thinks
+and uses tools. It runs locally, and no data leaves your machine.
+
+### Retire used research
+
+Your agent searches the codebase to find a function. Once it finds it, the full
+search trail is no longer needed while writing code.
+
+Winglet sends the model a short note and keeps the full output on disk if
+needed.
+
+### Trim long tool output
+
+80% of useful information is usually in the first and last 15 lines. Winglet
+sends that head and tail, and keeps the full output on disk if needed.
+
+This also implicitly steers the model toward focused searches.
+
+### Cut duplicates in context
+
+Sometimes the agent asks for the same thing twice. If the output is unchanged,
+it is already in context.
+
+Winglet does not send it to the model again.
+
+### Smart compact
+
+Winglet offers to compact after the agent uses what it found. It keeps the
+current working context intact while reducing older waste, which saves more
+usage.
+
+Note: Compacting is optional. It is not part of Winglet's "usage saved"
+calculation.
 
 ## License
 Apache 2.0 — see [LICENSE](LICENSE).
