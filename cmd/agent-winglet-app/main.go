@@ -25,7 +25,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
 
-	"github.com/umitkaanusta/agent-winglet/internal/buildinfo"
+	"github.com/AgentWinglet/agent-winglet/internal/buildinfo"
 )
 
 //go:embed all:frontend/dist

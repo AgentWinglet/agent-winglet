@@ -28,8 +28,8 @@ import (
 
 	"github.com/getlantern/systray"
 
-	"github.com/umitkaanusta/agent-winglet/internal/appipc"
-	"github.com/umitkaanusta/agent-winglet/internal/buildinfo"
+	"github.com/AgentWinglet/agent-winglet/internal/appipc"
+	"github.com/AgentWinglet/agent-winglet/internal/buildinfo"
 )
 
 var errUnsupportedOS = errors.New("agent-winglet-tray: unsupported OS")

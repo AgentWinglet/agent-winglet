@@ -23,7 +23,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/umitkaanusta/agent-winglet/internal/statedir"
+	"github.com/AgentWinglet/agent-winglet/internal/statedir"
 )
 
 func dir(projectDir, sessionID string) (string, error) {

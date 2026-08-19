@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/umitkaanusta/agent-winglet/internal/pricing"
-	"github.com/umitkaanusta/agent-winglet/internal/transcript"
+	"github.com/AgentWinglet/agent-winglet/internal/pricing"
+	"github.com/AgentWinglet/agent-winglet/internal/transcript"
 )
 
 func writeRolloutFixture(t *testing.T, lines []string) string {

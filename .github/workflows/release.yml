@@ -433,11 +433,9 @@ jobs:
             dist/manifest.json
             dist/SHA256SUMS
 
-  # Publishes a GitHub Release with every artifact attached. Note: while
-  # this repo stays private, GitHub Release assets aren't publicly
-  # downloadable — agentwinglet.com's download page needs either the repo
-  # (or at least Releases) made public, or these artifacts synced somewhere
-  # else the site can serve from. That sync isn't implemented here yet.
+  # Publishes a GitHub Release with every artifact attached. With public
+  # releases, agentwinglet.com's download page can serve these assets directly
+  # or mirror them elsewhere if needed.
   #
   # Skipped for a manual workflow_dispatch dry run (no tag to attach the
   # release to) — only a real tag push publishes.

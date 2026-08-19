@@ -29,7 +29,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 source "${SCRIPT_DIR}/scripts/lib.sh"
 
-REPO_URL="github.com/umitkaanusta/agent-winglet"
+REPO_URL="github.com/AgentWinglet/agent-winglet"
 
 WANT_HOOK=1
 WANT_APP=1
@@ -86,15 +86,6 @@ if [ "$WANT_HOOK" = "1" ]; then
     exit 1
   fi
 
-  # agent-winglet's repo is private, so `go install` can't resolve it through
-  # the public module proxy/sumdb (proxy.golang.org has no access to it) —
-  # GOPRIVATE tells the go tool to skip both and fetch straight from git
-  # instead, using whatever git credentials are already configured for
-  # github.com (SSH key, or an HTTPS credential helper set up by e.g.
-  # `gh auth login`). This only takes effect for this repo's module path, and
-  # is additive to any GOPRIVATE the caller already had set.
-  export GOPRIVATE="${GOPRIVATE:+${GOPRIVATE},}${REPO_URL}"
-
   GOBIN="$(go env GOBIN)"
   if [ -z "$GOBIN" ]; then
     GOBIN="$(go env GOPATH)/bin"
@@ -109,10 +100,9 @@ if [ "$WANT_HOOK" = "1" ]; then
 
     echo "Installing/updating ${binary_name} ${SCOPE_DESC} from ${hook_install_target}..." >&2
     if ! go install "${hook_install_target}"; then
-      echo "error: go install failed — since this repo is private, this is usually" >&2
-      echo "a git auth problem rather than a go problem. Make sure git can fetch" >&2
-      echo "${REPO_URL} (e.g. 'gh auth setup-git' for HTTPS, or an SSH key added" >&2
-      echo "to your GitHub account for the git@ form), then re-run this script." >&2
+      echo "error: go install failed for ${hook_install_target}." >&2
+      echo "Check your network connection, Go proxy settings, and that the requested" >&2
+      echo "version is available from ${REPO_URL}, then re-run this script." >&2
       exit 1
     fi
 

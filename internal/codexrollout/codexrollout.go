@@ -12,8 +12,8 @@ import (
 	"io"
 	"os"
 
-	"github.com/umitkaanusta/agent-winglet/internal/pricing"
-	"github.com/umitkaanusta/agent-winglet/internal/transcript"
+	"github.com/AgentWinglet/agent-winglet/internal/pricing"
+	"github.com/AgentWinglet/agent-winglet/internal/transcript"
 )
 
 // ReadSessionUsage streams path and returns its full cumulative usage. A

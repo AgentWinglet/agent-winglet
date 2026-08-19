@@ -31,7 +31,7 @@ source scripts/package-lib.sh
 
 VERSION="${1:-$(resolve_version)}"
 DIST_DIR="dist/ubuntu"
-LDFLAGS="-X github.com/umitkaanusta/agent-winglet/internal/buildinfo.Version=${VERSION}"
+LDFLAGS="-X github.com/AgentWinglet/agent-winglet/internal/buildinfo.Version=${VERSION}"
 DEBIAN_DIR="scripts/package/debian"
 
 if ! command -v nfpm >/dev/null 2>&1; then

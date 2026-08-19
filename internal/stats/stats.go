@@ -29,8 +29,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/umitkaanusta/agent-winglet/internal/statedir"
-	"github.com/umitkaanusta/agent-winglet/internal/transcript"
+	"github.com/AgentWinglet/agent-winglet/internal/statedir"
+	"github.com/AgentWinglet/agent-winglet/internal/transcript"
 )
 
 const (

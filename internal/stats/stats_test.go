@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/umitkaanusta/agent-winglet/internal/statedir"
-	"github.com/umitkaanusta/agent-winglet/internal/transcript"
+	"github.com/AgentWinglet/agent-winglet/internal/statedir"
+	"github.com/AgentWinglet/agent-winglet/internal/transcript"
 )
 
 func TestLoadMissingSessionReturnsZeroValue(t *testing.T) {

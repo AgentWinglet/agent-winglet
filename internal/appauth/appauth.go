@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/umitkaanusta/agent-winglet/internal/entitlement"
+	"github.com/AgentWinglet/agent-winglet/internal/entitlement"
 )
 
 const (

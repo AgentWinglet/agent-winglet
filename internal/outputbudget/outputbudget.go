@@ -8,7 +8,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/umitkaanusta/agent-winglet/internal/retire"
+	"github.com/AgentWinglet/agent-winglet/internal/retire"
 )
 
 const (
