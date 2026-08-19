@@ -12,7 +12,9 @@ import {
   GetSessionStats,
   Logout,
   OpenBillingPortal,
+  OpenDataFolder,
   OpenPricing,
+  OpenReleaseNotes,
   OpenUpdateRelease,
   RefreshEntitlement,
   SetCompactNudgesEnabled,
@@ -22,6 +24,7 @@ import {
   StartFreeTrial,
   UninstallWinglet,
 } from '../wailsjs/go/main/App';
+import { ClipboardSetText } from '../wailsjs/runtime/runtime';
 
 const state = {
   screen: 'overview',
@@ -33,6 +36,7 @@ const state = {
   accountError: '',
   hookHealth: null,
   updateStatus: null,
+  aboutError: '',
   dismissedUpdateVersions: new Set(),
 };
 
@@ -47,6 +51,7 @@ const SETTINGS_ITEMS = [
   { id: 'account', label: 'Account' },
   { id: 'preferences', label: 'Preferences' },
   { id: 'installations', label: 'Installations' },
+  { id: 'about', label: 'About' },
 ];
 
 // Session/project stats files on disk are updated live by the hook (every
@@ -732,6 +737,128 @@ async function renderPreferencesScreen(container) {
   });
 }
 
+function platformLabel(goos) {
+  switch (goos) {
+    case 'darwin':
+      return 'macOS';
+    case 'windows':
+      return 'Windows';
+    case 'linux':
+      return 'Linux';
+    default:
+      return '';
+  }
+}
+
+// buildDiagnosticInfo assembles exactly what a support request needs and
+// nothing more — no email, no tokens — since it's headed for the clipboard
+// and from there possibly into a public support channel. Fetches hook
+// health fresh rather than trusting state.hookHealth, which is only
+// populated once the Installations screen has been visited this launch.
+async function buildDiagnosticInfo() {
+  if (!state.accountStatus) await loadAccountStatus();
+  const hookHealth = await GetHookHealth().catch(() => null);
+  return [
+    `Winglet ${state.updateStatus?.currentVersion ? `v${state.updateStatus.currentVersion}` : '(version unknown)'} · ${platformLabel(document.body.dataset.os) || document.body.dataset.os || 'unknown OS'}`,
+    `Account: ${accountLabel(state.accountStatus || {})}`,
+    `Claude Code hook: ${hookHealth ? hookHealth.claudeStatus : 'unknown'}`,
+    `Codex hook: ${hookHealth ? hookHealth.codexStatus : 'unknown'}`,
+  ].join('\n');
+}
+
+// flashButtonLabel gives one-off action buttons (Copy to Clipboard, Check
+// for Updates) a brief confirmation state without needing a persisted
+// per-button flag in state — the timeout just no-ops harmlessly if the user
+// has already navigated away and the button node is detached.
+function flashButtonLabel(btn, html, revertHtml, ms = 1800) {
+  btn.innerHTML = html;
+  btn.disabled = true;
+  setTimeout(() => {
+    btn.innerHTML = revertHtml;
+    btn.disabled = false;
+  }, ms);
+}
+
+async function renderAboutScreen(container) {
+  if (!state.updateStatus) await loadUpdateStatus();
+  const version = state.updateStatus?.currentVersion;
+  const platform = platformLabel(document.body.dataset.os);
+  container.innerHTML = `
+    <h1 class="screen-title">About</h1>
+    <div class="settings-stack">
+      ${state.aboutError ? `<div class="settings-error">${escapeHtml(state.aboutError)}</div>` : ''}
+      <section class="settings-panel">
+        <div class="settings-row">
+          <div>
+            <div class="settings-row-label">Winglet</div>
+            <div class="settings-row-desc">${version ? `Version ${escapeHtml(version)}` : 'Version unknown'}${platform ? ` · ${escapeHtml(platform)}` : ''} · Apache License 2.0</div>
+          </div>
+          <button class="hook-action-button outline" type="button" data-about-action="check-updates">Check for Updates</button>
+        </div>
+        <div class="settings-row">
+          <div>
+            <div class="settings-row-label">Diagnostic info</div>
+            <div class="settings-row-desc">Copies your Winglet version, platform, account status, and integration status for a support request.</div>
+          </div>
+          <button class="hook-action-button outline" type="button" data-about-action="copy-diagnostics">${icons.copy}Copy</button>
+        </div>
+        <div class="settings-row">
+          <div>
+            <div class="settings-row-label">Data folder</div>
+            <div class="settings-row-desc">Saved usage stats, project registry, and preferences live in ~/.agent-winglet.</div>
+          </div>
+          <button class="hook-action-button outline" type="button" data-about-action="open-data-folder">Open Folder</button>
+        </div>
+      </section>
+      <p class="about-footnote"><button class="settings-info-link" type="button" data-about-action="release-notes">Release notes</button></p>
+    </div>
+  `;
+  wireAboutActions(container);
+}
+
+function wireAboutActions(container) {
+  container.querySelectorAll('[data-about-action]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const action = btn.getAttribute('data-about-action');
+      if (action === 'release-notes') {
+        OpenReleaseNotes();
+        return;
+      }
+      if (action === 'check-updates') {
+        btn.disabled = true;
+        btn.textContent = 'Checking…';
+        await loadUpdateStatus();
+        flashButtonLabel(
+          btn,
+          state.updateStatus?.available ? 'Update available' : "You're up to date",
+          'Check for Updates',
+          2200
+        );
+        return;
+      }
+      if (action === 'copy-diagnostics') {
+        try {
+          const info = await buildDiagnosticInfo();
+          await ClipboardSetText(info);
+          flashButtonLabel(btn, 'Copied!', `${icons.copy}Copy`);
+        } catch (err) {
+          state.aboutError = err?.message || String(err);
+          render();
+        }
+        return;
+      }
+      if (action === 'open-data-folder') {
+        try {
+          await OpenDataFolder();
+        } catch (err) {
+          state.aboutError = err?.message || String(err);
+          render();
+        }
+      }
+    });
+  });
+}
+
 async function renderAccountScreen(container) {
   if (!state.accountStatus) {
     container.innerHTML = `<div class="empty-state">Loading...</div>`;
@@ -1184,6 +1311,7 @@ function renderMain(container) {
   if (state.screen === 'projects') return renderProjectsScreen(container);
   if (state.screen === 'installations') return renderInstallationsScreen(container);
   if (state.screen === 'preferences') return renderPreferencesScreen(container);
+  if (state.screen === 'about') return renderAboutScreen(container);
 }
 
 function isSettingsScreen() {

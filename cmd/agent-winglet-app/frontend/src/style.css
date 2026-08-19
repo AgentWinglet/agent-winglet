@@ -1080,6 +1080,16 @@ body {
   background: color-mix(in srgb, var(--danger-bg), var(--danger) 15%);
 }
 
+.hook-action-button.outline {
+  color: var(--text-primary);
+  background: transparent;
+  border-color: var(--hairline);
+}
+
+.hook-action-button.outline:hover {
+  background: var(--nav-active-bg);
+}
+
 .hook-action-button:disabled {
   opacity: 0.7;
 }
@@ -1260,6 +1270,12 @@ body {
 
 .settings-info-link:hover {
   color: color-mix(in srgb, var(--accent), var(--text-primary) 15%);
+}
+
+.about-footnote {
+  margin: 2px 2px 0;
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 
 /* --- Sign-in / trial gate --- */

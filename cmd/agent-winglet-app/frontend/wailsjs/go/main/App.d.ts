@@ -25,7 +25,11 @@ export function Logout():Promise<appauth.Status>;
 
 export function OpenBillingPortal():Promise<void>;
 
+export function OpenDataFolder():Promise<void>;
+
 export function OpenPricing():Promise<void>;
+
+export function OpenReleaseNotes():Promise<void>;
 
 export function OpenUpdateRelease(arg1:string):Promise<void>;
 

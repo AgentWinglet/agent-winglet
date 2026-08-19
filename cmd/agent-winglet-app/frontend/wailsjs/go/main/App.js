@@ -46,8 +46,16 @@ export function OpenBillingPortal() {
   return window['go']['main']['App']['OpenBillingPortal']();
 }
 
+export function OpenDataFolder() {
+  return window['go']['main']['App']['OpenDataFolder']();
+}
+
 export function OpenPricing() {
   return window['go']['main']['App']['OpenPricing']();
+}
+
+export function OpenReleaseNotes() {
+  return window['go']['main']['App']['OpenReleaseNotes']();
 }
 
 export function OpenUpdateRelease(arg1) {
