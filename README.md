@@ -92,6 +92,10 @@ To use Winglet, you need:
 
 To install from source, you also need Go, Node.js/npm, and `jq`.
 
+## Supported platforms
+
+Winglet supports macOS and Linux. Windows support is coming soon.
+
 ## Installation
 
 ### Install from Winglet
@@ -128,6 +132,14 @@ To uninstall:
 ```sh
 ./uninstall.sh
 ```
+
+## Privacy
+
+Winglet runs locally. Your codebase, prompts, hook output, saved tool logs, and
+savings data stay on your machine.
+
+Winglet servers only receive account and app metadata: your name, email address,
+and platform.
 
 ## Development
 
