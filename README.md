@@ -82,5 +82,76 @@ usage.
 Note: Compacting is optional. It is not part of Winglet's "usage saved"
 calculation.
 
+## Requirements
+
+To use Winglet, you need:
+
+- Claude Code, Codex, or both.
+- The Winglet desktop app.
+- A Winglet subscription, or the 3-day free trial. No credit card required.
+
+To install from source, you also need Go, Node.js/npm, and `jq`.
+
+## Installation
+
+### Install from Winglet
+
+Download Winglet from [agentwinglet.com](https://agentwinglet.com), open the
+desktop app, then follow Settings > Installation to connect Claude Code, Codex,
+or both.
+
+### Install from source
+
+You can also clone the repo and run the installer:
+
+```sh
+git clone https://github.com/umitkaanusta/agent-winglet.git
+cd agent-winglet
+./install.sh
+```
+
+By default, this installs the desktop app and configures hooks for both Claude
+Code and Codex.
+
+Useful options:
+
+```sh
+./install.sh --hook-only
+./install.sh --app-only
+./install.sh --claude-only
+./install.sh --codex-only
+./install.sh --local
+```
+
+To uninstall:
+
+```sh
+./uninstall.sh
+```
+
+## Development
+
+Developer setup is mostly for building from source or working on the agent
+integrations.
+
+- Go 1.26.5
+- Node.js/npm
+- Wails 2.13.0
+- `jq`
+
+Common commands:
+
+```sh
+make build
+make test
+make app
+```
+
+On Linux, app builds may also need GTK/WebKit development packages. On Ubuntu:
+
+```sh
+sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+```
+
 ## License
 Apache 2.0 — see [LICENSE](LICENSE).
