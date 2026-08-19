@@ -106,7 +106,14 @@ build_tray() {
   GOOS=windows GOARCH=amd64 go build -ldflags "$LDFLAGS" -o cmd/agent-winglet-tray/build/bin/agent-winglet-tray.exe ./cmd/agent-winglet-tray
 }
 
-with_wails_version "$VERSION" build_app
+# NSIS's VIProductVersion/VIFileVersion (populated from wails.json's
+# info.productVersion) is a Windows PE VERSIONINFO field, which Windows
+# requires to be exactly four numeric components (W.X.Y.Z) — it can't hold
+# a semver prerelease/build-metadata suffix like "-test" or "+sha". Real
+# release tags (see resolve_version) never have one, so this is a no-op for
+# an actual release; it only matters for dry-run versions like 0.0.1-test.
+# The installer filename and everything else still use the full $VERSION.
+with_wails_version "${VERSION%%[-+]*}" build_app
 build_tray
 
 app_exe="${REPO_ROOT}/cmd/agent-winglet-app/build/bin/Winglet.exe"
