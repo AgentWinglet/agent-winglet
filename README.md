@@ -13,7 +13,8 @@
 
 <p align="center">
   Winglet cuts stale reads, repeated tool output, and wasted context before 
-  they reach the model. Everything stays on your machine.
+  they reach the model. <br/>
+  Everything stays on your machine.
 </p>
 
 <p align="center">
