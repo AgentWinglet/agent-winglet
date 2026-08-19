@@ -42,6 +42,16 @@ on:
       version:
         description: "Version to build (no leading v) for a manual dry run — ignored on a real tag push, which always uses the tag"
         required: false
+      platform:
+        description: "Which platform(s) to build for a manual dry run — ignored on a real tag push, which always builds all three"
+        required: false
+        type: choice
+        default: all
+        options:
+          - all
+          - macos
+          - windows
+          - ubuntu
 
 permissions:
   contents: read
@@ -78,6 +88,7 @@ jobs:
 
   macos-package:
     needs: [test, determine-version]
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'macos'
     runs-on: macos-latest
     env:
       VERSION: ${{ needs.determine-version.outputs.version }}
@@ -158,6 +169,7 @@ jobs:
 
   macos-artifact-validation:
     needs: [macos-package]
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'macos'
     runs-on: macos-latest
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -180,6 +192,7 @@ jobs:
 
   windows-package:
     needs: [test, determine-version]
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'windows'
     runs-on: windows-latest
     env:
       VERSION: ${{ needs.determine-version.outputs.version }}
@@ -261,6 +274,7 @@ jobs:
 
   windows-artifact-validation:
     needs: [windows-package]
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'windows'
     runs-on: windows-latest
     env:
       EXPECT_SIGNED: ${{ needs.windows-package.outputs.signed }}
@@ -300,6 +314,7 @@ jobs:
 
   ubuntu-package:
     needs: [test, determine-version]
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'ubuntu'
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.determine-version.outputs.version }}
@@ -335,6 +350,7 @@ jobs:
 
   ubuntu-artifact-validation:
     needs: [determine-version, ubuntu-package]
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'ubuntu'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
