@@ -155,6 +155,14 @@ if [ "$WANT_APP" = "1" ]; then
     fi
     echo "note: don't know how to uninstall the app on '$(uname -s)' — skipping app removal."
   else
+    # Stop the tray helper before touching install paths below — on Windows
+    # (see lib.sh's stop_tray comment) a running .exe can't be cleanly
+    # deleted, and it lives inside the same directory the app-removal case
+    # below rm -rf's, so this has to happen first, not after. No-op if
+    # nothing's running (darwin already stops its own tray as part of its
+    # case branch, so skip here to avoid a redundant call).
+    [ "$OS" != "darwin" ] && stop_tray
+
     FOUND_ANY=0
     case "$OS" in
       darwin)
@@ -208,8 +216,8 @@ if [ "$WANT_APP" = "1" ]; then
     # (see the Makefile's nest-tray-darwin target), already unregistered and
     # removed above as part of removing the app itself. linux/windows install
     # it as a separate binary with its own autostart entry, torn down here.
+    # (Already stopped above, before the app-removal case block.)
     if [ "$OS" != "darwin" ]; then
-      stop_tray
       case "$OS" in
         linux) linux_unregister_tray_autostart ;;
         windows) windows_unregister_tray_autostart ;;
