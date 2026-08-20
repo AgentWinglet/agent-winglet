@@ -180,7 +180,6 @@ func (a *App) UninstallWinglet() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	removeTrayAutostart(home)
 	removeAppShortcut(home)
 	if goruntime.GOOS == "linux" {
 		_ = os.Remove(linuxDesktopEntryPath(home))
@@ -684,21 +683,22 @@ func containsCommand(v interface{}, binaryName string) bool {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	go a.serveIPC()
-	go a.ensureTrayRunning()
-	go ensureLinuxTrayAutostart()
+	if goruntime.GOOS == "darwin" {
+		go a.ensureTrayRunning()
 
-	// Defensive fallback: install.sh already calls RegisterLoginItem via
-	// `--register-login-item` right after installing, but this covers any
-	// other way the app ends up running (a dev build, a manual copy) — it's
-	// idempotent (see loginitem_darwin.go), so calling it again here is
-	// harmless. Errors are logged, not surfaced: the dashboard is fully
-	// usable without a registered login item, just without the
-	// launch-at-login convenience.
-	go func() {
-		if err := RegisterLoginItem(); err != nil {
-			fmt.Println("agent-winglet-app: login item registration failed:", err)
-		}
-	}()
+		// Defensive fallback: install.sh already calls RegisterLoginItem via
+		// `--register-login-item` right after installing, but this covers any
+		// other way the app ends up running (a dev build, a manual copy) — it's
+		// idempotent (see loginitem_darwin.go), so calling it again here is
+		// harmless. Errors are logged, not surfaced: the dashboard is fully
+		// usable without a registered login item, just without the
+		// launch-at-login convenience.
+		go func() {
+			if err := RegisterLoginItem(); err != nil {
+				fmt.Println("agent-winglet-app: login item registration failed:", err)
+			}
+		}()
+	}
 }
 
 // ensureTrayRunning launches the tray helper if none is currently reachable

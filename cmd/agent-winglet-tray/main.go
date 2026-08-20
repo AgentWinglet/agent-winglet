@@ -1,3 +1,5 @@
+//go:build darwin
+
 // Command agent-winglet-tray is the menu-bar/tray helper for the Winglet
 // dashboard app (cmd/agent-winglet-app). It's a separate binary rather than a
 // second goroutine in the dashboard itself because getlantern/systray and
@@ -6,14 +8,13 @@
 // at link time (see cmd/agent-winglet-app/main.go's doc comment for the
 // history). Running the tray as its own process sidesteps that entirely.
 //
-// install.sh registers this to launch at login (LaunchAgent on macOS, a
-// Startup-folder shortcut on Windows, an XDG autostart entry on Linux), so
-// the icon is meant to be there from login onward, independent of whether
-// the dashboard window has been opened yet. It talks to the dashboard over
+// install.sh registers this to launch at login through SMAppService, so the
+// icon is meant to be there from login onward, independent of whether the
+// dashboard window has been opened yet. It talks to the dashboard over
 // internal/appipc: "Open Winglet" asks a running dashboard to show its
 // window, or launches one if none is running; "Quit" tells a running
 // dashboard to actually exit and then exits itself. Closing the dashboard's
-// window on its own (titlebar button, Cmd+Q/Alt+F4, Dock Quit)
+// window on its own (titlebar button, Cmd+Q, Dock Quit)
 // leaves this tray running — its "Open Winglet" relaunches the dashboard on
 // demand, just like it would if the dashboard had never been started this
 // session (openDashboard here, App.ensureTrayRunning on the dashboard's
