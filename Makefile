@@ -1,4 +1,4 @@
-.PHONY: build claude-hook codex-hook test installer-smoke app tray nest-tray-darwin install uninstall package-macos package-macos-verify package-windows package-ubuntu checksums
+.PHONY: build claude-hook codex-hook test installer-smoke app nest-tray-darwin install uninstall package-macos package-macos-verify package-windows package-ubuntu checksums
 
 build: claude-hook codex-hook
 
@@ -40,23 +40,6 @@ else ifeq ($(shell uname -s),Linux)
 else
 	cd cmd/agent-winglet-app && wails build
 endif
-
-# Builds the login-item tray helper (cmd/agent-winglet-tray) for
-# Windows/Linux — a plain Go binary, not a `wails build`, so it needs its
-# own target: getlantern/systray uses cgo directly (GTK + an AppIndicator
-# binding on Linux — see .github/workflows/app-build.yml for the dev
-# packages that needs), with no Wails-specific link flags or build tags
-# involved. Output name gets .exe under Git Bash/MSYS2/Cygwin (uname reports
-# MINGW*/MSYS*/CYGWIN* there, same detection scripts/lib.sh's detect_os
-# uses) so install.sh finds a directly-executable file on Windows the same
-# way it does for the app.
-#
-# macOS doesn't use this target — see nest-tray-darwin below for why.
-tray:
-	@case "$$(uname -s)" in \
-		MINGW*|MSYS*|CYGWIN*) go build -o cmd/agent-winglet-tray/build/bin/agent-winglet-tray.exe ./cmd/agent-winglet-tray ;; \
-		*) go build -o cmd/agent-winglet-tray/build/bin/agent-winglet-tray ./cmd/agent-winglet-tray ;; \
-	esac
 
 # macOS gets the tray helper nested *inside* the dashboard's own bundle
 # instead of standing alone. Apple's SMAppService login-item API (see

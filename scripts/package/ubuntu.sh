@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
-# Builds the public Ubuntu deliverable: a .deb bundling Winglet + the tray
-# helper, dist/ubuntu/winglet_${VERSION}_amd64.deb. Nothing here writes into
-# a user's home directory — the layout is /opt/winglet plus a /usr/bin
-# symlink and desktop/icon files (see nfpm.yaml.tmpl); the tray's per-user
-# autostart entry is registered on first app launch instead (see
-# cmd/agent-winglet-app/autostart_linux.go).
+# Builds the public Ubuntu deliverable: a .deb bundling Winglet,
+# dist/ubuntu/winglet_${VERSION}_amd64.deb. Nothing here writes into a user's
+# home directory — the layout is /opt/winglet plus a /usr/bin symlink and
+# desktop/icon files (see nfpm.yaml.tmpl).
 #
-# Must run on Linux: wails build's linux target needs GTK/WebKit dev
-# headers, and the tray helper needs GTK + an AppIndicator binding (both
-# cgo) — see .github/workflows/app-build.yml's "Install Linux system
-# dependencies" step for the exact packages this needs installed.
+# Must run on Linux: wails build's linux target needs GTK/WebKit dev headers
+# — see .github/workflows/app-build.yml's "Install Linux system dependencies"
+# step for the exact packages this needs installed.
 #
 # Requires nfpm (https://nfpm.goreleaser.com/) on PATH — installed
 # automatically via `go install` if missing, same pattern install.sh uses
@@ -58,12 +55,7 @@ build_app() {
   )
 }
 
-build_tray() {
-  GOOS=linux GOARCH=amd64 go build -ldflags "$LDFLAGS" -o cmd/agent-winglet-tray/build/bin/agent-winglet-tray ./cmd/agent-winglet-tray
-}
-
 with_wails_version "$VERSION" build_app
-build_tray
 
 mkdir -p "$DIST_DIR"
 
@@ -81,7 +73,6 @@ trap cleanup_staged EXIT
 sed \
   -e "s#__VERSION__#${VERSION}#g" \
   -e "s#__APP_BIN__#${REPO_ROOT}/cmd/agent-winglet-app/build/bin/Winglet#g" \
-  -e "s#__TRAY_BIN__#${REPO_ROOT}/cmd/agent-winglet-tray/build/bin/agent-winglet-tray#g" \
   -e "s#__DESKTOP_FILE__#${REPO_ROOT}/${DEBIAN_DIR}/winglet.desktop#g" \
   -e "s#__ICON_FILE__#${REPO_ROOT}/${DEBIAN_DIR}/appicon-256.png#g" \
   -e "s#__POSTINSTALL_SCRIPT__#${REPO_ROOT}/${DEBIAN_DIR}/postinst.sh#g" \
