@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Builds the public Windows deliverable: Winglet.exe + agent-winglet-tray.exe
-# bundled into an NSIS installer (signed if credentials are provided, see
-# below), dist/windows/Winglet-${VERSION}-windows-x64-setup.exe.
+# Builds the public Windows deliverable: Winglet.exe bundled into an NSIS
+# installer (signed if credentials are provided, see below),
+# dist/windows/Winglet-${VERSION}-windows-x64-setup.exe.
 #
 # Must run on Windows, under a bash capable of calling native Windows tools
 # (Git Bash/MSYS2/Cygwin — same environments install.sh/scripts/lib.sh
@@ -117,17 +117,10 @@ build_app() {
   )
 }
 
-build_tray() {
-  GOOS=windows GOARCH=amd64 go build -ldflags "$LDFLAGS" -o cmd/agent-winglet-tray/build/bin/agent-winglet-tray.exe ./cmd/agent-winglet-tray
-}
-
 with_wails_version "$VERSION" build_app
-build_tray
 
 app_exe="${REPO_ROOT}/cmd/agent-winglet-app/build/bin/Winglet.exe"
-tray_exe="${REPO_ROOT}/cmd/agent-winglet-tray/build/bin/agent-winglet-tray.exe"
 sign "$app_exe"
-sign "$tray_exe"
 
 mkdir -p "$DIST_DIR"
 
@@ -154,7 +147,6 @@ rm -f "$installer_out"
   cd cmd/agent-winglet-app/build/windows/installer
   "$MAKENSIS" \
     "-DARG_WAILS_AMD64_BINARY=$(win_path "$app_exe")" \
-    "-DARG_TRAY_AMD64_BINARY=$(win_path "$tray_exe")" \
     "-DINFO_PRODUCTVERSION=$VERSION" \
     "-DINFO_VERSIONINFO_VERSION=$WINDOWS_FILE_VERSION" \
     project.nsi

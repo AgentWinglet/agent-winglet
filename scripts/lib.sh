@@ -43,43 +43,6 @@ app_install_path() {
   esac
 }
 
-# linux/windows only — darwin's tray is built and installed as part of
-# `make app`/the app's own install step (see the Makefile's
-# nest-tray-darwin target and install.sh's darwin branch): it's nested
-# inside Winglet.app so it can be registered as a proper macOS login item
-# via SMAppService (cmd/agent-winglet-app/loginitem_darwin.go), which only
-# works for a helper embedded in the calling app's own bundle, not a
-# standalone one.
-
-# The file `make tray` produces under cmd/agent-winglet-tray/build/bin,
-# relative to that directory, for a given detect_os() value.
-tray_build_artifact() {
-  case "$1" in
-    windows) echo "${TRAY_BIN_NAME}.exe" ;;
-    *) echo "${TRAY_BIN_NAME}" ;;
-  esac
-}
-
-# Where the tray helper binary is installed to — a stable path for the
-# Startup-shortcut/autostart entry that launches it at login to point at,
-# surviving across installs the same way the app's own install location
-# does.
-tray_install_path() {
-  case "$1" in
-    linux) echo "${HOME}/.local/bin/${TRAY_BIN_NAME}" ;;
-    windows) echo "$(windows_local_app_dir)/${APP_NAME}/${TRAY_BIN_NAME}.exe" ;;
-  esac
-}
-
-# The actual launchable executable, per OS — what a Startup-shortcut/
-# autostart entry's Exec should point at. Same as tray_install_path here
-# (both are bare binaries); kept as its own function for symmetry with
-# app_install_path/app_build_artifact's naming, and because darwin used to
-# need the two to differ before its tray moved into the app bundle.
-tray_executable_path() {
-  tray_install_path "$1"
-}
-
 # Legacy/alternate macOS install location — installers before this one
 # (or a manual `make app` + drag) may have put the app in ~/Applications
 # instead of /Applications. Both install.sh and uninstall.sh check this one
@@ -145,80 +108,13 @@ windows_remove_shortcut() {
   rm -f "${start_menu}/${APP_NAME}.lnk"
 }
 
-##############################################################################
-# Tray helper autostart (login item), linux/windows — used by
-# install.sh/uninstall.sh so the tray icon (cmd/agent-winglet-tray) is there
-# from login onward rather than only after the dashboard has been opened
-# once. darwin registers via SMAppService instead — see
-# cmd/agent-winglet-app/loginitem_darwin.go and install.sh's darwin branch.
-##############################################################################
-
-linux_autostart_desktop_path() {
-  echo "${HOME}/.config/autostart/winglet-tray.desktop"
-}
-
-linux_register_tray_autostart() {
-  tray_path="$1"
-  desktop="$(linux_autostart_desktop_path)"
-  mkdir -p "$(dirname "$desktop")"
-  cat > "$desktop" <<EOF
-[Desktop Entry]
-Type=Application
-Name=${APP_NAME} Tray
-Comment=Background menu-bar helper for ${APP_NAME}
-Exec=${tray_path}
-X-GNOME-Autostart-enabled=true
-NoDisplay=true
-EOF
-}
-
-linux_unregister_tray_autostart() {
-  rm -f "$(linux_autostart_desktop_path)"
-}
-
-windows_startup_folder() {
-  echo "$(windows_local_app_dir)/../Roaming/Microsoft/Windows/Start Menu/Programs/Startup"
-}
-
-# Same WScript.Shell COM approach as windows_create_shortcut, just targeting
-# the Startup folder (which Windows auto-launches at login) instead of the
-# regular Start Menu Programs folder.
-windows_register_tray_autostart() {
-  tray_path="$1"
-  if ! command -v powershell.exe >/dev/null 2>&1; then
-    echo "note: powershell.exe not found — skipping login-item shortcut. The tray helper is still installed at:"
-    echo "  ${tray_path}"
+# Best-effort: stops any currently-running macOS tray helper instance.
+# Never fatal: nothing running is the common case, not an error.
+stop_tray() {
+  if [ "$(detect_os)" != "darwin" ]; then
     return 0
   fi
-  startup="$(windows_startup_folder)"
-  mkdir -p "$startup"
-  lnk_win="$(to_windows_path "${startup}/${APP_NAME} Tray.lnk")"
-  exe_win="$(to_windows_path "$tray_path")"
-  powershell.exe -NoProfile -Command \
-    "\$s = (New-Object -ComObject WScript.Shell).CreateShortcut('${lnk_win}'); \$s.TargetPath = '${exe_win}'; \$s.Save()" \
-    >/dev/null 2>&1 \
-    && echo "Registered ${APP_NAME} to start at login (Startup folder shortcut)" \
-    || echo "note: failed to create the login-item shortcut (tray helper is still installed at ${tray_path})"
-}
-
-windows_unregister_tray_autostart() {
-  startup="$(windows_startup_folder)"
-  rm -f "${startup}/${APP_NAME} Tray.lnk"
-}
-
-# Best-effort: stops any currently-running tray helper instance. Used by
-# install.sh before overwriting its binary — Windows in particular won't let
-# you overwrite a running .exe — and by uninstall.sh so removing the
-# autostart registration doesn't leave one running until next login. Never
-# fatal: nothing running is the common case, not an error.
-stop_tray() {
-  if [ "$(detect_os)" = "windows" ]; then
-    if command -v taskkill.exe >/dev/null 2>&1; then
-      taskkill.exe /IM "${TRAY_BIN_NAME}.exe" /F >/dev/null 2>&1 || true
-    fi
-  else
-    if pgrep -f "${TRAY_BIN_NAME}" >/dev/null 2>&1; then
-      pkill -f "${TRAY_BIN_NAME}" || true
-    fi
+  if pgrep -f "${TRAY_BIN_NAME}" >/dev/null 2>&1; then
+    pkill -f "${TRAY_BIN_NAME}" || true
   fi
 }

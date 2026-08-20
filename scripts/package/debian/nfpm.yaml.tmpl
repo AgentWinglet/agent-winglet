@@ -3,11 +3,9 @@
 # temp file before invoking `nfpm package`, rather than relying on nfpm's own
 # env-var expansion (keeps the substitution explicit and version-independent).
 #
-# The artifact layout this produces: /opt/winglet holds the actual binaries
+# The artifact layout this produces: /opt/winglet holds the actual binary
 # (not managed by any per-user config), /usr/bin/winglet is a convenience
-# symlink, and nothing here writes into a user's home directory — the
-# packaged app registers its own per-user tray autostart on first launch
-# instead (see cmd/agent-winglet-app/autostart_linux.go).
+# symlink, and nothing here writes into a user's home directory.
 name: winglet
 arch: amd64
 platform: linux
@@ -25,16 +23,11 @@ license: Apache-2.0
 depends:
   - libgtk-3-0
   - libwebkit2gtk-4.1-0
-  - libayatana-appindicator3-1
   - ca-certificates
 
 contents:
   - src: __APP_BIN__
     dst: /opt/winglet/Winglet
-    file_info:
-      mode: 0755
-  - src: __TRAY_BIN__
-    dst: /opt/winglet/agent-winglet-tray
     file_info:
       mode: 0755
   - src: __DESKTOP_FILE__
