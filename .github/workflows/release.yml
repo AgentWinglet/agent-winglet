@@ -106,6 +106,9 @@ jobs:
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
 
+      - name: Install create-dmg
+        run: brew install create-dmg
+
       # Standard GitHub Actions pattern for codesigning: import the
       # Developer ID cert into a throwaway keychain that only exists for
       # this job's lifetime, rather than touching the runner's real login

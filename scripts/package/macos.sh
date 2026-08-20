@@ -27,6 +27,10 @@
 #         Works anywhere, including CI — see .github/workflows/release.yml,
 #         which writes the .p8 from a secret to a temp path per run.
 #
+#   create-dmg (brew install create-dmg) — lays out the installer window
+#   (background, icon positions) via Finder AppleScript automation. See
+#   branding/dmg/README.md for the background image and layout.
+#
 # Set UNSIGNED=1 to skip signing/notarization entirely and build an ad-hoc-
 # only DMG instead (the old v1-before-a-Developer-ID behavior) — useful for
 # quick local iteration without hitting Apple's servers every time. Never
@@ -153,15 +157,31 @@ sign_bundle() {
 
 create_dmg() {
   mkdir -p "$DIST_DIR"
+  dmg_path="${DIST_DIR}/Winglet-${VERSION}-macOS-universal.dmg"
+  rm -f "$dmg_path"
+
+  # create-dmg treats its source_folder argument literally (cd's into it and
+  # copies its *contents*), so the app has to be staged in its own folder
+  # rather than pointing create-dmg at $APP_BUNDLE directly.
   staging="$(mktemp -d)"
   trap 'rm -rf "$staging"' RETURN
   cp -R "$APP_BUNDLE" "${staging}/Winglet.app"
-  ln -s /Applications "${staging}/Applications"
 
-  dmg_path="${DIST_DIR}/Winglet-${VERSION}-macOS-universal.dmg"
-  rm -f "$dmg_path"
-  hdiutil create -volname "Winglet" -srcfolder "$staging" -ov -format UDZO "$dmg_path" -quiet
-  echo "$dmg_path"
+  # Window/icon layout is tuned to branding/dmg/background.png (a 720x430pt,
+  # 2x-resolution crop of Monet's Regatta at Argenteuil) — both icons sit in
+  # the open sky above the sails and treeline. See branding/dmg/README.md
+  # before changing any of these numbers.
+  create-dmg \
+    --volname "Winglet" \
+    --background "${REPO_ROOT}/branding/dmg/background.png" \
+    --window-size 720 430 \
+    --icon-size 128 \
+    --icon "Winglet.app" 165 85 \
+    --app-drop-link 520 85 \
+    --hide-extension "Winglet.app" \
+    --no-internet-enable \
+    "$dmg_path" \
+    "$staging"
 }
 
 sign_dmg() {
@@ -191,7 +211,7 @@ else
   sign_bundle
 fi
 
-dmg_path="$(create_dmg)"
+create_dmg
 
 if [ "$UNSIGNED" != "1" ]; then
   sign_dmg "$dmg_path"
