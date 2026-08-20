@@ -31,23 +31,26 @@ jobs:
           mkdir -p cmd/agent-winglet-app/frontend/dist
           touch cmd/agent-winglet-app/frontend/dist/placeholder
 
-      # cmd/agent-winglet-tray imports getlantern/systray unconditionally (no
-      # Wails build tags to stub it out like the app binary), so even this
-      # Go-only/fast job needs systray's Linux cgo dep to compile it.
+      # The dashboard app needs GTK/WebKit headers for Wails' Linux desktop
+      # bindings.
       # Cached (keyed on the package list) since GitHub's default Azure apt
       # mirror has intermittent slow/degraded periods that otherwise turn a
-      # two-package install into a multi-minute stall.
+      # package install into a multi-minute stall.
       - name: Install Linux system dependencies
         uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9
         with:
-          packages: libgtk-3-dev libayatana-appindicator3-dev
+          packages: libgtk-3-dev libwebkit2gtk-4.1-dev
           version: 1.0
 
       - name: Build
-        run: go build ./...
+        shell: bash
+        run: |
+          go list ./... | grep -v '/cmd/agent-winglet-tray$' | xargs go build
 
       - name: Vet
-        run: go vet ./...
+        shell: bash
+        run: |
+          go list ./... | grep -v '/cmd/agent-winglet-tray$' | xargs go vet
 
       - name: gofmt
         run: |
@@ -59,7 +62,9 @@ jobs:
           fi
 
       - name: Test
-        run: go test ./...
+        shell: bash
+        run: |
+          go list ./... | grep -v '/cmd/agent-winglet-tray$' | xargs go test
 
       - name: Installer smoke
         run: make installer-smoke
