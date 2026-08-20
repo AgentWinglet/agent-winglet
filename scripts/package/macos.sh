@@ -176,8 +176,8 @@ create_dmg() {
     --background "${REPO_ROOT}/branding/dmg/background.png" \
     --window-size 720 430 \
     --icon-size 128 \
-    --icon "Winglet.app" 165 85 \
-    --app-drop-link 520 85 \
+    --icon "Winglet.app" 165 215 \
+    --app-drop-link 520 215 \
     --hide-extension "Winglet.app" \
     --no-internet-enable \
     "$dmg_path" \
