@@ -167,17 +167,17 @@ create_dmg() {
   trap 'rm -rf "$staging"' RETURN
   cp -R "$APP_BUNDLE" "${staging}/Winglet.app"
 
-  # Window/icon layout is tuned to branding/dmg/background.png (a 720x430pt,
-  # 2x-resolution crop of Monet's Regatta at Argenteuil) — both icons sit in
-  # the open sky above the sails and treeline. See branding/dmg/README.md
-  # before changing any of these numbers.
+  # Window/icon layout follows the classic create-dmg example:
+  # 660x400pt Finder window, 160pt icons, with Winglet.app at (180,170)
+  # and Applications at (480,170). Decorative arrow/instructions are baked
+  # into branding/dmg/background.png.
   create-dmg \
     --volname "Winglet" \
     --background "${REPO_ROOT}/branding/dmg/background.png" \
-    --window-size 720 430 \
-    --icon-size 128 \
-    --icon "Winglet.app" 165 215 \
-    --app-drop-link 520 215 \
+    --window-size 660 400 \
+    --icon-size 160 \
+    --icon "Winglet.app" 180 170 \
+    --app-drop-link 480 170 \
     --hide-extension "Winglet.app" \
     --no-internet-enable \
     "$dmg_path" \
