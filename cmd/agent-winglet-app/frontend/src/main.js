@@ -894,16 +894,6 @@ async function renderAccountScreen(container) {
   wireAccountActions(container);
 }
 
-// formatLocalTime renders a UTC ISO timestamp (everything the Go side
-// hands back — lastRefreshAt, expiresAt — is UTC, see appauth.go) in the
-// reader's own local time/timezone rather than the raw UTC string.
-function formatLocalTime(iso) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-}
-
 // formatTrialCountdown turns status.expiresAt (only meaningful while
 // state === 'trialing', where it's the trial's own end time — the signed
 // entitlement's ExpiresAt, see appauth.Client.StartTrial's doc comment) into
@@ -933,6 +923,19 @@ function formatTrialDaysHours(expiresAt) {
   return `${days}d ${hours}h`;
 }
 
+// formatPlanLabel turns a raw billing-tier value from the site's API (e.g.
+// "annual", "pro_yearly") into title-cased words instead of showing the raw
+// enum verbatim next to the "Active" badge above it.
+function formatPlanLabel(tier) {
+  if (!tier) return 'Winglet';
+  return tier
+    .replace(/[_-]+/g, ' ')
+    .trim()
+    .split(' ')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
 function accountSubscribedMarkup(status) {
   const trialing = status.state === 'trialing';
   const countdown = trialing ? formatTrialCountdown(status.expiresAt) : '';
@@ -941,9 +944,8 @@ function accountSubscribedMarkup(status) {
       ${trialing
         ? `<div class="trial-pill">${icons.sparkle}Free trial${countdown ? ` · ${countdown}` : ''}</div>`
         : status.subscription
-          ? `<div>${escapeHtml(status.subscription.tier || 'Winglet')} · ${escapeHtml(status.subscription.status || 'active')}</div>`
+          ? `<div class="trial-pill">${icons.sparkle}${escapeHtml(formatPlanLabel(status.subscription.tier))} plan</div>`
           : ''}
-      ${!trialing && status.expiresAt ? `<div>Refreshes automatically before ${escapeHtml(formatLocalTime(status.expiresAt))}</div>` : ''}
     </div>
     <div class="account-actions">
       ${trialing ? `<button class="hook-action-button enable" type="button" data-account-action="pricing">Subscribe now</button>` : ''}
