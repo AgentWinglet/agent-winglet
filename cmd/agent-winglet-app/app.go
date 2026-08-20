@@ -447,7 +447,11 @@ func installedHookPath(binaryName string) (string, error) {
 			return path, nil
 		}
 	}
-	return "", fmt.Errorf("%s is not installed. Run ./install.sh once, then try again.", binaryName)
+	agentName := "Claude Code"
+	if binaryName == "codex-hook" {
+		agentName = "Codex"
+	}
+	return "", fmt.Errorf("%s isn't available on this machine. Install %s, then try again.", agentName, agentName)
 }
 
 func readJSONObject(path string) (map[string]interface{}, error) {
