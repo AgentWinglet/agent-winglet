@@ -71,6 +71,7 @@ import (
 	"github.com/AgentWinglet/agent-winglet/internal/compactnudge"
 	"github.com/AgentWinglet/agent-winglet/internal/config"
 	"github.com/AgentWinglet/agent-winglet/internal/entitlement"
+	"github.com/AgentWinglet/agent-winglet/internal/executionstate"
 	"github.com/AgentWinglet/agent-winglet/internal/ledger"
 	"github.com/AgentWinglet/agent-winglet/internal/outputbudget"
 	"github.com/AgentWinglet/agent-winglet/internal/phase"
@@ -230,6 +231,9 @@ func handle(in hookInput) (*hookOutput, error) {
 			return nil, err
 		}
 		if err := retire.Invalidate(root, in.SessionID); err != nil {
+			return nil, err
+		}
+		if err := executionstate.Invalidate(root, in.SessionID); err != nil {
 			return nil, err
 		}
 		// Note: stats' per-session tally is deliberately left untouched here.
@@ -545,12 +549,27 @@ func handleRetireInvestigate(in hookInput, root, reason string) (*hookOutput, er
 	}
 	key := investigateKey(in.ToolInput)
 	n := len(in.ToolResponse)
+	projected, _, err := executionstate.Project(root, in.SessionID, executionstate.RetirableContextItem{
+		Label:      "investigation",
+		Key:        in.ToolName + " " + key,
+		Content:    string(in.ToolResponse),
+		SourceRef:  path,
+		Successful: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	stateBlock := executionstate.Format(projected)
 	receipt := fmt.Sprintf(
 		"[agent-winglet] investigate output retired %s (%s %s, %d bytes) — full content at %s",
 		reason, in.ToolName, key, n, path,
 	)
+	if stateBlock != "" {
+		receipt += "\n" + stateBlock
+	}
 	if err := recordStat(root, in.SessionID, func(s *stats.Session) {
 		s.RecordRetire(n)
+		s.RecordStateProjection(len(stateBlock))
 	}); err != nil {
 		return nil, err
 	}
@@ -779,12 +798,27 @@ func handleBashRetire(in hookInput, root, stdout, command string) (*hookOutput, 
 		return nil, err
 	}
 	n := len(stdout)
+	projected, _, err := executionstate.Project(root, in.SessionID, executionstate.RetirableContextItem{
+		Label:      "bash output",
+		Key:        command,
+		Content:    stdout,
+		SourceRef:  path,
+		Successful: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	stateBlock := executionstate.Format(projected)
 	receipt := fmt.Sprintf(
 		"[agent-winglet] bash output retired post-boundary (%s, %d bytes) — full output at %s",
 		command, n, path,
 	)
+	if stateBlock != "" {
+		receipt += "\n" + stateBlock
+	}
 	if err := recordStat(root, in.SessionID, func(s *stats.Session) {
 		s.RecordRetire(n)
+		s.RecordStateProjection(len(stateBlock))
 	}); err != nil {
 		return nil, err
 	}

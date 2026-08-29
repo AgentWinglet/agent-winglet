@@ -482,7 +482,7 @@ func TestPostToolUseDoesNotRetireShortInvestigateShellAfterBoundaryCrossed(t *te
 	}
 
 	output := "package main\n"
-	out, err := handle(codexBashPostInput(t, dir, sessionID, "cat main.go", map[string]interface{}{
+	out, err := handle(codexBashPostInput(t, dir, sessionID, "cat src/main.go", map[string]interface{}{
 		"stdout":    output,
 		"stderr":    "",
 		"exit_code": 0,
@@ -512,7 +512,7 @@ func TestPostToolUseRetiresLongInvestigateShellAfterBoundaryCrossed(t *testing.T
 	}
 
 	output := linesOfApproxTokens(outputbudget.TokenThreshold + 1)
-	out, err := handle(codexBashPostInput(t, dir, sessionID, "cat main.go", map[string]interface{}{
+	out, err := handle(codexBashPostInput(t, dir, sessionID, "cat src/main.go", map[string]interface{}{
 		"stdout":    output,
 		"stderr":    "",
 		"exit_code": 0,
@@ -525,6 +525,9 @@ func TestPostToolUseRetiresLongInvestigateShellAfterBoundaryCrossed(t *testing.T
 	}
 	if !strings.Contains(out.SystemMessage, "investigate output retired post-boundary") {
 		t.Fatalf("SystemMessage = %q, want post-boundary retire receipt", out.SystemMessage)
+	}
+	if !strings.Contains(out.SystemMessage, "Relevant execution state retained:") {
+		t.Fatalf("SystemMessage = %q, want execution state projection", out.SystemMessage)
 	}
 	path := archivePathFromBudgetedOutput(t, out.SystemMessage, "full output at ")
 	stored, err := os.ReadFile(path)
@@ -541,6 +544,9 @@ func TestPostToolUseRetiresLongInvestigateShellAfterBoundaryCrossed(t *testing.T
 	}
 	if s.Agent != stats.AgentCodex || s.RetiredCalls != 1 || s.RetiredBytes != int64(len(output)) {
 		t.Fatalf("stats after retire = %+v, want codex agent and one retire", s)
+	}
+	if s.StatePatches != 1 || s.StateBytes <= 0 {
+		t.Fatalf("stats after state projection = %+v, want one state patch", s)
 	}
 }
 

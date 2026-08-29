@@ -914,6 +914,8 @@ type overviewTotals struct {
 	BudgetBytesOmitted int64
 	RetiredCalls       int
 	RetiredBytes       int64
+	StatePatches       int
+	StateBytes         int64
 
 	TranscriptTokens       int64
 	TranscriptCostUSD      float64
@@ -938,6 +940,8 @@ func (t *overviewTotals) add(o overviewTotals) {
 	t.BudgetBytesOmitted += o.BudgetBytesOmitted
 	t.RetiredCalls += o.RetiredCalls
 	t.RetiredBytes += o.RetiredBytes
+	t.StatePatches += o.StatePatches
+	t.StateBytes += o.StateBytes
 	t.TranscriptTokens += o.TranscriptTokens
 	t.TranscriptCostUSD += o.TranscriptCostUSD
 	t.TranscriptContentBytes += o.TranscriptContentBytes
@@ -954,6 +958,8 @@ func totalsFromRollup(r stats.Rollup) overviewTotals {
 		BudgetBytesOmitted: r.BudgetBytesOmitted,
 		RetiredCalls:       r.RetiredCalls,
 		RetiredBytes:       r.RetiredBytes,
+		StatePatches:       r.StatePatches,
+		StateBytes:         r.StateBytes,
 
 		TranscriptTokens:       r.TranscriptTokens,
 		TranscriptCostUSD:      r.TranscriptCostUSD,
@@ -975,6 +981,8 @@ func totalsFromSession(s *stats.Session) overviewTotals {
 		BudgetBytesOmitted: s.BudgetBytesOmitted,
 		RetiredCalls:       s.RetiredCalls,
 		RetiredBytes:       s.RetiredBytes,
+		StatePatches:       s.StatePatches,
+		StateBytes:         s.StateBytes,
 
 		TranscriptTokens:       s.TranscriptTokens,
 		TranscriptCostUSD:      s.TranscriptCostUSD,

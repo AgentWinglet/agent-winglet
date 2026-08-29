@@ -19,6 +19,7 @@ import (
 	"github.com/AgentWinglet/agent-winglet/internal/compactnudge"
 	"github.com/AgentWinglet/agent-winglet/internal/config"
 	"github.com/AgentWinglet/agent-winglet/internal/entitlement"
+	"github.com/AgentWinglet/agent-winglet/internal/executionstate"
 	"github.com/AgentWinglet/agent-winglet/internal/ledger"
 	"github.com/AgentWinglet/agent-winglet/internal/outputbudget"
 	"github.com/AgentWinglet/agent-winglet/internal/phase"
@@ -313,13 +314,28 @@ func handleCodexRetire(in hookInput, root string, toolOutput codexToolOutput, re
 		return nil, err
 	}
 	n := len(toolOutput.Text)
+	projected, _, err := executionstate.Project(root, in.SessionID, executionstate.RetirableContextItem{
+		Label:      label,
+		Key:        toolOutput.Key,
+		Content:    toolOutput.Text,
+		SourceRef:  path,
+		Successful: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	stateBlock := executionstate.Format(projected)
 	receipt := fmt.Sprintf(
 		"[agent-winglet] %s retired %s (%s, %d bytes) - full output at %s",
 		label, reason, toolOutput.Key, n, path,
 	)
+	if stateBlock != "" {
+		receipt += "\n" + stateBlock
+	}
 	if err := recordStat(root, in.SessionID, func(s *stats.Session) {
 		s.Agent = stats.AgentCodex
 		s.RecordRetire(n)
+		s.RecordStateProjection(len(stateBlock))
 	}); err != nil {
 		return nil, err
 	}
@@ -635,6 +651,9 @@ func resetSession(in hookInput) error {
 		return err
 	}
 	if err := retire.Invalidate(root, in.SessionID); err != nil {
+		return err
+	}
+	if err := executionstate.Invalidate(root, in.SessionID); err != nil {
 		return err
 	}
 	// Note: stats' per-session tally is deliberately left untouched here —

@@ -48,6 +48,8 @@ type Session struct {
 	BudgetBytesOmitted int64  `json:"budgetBytesOmitted"`
 	RetiredCalls       int    `json:"retiredCalls"`
 	RetiredBytes       int64  `json:"retiredBytes"`
+	StatePatches       int    `json:"statePatches,omitempty"`
+	StateBytes         int64  `json:"stateBytes,omitempty"`
 	// TranscriptTokens, TranscriptCostUSD, and TranscriptContentBytes carry
 	// this session's real transcript-derived usage (see internal/transcript)
 	// — the input-side token total, its priced cost at real per-token
@@ -92,6 +94,18 @@ func (s *Session) RecordBudgetTrim(linesOmitted int, bytesOmitted int64) {
 func (s *Session) RecordRetire(bytes int) {
 	s.RetiredCalls++
 	s.RetiredBytes += int64(bytes)
+}
+
+// RecordStateProjection records compact Execution State that was added back
+// while retiring context. These bytes are overhead/explanation, not another
+// savings bucket, so Percent/TokensSaved continue to attribute removed raw
+// output to the mechanism that actually removed it.
+func (s *Session) RecordStateProjection(bytes int) {
+	if bytes <= 0 {
+		return
+	}
+	s.StatePatches++
+	s.StateBytes += int64(bytes)
 }
 
 // SetTranscriptUsage copies a transcript read (see
@@ -184,6 +198,8 @@ type Rollup struct {
 	BudgetBytesOmitted int64
 	RetiredCalls       int
 	RetiredBytes       int64
+	StatePatches       int
+	StateBytes         int64
 
 	TranscriptTokens       int64
 	TranscriptCostUSD      float64
@@ -209,6 +225,8 @@ func (r *Rollup) add(s *Session) {
 	r.BudgetBytesOmitted += s.BudgetBytesOmitted
 	r.RetiredCalls += s.RetiredCalls
 	r.RetiredBytes += s.RetiredBytes
+	r.StatePatches += s.StatePatches
+	r.StateBytes += s.StateBytes
 	r.TranscriptTokens += s.TranscriptTokens
 	r.TranscriptCostUSD += s.TranscriptCostUSD
 	r.TranscriptContentBytes += s.TranscriptContentBytes
